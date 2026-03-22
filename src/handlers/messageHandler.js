@@ -79,6 +79,9 @@ const handleIncomingMessage = async (chatId, userMessage) => {
             replyText = "🚫 Ese turno ya está ocupado. ¿Te busco otro?";
           else if (bookingResult.error === "INVALID_TIME")
             replyText = "⚠️ Ese horario no existe en la grilla.";
+          else if (bookingResult.error === "PAST_TIME")
+            replyText =
+              "⏰ Ese horario ya pasó o ya comenzó. Decime otro turno y te ayudo a reservarlo.";
           else if (bookingResult.error === "SUSPENDED")
             replyText =
               `🚫 *Tu cuenta está suspendida.*\n\n` +
@@ -97,7 +100,7 @@ const handleIncomingMessage = async (chatId, userMessage) => {
           const lista = availability.slots
             .map((s) => `• ${s.time} ($${s.price})`)
             .join("\n");
-          replyText = `📅 *Libres para el ${parsedData.date}:*\n\n${lista}\n\n_¿Cuál te reservo?_`;
+          replyText = `📅 *Libres para el ${getFormattedDate(parsedData.date)}:*\n\n${lista}\n\n_¿Cuál te reservo?_`;
         } else {
           replyText = "🚫 Todo ocupado para esa fecha.";
         }

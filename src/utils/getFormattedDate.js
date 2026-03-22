@@ -1,21 +1,19 @@
 function getFormattedDate(fechaStr) {
-    // Ajustamos la fecha para evitar problemas de zona horaria (UTC vs Local)
-    const [year, month, day] = fechaStr.split('-').map(Number);
-    const fechaInput = new Date(year, month - 1, day);
+    const [year, month, day] = String(fechaStr).split("-").map(Number);
+    if (!year || !month || !day) return String(fechaStr);
 
-    const hoy = new Date();
-    hoy.setHours(0, 0, 0, 0);
+    // Usamos UTC para evitar corrimientos por zona horaria.
+    const fechaInput = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
 
-    const manana = new Date(hoy);
-    manana.setDate(hoy.getDate() + 1);
+    // Ej: "domingo, 22 de marzo" -> "domingo 22 de marzo"
+    const texto = new Intl.DateTimeFormat("es-AR", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        timeZone: "UTC",
+    }).format(fechaInput);
 
-    // Comparar si es mañana
-    if (fechaInput.getTime() === manana.getTime()) {
-        return "mañana";
-    }
-
-    // Formato por defecto: "6 de febrero"
-    return new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'long' }).format(fechaInput);
+    return texto.replace(",", "");
 }
 
 module.exports = { getFormattedDate };

@@ -4,6 +4,13 @@ const connectDB = require("./src/config/database");
 const app = require("./src/app");
 const { handleIncomingMessage } = require("./src/handlers/messageHandler");
 const client = require("./src/config/whatsappClient");
+const {
+  setQr,
+  setLoading,
+  setAuthenticated,
+  setAuthFailure,
+  setReady,
+} = require("./src/state/whatsapp.state");
 
 const PORT = process.env.PORT || 3000;
 
@@ -23,24 +30,29 @@ connectDB()
 client.on("qr", (qr) => {
   console.log("✨ Nuevo código QR generado. Escanealo por favor:");
   qrcode.generate(qr, { small: true });
+  setQr(qr);
 });
 
 client.on("loading_screen", (percent, message) => {
   console.log(`⏳ Cargando WhatsApp: ${percent}% - ${message}`);
+  setLoading(percent, message);
 });
 
 client.on("authenticated", () => {
   console.log("✅ ¡Autenticación exitosa!");
+  setAuthenticated();
 });
 
 client.on("auth_failure", (msg) => {
   console.error("❌ Fallo de autenticación:", msg);
+  setAuthFailure(msg);
 });
 
 client.on("ready", () => {
   console.log("--------------------------------------------");
   console.log("🌟 ¡BOT DE WHATSAPP LISTO Y CONECTADO! 🌟");
   console.log("--------------------------------------------");
+  setReady();
 });
 
 // --- EVENTO DE MENSAJE ---
