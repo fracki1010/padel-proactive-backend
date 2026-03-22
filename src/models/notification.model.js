@@ -1,0 +1,31 @@
+const mongoose = require("mongoose");
+
+const notificationSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ["new_booking", "payment_updated", "booking_cancelled", "system"],
+      required: true,
+    },
+    title: {
+      type: String,
+      required: true,
+    },
+    message: {
+      type: String,
+      required: true,
+    },
+    data: {
+      type: Object, // Para guardar el ID del turno u otros detalles
+    },
+    isRead: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  {
+    timestamps: true,
+  },
+);
+
+module.exports = mongoose.model("Notification", notificationSchema);
