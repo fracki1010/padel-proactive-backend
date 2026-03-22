@@ -4,6 +4,60 @@ const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
 const User = require("../models/user.model");
 const { sendAdminNotification } = require("./notificationService");
+const TIMEZONE = "America/Argentina/Buenos_Aires";
+
+const getDatePartsInTimezone = (date, timeZone = TIMEZONE) => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  return `${year}-${month}-${day}`;
+};
+
+const getCurrentMinutesInTimezone = (timeZone = TIMEZONE) => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+
+  const hour = Number(parts.find((p) => p.type === "hour")?.value || 0);
+  const minute = Number(parts.find((p) => p.type === "minute")?.value || 0);
+  return hour * 60 + minute;
+};
+
+const dateStringToUtcMidnight = (dateStr) => {
+  const [year, month, day] = String(dateStr).split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+};
+
+const slotTimeToMinutes = (timeStr) => {
+  const [hour, minute] = String(timeStr).split(":").map(Number);
+  return hour * 60 + minute;
+};
+
+const isPastDateInTimezone = (dateStr, timeZone = TIMEZONE) => {
+  const todayStr = getDatePartsInTimezone(new Date(), timeZone);
+  return String(dateStr) < todayStr;
+};
+
+const isTodayInTimezone = (dateStr, timeZone = TIMEZONE) => {
+  const todayStr = getDatePartsInTimezone(new Date(), timeZone);
+  return String(dateStr) === todayStr;
+};
+
+const hasSlotStarted = (dateStr, timeStr, timeZone = TIMEZONE) => {
+  if (isPastDateInTimezone(dateStr, timeZone)) return true;
+  if (!isTodayInTimezone(dateStr, timeZone)) return false;
+  return slotTimeToMinutes(timeStr) <= getCurrentMinutesInTimezone(timeZone);
+};
 
 /**
  * Crea una nueva reserva.
@@ -22,8 +76,11 @@ const createNewBooking = async ({
     if (user && user.isSuspended) {
       return { success: false, error: "SUSPENDED" };
     }
-    const bookingDate = new Date(dateStr);
-    bookingDate.setUTCHours(0, 0, 0, 0);
+    const bookingDate = dateStringToUtcMidnight(dateStr);
+
+    if (hasSlotStarted(dateStr, timeStr)) {
+      return { success: false, error: "PAST_TIME" };
+    }
 
     // 2. Buscar el TimeSlot correspondiente (Ej: "20:00")
     const slot = await TimeSlot.findOne({ startTime: timeStr });
@@ -139,22 +196,14 @@ const createNewBooking = async ({
  */
 const getAvailableSlots = async (dateStr) => {
   try {
-    const TIMEZONE = "America/Argentina/Buenos_Aires"; // Ajusta a tu zona
-
     // 1. Normalizar fecha
-    const queryDate = new Date(dateStr);
-    queryDate.setUTCHours(0, 0, 0, 0);
+    const queryDate = dateStringToUtcMidnight(dateStr);
+    const isToday = isTodayInTimezone(dateStr);
+    const isPastDate = isPastDateInTimezone(dateStr);
 
-    // 2. Lógica de "HOY" para ocultar horarios pasados
-    const nowString = new Date().toLocaleString("en-US", {
-      timeZone: TIMEZONE,
-    });
-    const nowObj = new Date(nowString);
-
-    // Validamos si la fecha solicitada es HOY comparando strings YYYY-MM-DD
-    const isToday =
-      queryDate.toISOString().split("T")[0] ===
-      new Date(nowObj).toISOString().split("T")[0]; // Simple y efectivo si queryDate viene de un string ISO
+    if (isPastDate) {
+      return { success: true, date: dateStr, slots: [] };
+    }
 
     // 3. Traer datos maestros
     const allSlots = await TimeSlot.find({ isActive: true }).sort({ order: 1 });
@@ -176,15 +225,8 @@ const getAvailableSlots = async (dateStr) => {
 
       // B. Filtro de Tiempo Pasado (Solo si es hoy)
       if (isToday) {
-        const [slotHour, slotMin] = slot.startTime.split(":").map(Number);
-        const slotTotalMinutes = slotHour * 60 + slotMin;
-
-        const currentHour = nowObj.getHours();
-        const currentMin = nowObj.getMinutes();
-        const currentTotalMinutes = currentHour * 60 + currentMin;
-
-        // Si el turno ya pasó o empieza en menos de 15 minutos, lo ocultamos
-        if (slotTotalMinutes <= currentTotalMinutes + 15) {
+        // Si el turno ya comenzó o ya pasó, no se ofrece.
+        if (hasSlotStarted(dateStr, slot.startTime)) {
           return false;
         }
       }
@@ -209,8 +251,7 @@ const getAvailableSlots = async (dateStr) => {
  */
 const cancelBooking = async ({ clientPhone, dateStr, timeStr }) => {
   try {
-    const bookingDate = new Date(dateStr);
-    bookingDate.setUTCHours(0, 0, 0, 0);
+    const bookingDate = dateStringToUtcMidnight(dateStr);
 
     // 1. Buscar el slot por hora
     const slot = await TimeSlot.findOne({ startTime: timeStr });
