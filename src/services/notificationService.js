@@ -1,6 +1,7 @@
 const Notification = require("../models/notification.model");
 const Admin = require("../models/admin.model");
 const client = require("../config/whatsappClient");
+const { getWhatsappState } = require("../state/whatsapp.state");
 
 const sendAdminNotification = async (type, title, message, data = {}) => {
   console.log("comienza a enviar mensaje");
@@ -21,6 +22,11 @@ const sendAdminNotification = async (type, title, message, data = {}) => {
       console.warn(
         "[NotificationService] No se encontraron administradores con teléfono para notificar.",
       );
+      return;
+    }
+
+    if (!getWhatsappState().enabled) {
+      console.log("[NotificationService] WhatsApp desactivado. Solo se guarda en la app.");
       return;
     }
 
