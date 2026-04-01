@@ -7,9 +7,22 @@ const { protect } = require("./middleware/auth.middleware");
 
 const app = express();
 
+const normalizeOrigin = (value = "") => {
+  try {
+    return new URL(value).origin.toLowerCase();
+  } catch {
+    return value.trim().replace(/\/+$/, "").toLowerCase();
+  }
+};
+
+const isPrivateNetworkOrigin = (origin) =>
+  /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[0-1])\.\d+\.\d+)(?::\d+)?$/i.test(
+    origin,
+  );
+
 const allowedOrigins = (process.env.CORS_ORIGIN || "")
   .split(",")
-  .map((origin) => origin.trim())
+  .map((origin) => normalizeOrigin(origin))
   .filter(Boolean);
 
 // Middlewares
@@ -22,9 +35,16 @@ app.use(
       // Si no hay configuración explícita, permitir cualquier origin (útil en local)
       if (!allowedOrigins.length) return callback(null, true);
 
-      if (allowedOrigins.includes(origin)) return callback(null, true);
+      const requestOrigin = normalizeOrigin(origin);
+      if (allowedOrigins.includes(requestOrigin)) return callback(null, true);
+      if (
+        process.env.NODE_ENV !== "production" &&
+        isPrivateNetworkOrigin(requestOrigin)
+      ) {
+        return callback(null, true);
+      }
 
-      return callback(new Error("Not allowed by CORS"));
+      return callback(new Error(`Not allowed by CORS: ${origin}`));
     },
     credentials: true,
   })

@@ -2,6 +2,8 @@
 const Admin = require("../models/admin.model");
 const jwt = require("jsonwebtoken");
 
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "365d";
+
 const login = async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -23,7 +25,7 @@ const login = async (req, res) => {
     const token = jwt.sign(
       { id: admin._id, username: admin.username, role: admin.role },
       process.env.JWT_SECRET || "fallback_secret",
-      { expiresIn: "24h" },
+      { expiresIn: JWT_EXPIRES_IN },
     );
 
     res.status(200).json({

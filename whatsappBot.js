@@ -10,7 +10,9 @@ const {
   setAuthenticated,
   setAuthFailure,
   setReady,
+  getWhatsappState,
 } = require("./src/state/whatsapp.state");
+const { syncWhatsappFromConfig } = require("./src/services/whatsappControl.service");
 
 const PORT = process.env.PORT || 3000;
 
@@ -20,6 +22,15 @@ connectDB()
     app.listen(PORT, () => {
       console.log(`🚀 Server corriendo en http://localhost:${PORT}`);
     });
+
+    return syncWhatsappFromConfig();
+  })
+  .then((enabled) => {
+    console.log(
+      enabled
+        ? "✅ WhatsApp habilitado en configuración. Iniciando cliente..."
+        : "💤 WhatsApp desactivado en configuración. Queda en reposo.",
+    );
   })
   .catch((err) => {
     console.error("❌ Error al conectar MongoDB:", err);
@@ -57,6 +68,8 @@ client.on("ready", () => {
 
 // --- EVENTO DE MENSAJE ---
 client.on("message", async (message) => {
+  if (!getWhatsappState().enabled) return;
+
   // Validaciones básicas
   if (message.from === "status@broadcast" || message.from.includes("@g.us"))
     return;
@@ -101,8 +114,4 @@ client.on("message", async (message) => {
   }
 });
 
-// 3. Inicialización con manejo de errores
-console.log("🚀 Iniciando el proceso de WhatsApp...");
-client.initialize().catch((err) => {
-  console.error("❌ Error crítico en initialize():", err);
-});
+console.log("🚀 Backend iniciado. Estado de WhatsApp controlado por configuración.");

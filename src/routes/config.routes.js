@@ -3,6 +3,7 @@ const router = express.Router();
 const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
 const { getWhatsappState } = require("../state/whatsapp.state");
+const { setWhatsappEnabled } = require("../services/whatsappControl.service");
 
 // GET /api/config/courts
 router.get("/courts", async (req, res) => {
@@ -92,6 +93,25 @@ router.get("/whatsapp", async (_req, res) => {
     res.status(200).json({ success: true, data: state });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PUT /api/config/whatsapp
+router.put("/whatsapp", async (req, res) => {
+  try {
+    const { enabled } = req.body;
+
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        error: "El campo 'enabled' debe ser booleano.",
+      });
+    }
+
+    const state = await setWhatsappEnabled(enabled);
+    return res.status(200).json({ success: true, data: state });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
