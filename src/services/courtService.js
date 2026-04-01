@@ -1,9 +1,12 @@
 // src/services/courtService.js
 const Court = require('../models/court.model');
 
-const getCourtSummary = async () => {
+const getCourtSummary = async (companyId = null) => {
     try {
-        const courts = await Court.find({ isActive: true });
+        const courts = await Court.find({
+            isActive: true,
+            companyId: companyId || null,
+        });
         
         
         if (courts.length === 0) return { info: "No hay canchas.", areDifferent: false };

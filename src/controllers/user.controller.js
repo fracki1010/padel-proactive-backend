@@ -1,9 +1,24 @@
 const User = require("../models/user.model");
 const Booking = require("../models/booking.model");
 
+const resolveCompanyId = (req) => {
+  if (req.user?.role === "super_admin") {
+    return req.query.companyId || req.body.companyId || null;
+  }
+  return req.user?.companyId || null;
+};
+
+const companyScope = (req, companyId) => {
+  if (req.user?.role === "super_admin") {
+    return companyId ? { companyId } : {};
+  }
+  return { companyId: req.user?.companyId || null };
+};
+
 const getUsers = async (req, res) => {
   try {
-    const users = await User.find().sort({ name: 1 });
+    const companyId = resolveCompanyId(req);
+    const users = await User.find(companyScope(req, companyId)).sort({ name: 1 });
     res.status(200).json({
       success: true,
       count: users.length,
@@ -16,7 +31,11 @@ const getUsers = async (req, res) => {
 
 const createUser = async (req, res) => {
   try {
-    const user = await User.create(req.body);
+    const companyId = resolveCompanyId(req);
+    const user = await User.create({
+      ...req.body,
+      ...companyScope(req, companyId),
+    });
     res.status(201).json({ success: true, data: user });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
@@ -25,10 +44,12 @@ const createUser = async (req, res) => {
 
 const updateUser = async (req, res) => {
   try {
-    const user = await User.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    });
+    const companyId = resolveCompanyId(req);
+    const user = await User.findOneAndUpdate(
+      { _id: req.params.id, ...companyScope(req, companyId) },
+      req.body,
+      { new: true, runValidators: true },
+    );
     if (!user) {
       return res
         .status(404)
@@ -42,7 +63,11 @@ const updateUser = async (req, res) => {
 
 const deleteUser = async (req, res) => {
   try {
-    const user = await User.findByIdAndDelete(req.params.id);
+    const companyId = resolveCompanyId(req);
+    const user = await User.findOneAndDelete({
+      _id: req.params.id,
+      ...companyScope(req, companyId),
+    });
     if (!user) {
       return res
         .status(404)
@@ -56,7 +81,11 @@ const deleteUser = async (req, res) => {
 
 const getUserHistory = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
+    const companyId = resolveCompanyId(req);
+    const user = await User.findOne({
+      _id: req.params.id,
+      ...companyScope(req, companyId),
+    });
     if (!user) {
       return res
         .status(404)
@@ -66,6 +95,7 @@ const getUserHistory = async (req, res) => {
     // Buscamos las reservas por nombre o teléfono, ya que el modelo Booking no tiene referencia directa aún
     // Pero idealmente deberíamos buscarlas por phoneNumber que es más estable
     const bookings = await Booking.find({
+      ...companyScope(req, companyId),
       $or: [{ clientPhone: user.phoneNumber }, { clientName: user.name }],
     })
       .populate("court")
@@ -80,8 +110,9 @@ const getUserHistory = async (req, res) => {
 
 const clearPenalties = async (req, res) => {
   try {
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
+    const companyId = resolveCompanyId(req);
+    const user = await User.findOneAndUpdate(
+      { _id: req.params.id, ...companyScope(req, companyId) },
       { penalties: 0, isSuspended: false },
       { new: true },
     );

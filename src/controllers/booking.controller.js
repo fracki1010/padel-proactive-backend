@@ -4,11 +4,26 @@ const Court = require("../models/court.model");
 const User = require("../models/user.model");
 const { sendAdminNotification } = require("../services/notificationService");
 
+const resolveCompanyId = (req) => {
+  if (req.user?.role === "super_admin") {
+    return req.query.companyId || req.body.companyId || null;
+  }
+  return req.user?.companyId || null;
+};
+
+const companyScope = (req, companyId) => {
+  if (req.user?.role === "super_admin") {
+    return companyId ? { companyId } : {};
+  }
+  return { companyId: req.user?.companyId || null };
+};
+
 // 1. OBTENER RESERVAS (GET)
 const getBookings = async (req, res) => {
   try {
     const { date } = req.query;
-    let query = {};
+    const companyId = resolveCompanyId(req);
+    let query = companyScope(req, companyId);
     let searchDate = new Date();
 
     if (date) {
@@ -28,6 +43,7 @@ const getBookings = async (req, res) => {
       const dayOfWeek = searchDate.getUTCDay(); // 0-6 (Dom-Sab)
 
       const usersWithFixedTurns = await User.find({
+        ...companyScope(req, companyId),
         "fixedTurns.dayOfWeek": dayOfWeek,
       })
         .populate("fixedTurns.timeSlot")
@@ -113,6 +129,7 @@ const createBooking = async (req, res) => {
       status,
       finalPrice,
     } = req.body;
+    const companyId = resolveCompanyId(req);
 
     // A. Validaciones básicas
     if (!courtId || !date || (!time && !slotId)) {
@@ -122,12 +139,23 @@ const createBooking = async (req, res) => {
       });
     }
 
+    const courtExists = await Court.exists({
+      _id: courtId,
+      ...companyScope(req, companyId),
+    });
+    if (!courtExists) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Cancha no encontrada" });
+    }
+
     // B. Buscar el TimeSlot
     let slot;
+    const tenantSlotFilter = companyScope(req, companyId);
     if (slotId) {
-      slot = await TimeSlot.findById(slotId);
+      slot = await TimeSlot.findOne({ _id: slotId, ...tenantSlotFilter });
     } else {
-      slot = await TimeSlot.findOne({ startTime: time });
+      slot = await TimeSlot.findOne({ startTime: time, ...tenantSlotFilter });
     }
 
     if (!slot) {
@@ -142,6 +170,7 @@ const createBooking = async (req, res) => {
 
     // D. Validar Disponibilidad
     const existingBooking = await Booking.findOne({
+      ...companyScope(req, companyId),
       court: courtId,
       date: bookingDate,
       timeSlot: slot._id,
@@ -157,6 +186,7 @@ const createBooking = async (req, res) => {
 
     // E. Crear
     const newBooking = await Booking.create({
+      companyId,
       court: courtId,
       date: bookingDate,
       timeSlot: slot._id,
@@ -175,7 +205,8 @@ const createBooking = async (req, res) => {
         "new_booking",
         "Nuevo Turno Reservado",
         `Cliente: ${newBooking.clientName}\nFecha: ${newBooking.date.toLocaleDateString()}\nHora: ${newBooking.timeSlot.startTime}\nCancha: ${newBooking.court.name}`,
-        { bookingId: newBooking._id },
+        { bookingId: newBooking._id, companyId },
+        { companyId },
       );
     }
 
@@ -197,7 +228,11 @@ const createBooking = async (req, res) => {
 // 3. ELIMINAR RESERVA (DELETE)
 const deleteBooking = async (req, res) => {
   try {
-    const booking = await Booking.findByIdAndDelete(req.params.id);
+    const companyId = resolveCompanyId(req);
+    const booking = await Booking.findOneAndDelete({
+      _id: req.params.id,
+      ...companyScope(req, companyId),
+    });
     if (!booking) {
       return res
         .status(404)
@@ -214,6 +249,7 @@ const deleteBooking = async (req, res) => {
 const updateBooking = async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = resolveCompanyId(req);
     console.log(`Actualizando reserva ${id}:`, req.body);
 
     // Limpiar campos que no deben actualizarse directamente o que darían error
@@ -224,8 +260,8 @@ const updateBooking = async (req, res) => {
     delete updateData.updatedAt;
     delete updateData.__v;
 
-    const updatedBooking = await Booking.findByIdAndUpdate(
-      id,
+    const updatedBooking = await Booking.findOneAndUpdate(
+      { _id: id, ...companyScope(req, companyId) },
       { $set: updateData },
       { new: true, runValidators: true },
     ).populate(["court", "timeSlot"]);

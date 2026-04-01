@@ -2,6 +2,11 @@ const mongoose = require("mongoose");
 
 const notificationSchema = new mongoose.Schema(
   {
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
+      default: null,
+    },
     type: {
       type: String,
       enum: ["new_booking", "payment_updated", "booking_cancelled", "system"],

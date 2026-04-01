@@ -5,6 +5,7 @@ const TimeSlot = require("../models/timeSlot.model");
 const User = require("../models/user.model");
 const { sendAdminNotification } = require("./notificationService");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
+const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
 
 const getDatePartsInTimezone = (date, timeZone = TIMEZONE) => {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -64,6 +65,7 @@ const hasSlotStarted = (dateStr, timeStr, timeZone = TIMEZONE) => {
  * Soporta selección automática ("INDIFERENTE") o específica de cancha.
  */
 const createNewBooking = async ({
+  companyId = null,
   courtName,
   dateStr,
   timeStr,
@@ -71,8 +73,9 @@ const createNewBooking = async ({
   clientPhone,
 }) => {
   try {
+    const scope = buildCompanyFilter(companyId);
     // 0. Verificar si el usuario está suspendido
-    const user = await User.findOne({ phoneNumber: clientPhone });
+    const user = await User.findOne({ ...scope, phoneNumber: clientPhone });
     if (user && user.isSuspended) {
       return { success: false, error: "SUSPENDED" };
     }
@@ -83,7 +86,7 @@ const createNewBooking = async ({
     }
 
     // 2. Buscar el TimeSlot correspondiente (Ej: "20:00")
-    const slot = await TimeSlot.findOne({ startTime: timeStr });
+    const slot = await TimeSlot.findOne({ ...scope, startTime: timeStr });
     if (!slot) {
       return { success: false, error: "INVALID_TIME" }; // "Ese horario no existe"
     }
@@ -98,10 +101,11 @@ const createNewBooking = async ({
     // La IA manda "INDIFERENTE" cuando sabe que las canchas son iguales
     if (courtName === "INDIFERENTE") {
       // a) Buscamos TODAS las canchas activas
-      const allCourts = await Court.find({ isActive: true });
+      const allCourts = await Court.find({ ...scope, isActive: true });
 
       // b) Buscamos qué canchas están ocupadas en ese horario exacto
       const busyBookings = await Booking.find({
+        ...scope,
         date: bookingDate,
         timeSlot: slot._id,
         status: { $ne: "cancelado" },
@@ -124,12 +128,14 @@ const createNewBooking = async ({
     else {
       // a) Buscamos esa cancha específica
       selectedCourt = await Court.findOne({
+        ...scope,
         name: { $regex: new RegExp(`^${courtName}$`, "i") },
       });
 
       if (!selectedCourt) {
         // Intento fallback: Búsqueda parcial por si dijo "la 1" en vez de "Cancha 1"
         selectedCourt = await Court.findOne({
+          ...scope,
           name: { $regex: courtName, $options: "i" },
         });
         if (!selectedCourt)
@@ -138,6 +144,7 @@ const createNewBooking = async ({
 
       // b) Verificamos si ESA cancha puntual está ocupada
       const existingBooking = await Booking.findOne({
+        ...scope,
         court: selectedCourt._id,
         date: bookingDate,
         timeSlot: slot._id,
@@ -153,6 +160,7 @@ const createNewBooking = async ({
     // CREACIÓN DE LA RESERVA
     // =================================================================
     const newBooking = await Booking.create({
+      ...scope,
       court: selectedCourt._id,
       date: bookingDate,
       timeSlot: slot._id,
@@ -167,7 +175,8 @@ const createNewBooking = async ({
       "new_booking",
       "Nuevo Turno (WhatsApp)",
       `Cliente: ${newBooking.clientName}\nFecha: ${newBooking.date.toLocaleDateString()}\nHora: ${slot.startTime}\nCancha: ${selectedCourt.name}`,
-      { bookingId: newBooking._id },
+      { bookingId: newBooking._id, companyId },
+      { companyId },
     );
 
     // Retornamos éxito con datos bonitos para el mensaje de WhatsApp
@@ -194,8 +203,10 @@ const createNewBooking = async ({
 /**
  * Consulta disponibilidad filtrando horarios pasados (si es hoy).
  */
-const getAvailableSlots = async (dateStr) => {
+const getAvailableSlots = async (dateStr, options = {}) => {
   try {
+    const companyId = options.companyId || null;
+    const scope = buildCompanyFilter(companyId);
     // 1. Normalizar fecha
     const queryDate = dateStringToUtcMidnight(dateStr);
     const isToday = isTodayInTimezone(dateStr);
@@ -206,11 +217,12 @@ const getAvailableSlots = async (dateStr) => {
     }
 
     // 3. Traer datos maestros
-    const allSlots = await TimeSlot.find({ isActive: true }).sort({ order: 1 });
-    const totalCourtsCount = await Court.countDocuments({ isActive: true });
+    const allSlots = await TimeSlot.find({ ...scope, isActive: true }).sort({ order: 1 });
+    const totalCourtsCount = await Court.countDocuments({ ...scope, isActive: true });
 
     // 4. Traer reservas
     const bookings = await Booking.find({
+      ...scope,
       date: queryDate,
       status: { $ne: "cancelado" },
     });
@@ -249,18 +261,20 @@ const getAvailableSlots = async (dateStr) => {
  * Cancela una reserva de un cliente por teléfono, fecha y hora.
  * Aplica una penalización al usuario y lo suspende si llega a 2.
  */
-const cancelBooking = async ({ clientPhone, dateStr, timeStr }) => {
+const cancelBooking = async ({ companyId = null, clientPhone, dateStr, timeStr }) => {
   try {
+    const scope = buildCompanyFilter(companyId);
     const bookingDate = dateStringToUtcMidnight(dateStr);
 
     // 1. Buscar el slot por hora
-    const slot = await TimeSlot.findOne({ startTime: timeStr });
+    const slot = await TimeSlot.findOne({ ...scope, startTime: timeStr });
     if (!slot) {
       return { success: false, error: "INVALID_TIME" };
     }
 
     // 2. Buscar la reserva activa del cliente en esa fecha y hora
     const booking = await Booking.findOne({
+      ...scope,
       clientPhone,
       date: bookingDate,
       timeSlot: slot._id,
@@ -277,7 +291,7 @@ const cancelBooking = async ({ clientPhone, dateStr, timeStr }) => {
 
     // 4. Penalizar al usuario
     const PENALTY_LIMIT = 2;
-    const user = await User.findOne({ phoneNumber: clientPhone });
+    const user = await User.findOne({ ...scope, phoneNumber: clientPhone });
     let newPenalties = 0;
     let nowSuspended = false;
 
@@ -297,7 +311,8 @@ const cancelBooking = async ({ clientPhone, dateStr, timeStr }) => {
       "booking_cancelled",
       `Turno Cancelado${suspendedNote}`,
       `Cliente: ${booking.clientName}\nTeléfono: ${clientPhone}\nFecha: ${booking.date.toLocaleDateString()}\nHora: ${slot.startTime}\nPenalizaciones: ${newPenalties}/${PENALTY_LIMIT}`,
-      { bookingId: booking._id },
+      { bookingId: booking._id, companyId },
+      { companyId },
     );
 
     return {

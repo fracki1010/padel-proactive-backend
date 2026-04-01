@@ -2,10 +2,15 @@ const mongoose = require("mongoose");
 
 const appConfigSchema = new mongoose.Schema(
   {
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
+      default: null,
+      index: true,
+    },
     key: {
       type: String,
       required: true,
-      unique: true,
       default: "main",
     },
     whatsappEnabled: {
@@ -17,5 +22,7 @@ const appConfigSchema = new mongoose.Schema(
     timestamps: true,
   },
 );
+
+appConfigSchema.index({ companyId: 1, key: 1 }, { unique: true });
 
 module.exports = mongoose.model("AppConfig", appConfigSchema);

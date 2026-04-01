@@ -3,9 +3,10 @@ const User = require("../models/user.model");
 const { getNumberByUser } = require("../utils/getNumberByUser");
 
 // Buscar usuario por su ID de WhatsApp
-const getUserByWhatsappId = async (whatsappId) => {
+const getUserByWhatsappId = async (whatsappId, options = {}) => {
   try {
-    return await User.findOne({ whatsappId });
+    const companyId = options.companyId || null;
+    return await User.findOne({ whatsappId, companyId });
   } catch (error) {
     console.error("Error buscando usuario:", error);
     return null;
@@ -14,13 +15,15 @@ const getUserByWhatsappId = async (whatsappId) => {
 
 // Crear o Actualizar usuario
 // Si cambia el nombre, lo actualizamos.
-const saveOrUpdateUser = async (whatsappId, name) => {
+const saveOrUpdateUser = async (whatsappId, name, options = {}) => {
   try {
-    const cleanPhone = await getNumberByUser(whatsappId);
+    const companyId = options.companyId || null;
+    const cleanPhone = await getNumberByUser(whatsappId, options.client);
 
     const user = await User.findOneAndUpdate(
-      { whatsappId }, // Filtro
+      { whatsappId, companyId }, // Filtro
       {
+        companyId,
         whatsappId,
         name,
         phoneNumber: cleanPhone,

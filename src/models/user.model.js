@@ -3,10 +3,15 @@ const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema(
   {
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
+      default: null,
+    },
     whatsappId: {
       type: String,
       required: true,
-      unique: true, // El ID de WhatsApp (ej: 5491122334455@c.us) es único
+      trim: true, // El ID de WhatsApp (ej: 5491122334455@c.us)
     },
     name: {
       type: String,
@@ -57,5 +62,7 @@ const userSchema = new mongoose.Schema(
     timestamps: true,
   },
 );
+
+userSchema.index({ companyId: 1, whatsappId: 1 }, { unique: true });
 
 module.exports = mongoose.model("User", userSchema);
