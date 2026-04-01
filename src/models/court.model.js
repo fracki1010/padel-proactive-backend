@@ -2,6 +2,11 @@
 const mongoose = require('mongoose');
 
 const courtSchema = new mongoose.Schema({
+  companyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Company",
+    default: null
+  },
   name: {
     type: String,
     required: true,

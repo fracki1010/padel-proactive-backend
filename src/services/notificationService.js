@@ -1,14 +1,23 @@
 const Notification = require("../models/notification.model");
 const Admin = require("../models/admin.model");
-const client = require("../config/whatsappClient");
+const { getClient } = require("./whatsappTenantManager.service");
 const { getWhatsappState } = require("../state/whatsapp.state");
 
-const sendAdminNotification = async (type, title, message, data = {}) => {
+const sendAdminNotification = async (
+  type,
+  title,
+  message,
+  data = {},
+  options = {},
+) => {
   console.log("comienza a enviar mensaje");
 
   try {
+    const companyId = options.companyId || data.companyId || null;
+
     // 1. Guardar en Base de Datos (para la App)
     await Notification.create({
+      companyId,
       type,
       title,
       message,
@@ -16,7 +25,14 @@ const sendAdminNotification = async (type, title, message, data = {}) => {
     });
 
     // 2. Enviar por WhatsApp a todos los Admins con teléfono
-    const admins = await Admin.find({ phone: { $exists: true, $ne: "" } });
+    const adminQuery = {
+      phone: { $exists: true, $ne: "" },
+      isActive: true,
+    };
+    if (companyId) {
+      adminQuery.$or = [{ companyId }, { role: "super_admin" }];
+    }
+    const admins = await Admin.find(adminQuery);
 
     if (admins.length === 0) {
       console.warn(
@@ -25,11 +41,12 @@ const sendAdminNotification = async (type, title, message, data = {}) => {
       return;
     }
 
-    if (!getWhatsappState().enabled) {
+    if (!getWhatsappState(companyId).enabled) {
       console.log("[NotificationService] WhatsApp desactivado. Solo se guarda en la app.");
       return;
     }
 
+    const client = getClient(companyId);
     if (!client || !client.isReady) {
       console.warn(
         "[NotificationService] El cliente de WhatsApp no está listo para enviar mensajes.",

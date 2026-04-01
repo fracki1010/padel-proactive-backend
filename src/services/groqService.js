@@ -15,8 +15,13 @@ if (!process.env.GROQ_API_KEY) {
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // Función principal
-const getChatResponse = async (messagesHistory, userName = null) => {
+const getChatResponse = async (
+  messagesHistory,
+  userName = null,
+  options = {},
+) => {
   try {
+    const companyId = options.companyId || null;
     // 1. CONFIGURACIÓN DE FECHA "BLINDADA" (TimeZone Fix)
     // Obtenemos la fecha actual del servidor
     const serverDate = new Date();
@@ -29,7 +34,7 @@ const getChatResponse = async (messagesHistory, userName = null) => {
     );
 
     // A. Fecha Humana (Para que la IA entienda "Jueves 5...")
-    const options = {
+    const dateFormatOptions = {
       weekday: "long",
       year: "numeric",
       month: "long",
@@ -38,7 +43,7 @@ const getChatResponse = async (messagesHistory, userName = null) => {
       minute: "2-digit",
       hour12: false,
     };
-    const fechaHumana = argentinaDate.toLocaleString("es-AR", options);
+    const fechaHumana = argentinaDate.toLocaleString("es-AR", dateFormatOptions);
 
     // B. Fecha ISO "HOY" (YYYY-MM-DD) corregida a Argentina
     // No usamos toISOString() directo porque volvería a convertir a UTC
@@ -59,7 +64,7 @@ const getChatResponse = async (messagesHistory, userName = null) => {
     // B. OBTENER INSTRUCCIONES DINÁMICAS DE LAS CANCHAS
     // Esto determina si la IA debe preguntar la cancha o usar "INDIFERENTE"
     const { instructions: courtInstructions } =
-      await courtService.getCourtSummary();
+      await courtService.getCourtSummary(companyId);
 
     // D. Configuración de Usuario (Memoria)
     let userInstruction = "";

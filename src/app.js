@@ -3,7 +3,8 @@ const cors = require("cors");
 const chatRoutes = require("./routes/chatRoutes");
 const bookingRoutes = require("./routes/booking.routes");
 const authRoutes = require("./routes/auth.routes");
-const { protect } = require("./middleware/auth.middleware");
+const { protect, requireRole } = require("./middleware/auth.middleware");
+const superAdminRoutes = require("./routes/super-admin.routes");
 
 const app = express();
 
@@ -58,6 +59,12 @@ app.use("/api/bookings", protect, bookingRoutes);
 app.use("/api/config", protect, require("./routes/config.routes"));
 app.use("/api/users", protect, require("./routes/user.routes"));
 app.use("/api/notifications", protect, require("./routes/notification.routes"));
+app.use(
+  "/api/super-admin",
+  protect,
+  requireRole("super_admin"),
+  superAdminRoutes,
+);
 
 // Ruta básica de prueba
 app.get("/", (req, res) => {

@@ -8,8 +8,8 @@ const seedAdmin = async () => {
   try {
     await connectDB();
 
-    const username = "admin";
-    const password = "admin_password_123"; // El usuario debería cambiarla luego
+    const username = process.env.SEED_SUPER_ADMIN_USER || "superadmin";
+    const password = process.env.SEED_SUPER_ADMIN_PASS || "change_me_now_123";
 
     const existingAdmin = await Admin.findOne({ username });
     if (existingAdmin) {
@@ -20,10 +20,10 @@ const seedAdmin = async () => {
     await Admin.create({
       username,
       password,
-      role: "admin",
+      role: "super_admin",
     });
 
-    console.log("Admin creado exitosamente:");
+    console.log("Super admin creado exitosamente:");
     console.log("Usuario:", username);
     console.log("Password:", password);
     process.exit(0);

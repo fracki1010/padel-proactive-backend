@@ -25,21 +25,30 @@ const extractJSON = (text) => {
   }
 };
 
-const handleIncomingMessage = async (chatId, userMessage) => {
+const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
   try {
+    const companyId = options.companyId || null;
+    const client = options.client || null;
+
     // 1. Identificar Usuario
-    const registeredUser = await userService.getUserByWhatsappId(chatId);
+    const registeredUser = await userService.getUserByWhatsappId(chatId, {
+      companyId,
+    });
     const knownName = registeredUser ? registeredUser.name : null;
-    const number = await getNumberByUser(chatId);
+    const number = await getNumberByUser(chatId, client);
     console.log(`👤 Mensaje de: ${knownName || chatId}`);
     console.log(`📞 Número de WhatsApp: ${number}`);
 
+    const sessionId = companyId ? `${companyId}:${chatId}` : chatId;
+
     // 2. Historial
-    sessionService.addMessage(chatId, "user", userMessage);
-    const history = sessionService.getHistory(chatId);
+    sessionService.addMessage(sessionId, "user", userMessage);
+    const history = sessionService.getHistory(sessionId);
 
     // 3. IA
-    const aiResponseRaw = await groqService.getChatResponse(history, knownName);
+    const aiResponseRaw = await groqService.getChatResponse(history, knownName, {
+      companyId,
+    });
     console.log("🤖 Respuesta RAW de IA:", aiResponseRaw); // Para depuración
 
     let replyText = "";
@@ -55,10 +64,14 @@ const handleIncomingMessage = async (chatId, userMessage) => {
       // CASO A: RESERVAR
       if (parsedData.action === "CREATE_BOOKING") {
         if (parsedData.clientName) {
-          await userService.saveOrUpdateUser(chatId, parsedData.clientName);
+          await userService.saveOrUpdateUser(chatId, parsedData.clientName, {
+            companyId,
+            client,
+          });
         }
 
         const bookingResult = await bookingService.createNewBooking({
+          companyId,
           courtName: parsedData.courtName,
           dateStr: parsedData.date,
           timeStr: parsedData.time,
@@ -95,6 +108,7 @@ const handleIncomingMessage = async (chatId, userMessage) => {
       else if (parsedData.action === "CHECK_AVAILABILITY") {
         const availability = await bookingService.getAvailableSlots(
           parsedData.date,
+          { companyId },
         );
         if (availability.success && availability.slots.length > 0) {
           const lista = availability.slots
@@ -109,6 +123,7 @@ const handleIncomingMessage = async (chatId, userMessage) => {
       // CASO C: CANCELAR TURNO
       else if (parsedData.action === "CANCEL_BOOKING") {
         const cancelResult = await bookingService.cancelBooking({
+          companyId,
           clientPhone: number,
           dateStr: parsedData.date,
           timeStr: parsedData.time,
@@ -165,7 +180,7 @@ const handleIncomingMessage = async (chatId, userMessage) => {
     }
 
     // 5. Enviar y Guardar
-    sessionService.addMessage(chatId, "assistant", replyText);
+    sessionService.addMessage(sessionId, "assistant", replyText);
     return replyText;
   } catch (error) {
     console.error("❌ Error en messageHandler:", error);
