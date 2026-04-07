@@ -3,6 +3,7 @@ require("dotenv").config();
 const Groq = require("groq-sdk");
 const fs = require("fs");
 const path = require("path");
+const Company = require("../models/company.model");
 // 1. IMPORTAMOS EL NUEVO SERVICIO
 const courtService = require("./courtService");
 
@@ -14,6 +15,17 @@ if (!process.env.GROQ_API_KEY) {
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
+const getClubNameByCompanyId = async (companyId = null) => {
+  try {
+    if (!companyId) return null;
+    const company = await Company.findById(companyId).select("name").lean();
+    return company?.name?.trim() || null;
+  } catch (error) {
+    console.error("Error obteniendo nombre del club:", error);
+    return null;
+  }
+};
+
 // Función principal
 const getChatResponse = async (
   messagesHistory,
@@ -22,6 +34,9 @@ const getChatResponse = async (
 ) => {
   try {
     const companyId = options.companyId || null;
+    const clubNameFromDb = await getClubNameByCompanyId(companyId);
+    const defaultClubName = process.env.DEFAULT_CLUB_NAME || "Club de Pádel";
+    const clubName = clubNameFromDb || defaultClubName;
     // 1. CONFIGURACIÓN DE FECHA "BLINDADA" (TimeZone Fix)
     // Obtenemos la fecha actual del servidor
     const serverDate = new Date();
@@ -61,6 +76,11 @@ const getChatResponse = async (
       contextoNegocio = "Eres un asistente de pádel.";
     }
 
+    // Reemplazamos cualquier nombre legacy para evitar contradicciones con el club real.
+    contextoNegocio = contextoNegocio
+      .replace(/Tie Break Padel/gi, clubName)
+      .replace(/Tie Break/gi, clubName);
+
     // B. OBTENER INSTRUCCIONES DINÁMICAS DE LAS CANCHAS
     // Esto determina si la IA debe preguntar la cancha o usar "INDIFERENTE"
     const { instructions: courtInstructions } =
@@ -86,6 +106,11 @@ const getChatResponse = async (
     // E. EL PROMPT MAESTRO
     const systemPrompt = `
     ${contextoNegocio}
+
+    [IDENTIDAD DEL CLUB - CRITICO]
+    - Nombre oficial del club para ESTA conversación: "${clubName}".
+    - Si nombras al club, usa siempre "${clubName}".
+    - Ignora cualquier nombre anterior o de ejemplo.
     
     [INSTRUCCIONES DE CANCHAS - CRITICO]
     ${courtInstructions}
@@ -102,7 +127,15 @@ const getChatResponse = async (
     - Si el usuario quiere reservar, genera el JSON 'CREATE_BOOKING'.
     - Si pregunta disponibilidad, genera 'CHECK_AVAILABILITY'.
     - Si el usuario quiere cancelar un turno, genera 'CANCEL_BOOKING'.
+    - Si pide "turno fijo" (o similar), genera 'FIXED_TURN_REQUEST'. No prometas confirmación automática.
     - Para cancelar, DEBES confirmar la fecha y hora con el usuario antes de proceder si los datos no son claros.
+    
+    [AMBIGUEDADES - REGLAS OBLIGATORIAS]
+    - Frases como "¿tenés algo para hoy a las 17?" o "algo para las 17" significan CONSULTA DE DISPONIBILIDAD, no reserva confirmada.
+    - Si dicen solo una hora (ej: "a las 17"), asume fecha = hoy (${fechaISO}) y usa "time": "17:00" en CHECK_AVAILABILITY.
+    - Si dicen "hoy 17", también es CHECK_AVAILABILITY con date=${fechaISO} y time="17:00".
+    - En CHECK_AVAILABILITY, incluye "time" cuando el usuario mencione una hora puntual.
+    - Si faltan datos para interpretar fecha/hora, pregunta aclaración en "message".
 
     [SALIDA JSON REQUERIDA]
     
@@ -118,7 +151,8 @@ const getChatResponse = async (
     CASO 2: CONSULTAR DISPONIBILIDAD
     {
       "action": "CHECK_AVAILABILITY",
-      "date": "YYYY-MM-DD"
+      "date": "YYYY-MM-DD",
+      "time": "HH:mm" // opcional, solo si pidió una hora puntual
     }
 
     CASO 3: CANCELAR TURNO
@@ -128,7 +162,15 @@ const getChatResponse = async (
       "time": "HH:mm"
     }
 
-    CASO 4: CHARLA NORMAL
+    CASO 4: PEDIDO DE TURNO FIJO
+    {
+      "action": "FIXED_TURN_REQUEST",
+      "date": "YYYY-MM-DD", // opcional
+      "time": "HH:mm", // opcional
+      "message": "Resumen corto del pedido"
+    }
+
+    CASO 5: CHARLA NORMAL
     {
        "message": "Respuesta normal..."
     }

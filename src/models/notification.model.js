@@ -9,7 +9,13 @@ const notificationSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["new_booking", "payment_updated", "booking_cancelled", "system"],
+      enum: [
+        "new_booking",
+        "payment_updated",
+        "booking_cancelled",
+        "fixed_turn_request",
+        "system",
+      ],
       required: true,
     },
     title: {
