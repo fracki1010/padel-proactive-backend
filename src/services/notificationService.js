@@ -63,7 +63,7 @@ const sendAdminNotification = async (
     const uniquePhones = [...new Set(phones)];
 
     for (const phone of uniquePhones) {
-      console.log(phone);
+      console.log('admin',phone);
       try {
         // 3. Validar y obtener el ID correcto de WhatsApp
         const numberId = await client.getNumberId(phone);
