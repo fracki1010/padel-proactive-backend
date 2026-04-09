@@ -45,6 +45,19 @@ const bookingSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    attendanceConfirmationStatus: {
+      type: String,
+      enum: ["pending", "confirmed", "declined", "not_required"],
+      default: null,
+    },
+    attendanceConfirmationSentAt: {
+      type: Date,
+      default: null,
+    },
+    attendanceConfirmationRespondedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
