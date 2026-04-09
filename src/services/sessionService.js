@@ -1,5 +1,6 @@
 // Almacén en memoria (temporal)
 const sessions = {};
+const sessionMeta = {};
 
 const getHistory = (chatId) => {
     return sessions[chatId] || [];
@@ -19,6 +20,23 @@ const addMessage = (chatId, role, content) => {
 
 const clearHistory = (chatId) => {
     delete sessions[chatId];
+    delete sessionMeta[chatId];
 };
 
-module.exports = { getHistory, addMessage, clearHistory };
+const getMeta = (chatId) => {
+    return sessionMeta[chatId] || {};
+};
+
+const updateMeta = (chatId, partialMeta = {}) => {
+    sessionMeta[chatId] = {
+        ...getMeta(chatId),
+        ...partialMeta,
+    };
+    return sessionMeta[chatId];
+};
+
+const clearMeta = (chatId) => {
+    delete sessionMeta[chatId];
+};
+
+module.exports = { getHistory, addMessage, clearHistory, getMeta, updateMeta, clearMeta };

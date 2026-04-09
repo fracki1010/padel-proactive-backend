@@ -150,21 +150,172 @@ const inferFallbackAction = (rawText) => {
   return null;
 };
 
+const normalizeNameText = (value = "") =>
+  String(value)
+    .trim()
+    .replace(/\s+/g, " ");
+
+const isLikelyFullName = (value = "") => {
+  const clean = normalizeNameText(value);
+  const parts = clean.split(" ").filter(Boolean);
+  if (parts.length < 2) return false;
+  return parts.every((part) => /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}$/.test(part));
+};
+
+const isPlaceholderName = (value = "") => {
+  const normalized = normalizeSpanishText(value)
+    .replace(/[^a-z\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const placeholders = new Set([
+    "juan perez",
+    "cliente",
+    "cliente desconocido",
+    "nombre apellido",
+    "socio",
+    "invitado",
+  ]);
+  return placeholders.has(normalized);
+};
+
+const extractFullNameFromMessage = (rawMessage, aiCandidate = "") => {
+  const raw = String(rawMessage || "").trim();
+
+  const explicitPatterns = [
+    /(?:mi\s+nombre\s+es|soy)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,})/i,
+    /^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,})$/,
+  ];
+
+  for (const pattern of explicitPatterns) {
+    const match = raw.match(pattern);
+    if (!match?.[1]) continue;
+    const candidate = normalizeNameText(match[1]);
+    if (isLikelyFullName(candidate) && !isPlaceholderName(candidate)) {
+      return candidate;
+    }
+  }
+
+  const candidateFromAi = normalizeNameText(aiCandidate);
+  if (
+    candidateFromAi &&
+    isLikelyFullName(candidateFromAi) &&
+    !isPlaceholderName(candidateFromAi)
+  ) {
+    const normalizedMessage = normalizeSpanishText(raw)
+      .replace(/[^a-z\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const normalizedCandidate = normalizeSpanishText(candidateFromAi)
+      .replace(/[^a-z\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (normalizedMessage.includes(normalizedCandidate)) {
+      return candidateFromAi;
+    }
+  }
+
+  return null;
+};
+
+const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult) => {
+  if (bookingResult.success) {
+    return (
+      `✅ *¡Reserva Confirmada!* 🎾\n\n` +
+      `👤 *Jugador:* ${requestedClientName}\n` +
+      `📌 *Cancha:* ${bookingResult.data.courtName}\n` +
+      `📅 *Fecha:* ${getFormattedDate(requestedDate)}\n` +
+      `⏰ *Hora:* ${bookingResult.data.startTime} - ${bookingResult.data.endTime}\n` +
+      `💰 *Precio:* $${bookingResult.data.price}`
+    );
+  }
+
+  if (bookingResult.error === "BUSY") return "🚫 Ese turno ya está ocupado. ¿Te busco otro?";
+  if (bookingResult.error === "INVALID_TIME") return "⚠️ Ese horario no existe en la grilla.";
+  if (bookingResult.error === "PAST_TIME") {
+    return "⏰ Ese horario ya pasó o ya comenzó. Decime otro turno y te ayudo a reservarlo.";
+  }
+  if (bookingResult.error === "CANCHA_NOT_FOUND") {
+    return "⚠️ No encontré esa cancha. Decime el nombre exacto o te asigno la primera disponible.";
+  }
+  if (bookingResult.error === "SUSPENDED") {
+    return (
+      `🚫 *Tu cuenta está suspendida.*\n\n` +
+      `Has acumulado demasiadas cancelaciones y no podés reservar nuevos turnos por el momento.\n` +
+      `Contactá a la administración del club para regularizar tu situación.`
+    );
+  }
+  return "⚠️ Hubo un error técnico al reservar.";
+};
+
 const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
   try {
     const companyId = options.companyId || null;
     const client = options.client || null;
+    const sessionId = companyId ? `${companyId}:${chatId}` : chatId;
+    const sessionMeta = sessionService.getMeta(sessionId);
 
     // 1. Identificar Usuario
     const registeredUser = await userService.getUserByWhatsappId(chatId, {
       companyId,
     });
-    const knownName = registeredUser ? registeredUser.name : null;
+    let knownName = registeredUser ? registeredUser.name : null;
     const number = await getNumberByUser(chatId, client);
     console.log(`👤 Mensaje de: ${knownName || chatId}`);
     console.log(`📞 Número de WhatsApp: ${number}`);
 
-    const sessionId = companyId ? `${companyId}:${chatId}` : chatId;
+    // Si estábamos esperando nombre completo para una reserva pendiente, lo resolvemos antes de llamar a IA.
+    if (!knownName && sessionMeta.awaitingFullNameForBooking) {
+      const fullName = extractFullNameFromMessage(userMessage);
+      if (!fullName) {
+        const retryNamePrompt =
+          "Antes de continuar con tu turno, pasame tu *nombre completo* para registrarte (ej: *Juan Pérez*). Es para dejar el turno a tu nombre.";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", retryNamePrompt);
+        return retryNamePrompt;
+      }
+
+      const savedUser = await userService.saveOrUpdateUser(chatId, fullName, {
+        companyId,
+        client,
+      });
+      knownName = savedUser?.name || fullName;
+
+      const pendingBooking = sessionMeta.pendingBooking || null;
+      if (pendingBooking?.dateStr && pendingBooking?.timeStr) {
+        const bookingResult = await bookingService.createNewBooking({
+          companyId,
+          courtName: pendingBooking.courtName || "INDIFERENTE",
+          dateStr: pendingBooking.dateStr,
+          timeStr: pendingBooking.timeStr,
+          clientName: knownName,
+          clientPhone: number,
+        });
+
+        const replyText = buildBookingReplyText(
+          pendingBooking.dateStr,
+          knownName,
+          bookingResult,
+        );
+        sessionService.updateMeta(sessionId, {
+          awaitingFullNameForBooking: false,
+          pendingBooking: null,
+        });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", replyText);
+        return replyText;
+      }
+
+      const continueReply =
+        `Perfecto, ${knownName}. Ya te registré en el sistema ✅\n` +
+        "Ahora sí, decime fecha y hora del turno y te lo reservo.";
+      sessionService.updateMeta(sessionId, {
+        awaitingFullNameForBooking: false,
+        pendingBooking: null,
+      });
+      sessionService.addMessage(sessionId, "user", userMessage);
+      sessionService.addMessage(sessionId, "assistant", continueReply);
+      return continueReply;
+    }
 
     // 2. Historial
     sessionService.addMessage(sessionId, "user", userMessage);
@@ -191,7 +342,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const requestedDate = parsedData.date;
         const requestedTime = normalizeTimeString(parsedData.time);
         const requestedCourt = (parsedData.courtName || "INDIFERENTE").trim();
-        const requestedClientName = (parsedData.clientName || knownName || "").trim();
+        let requestedClientName = normalizeNameText(knownName || "");
 
         if (!requestedDate || !isValidIsoDate(requestedDate)) {
           replyText =
@@ -208,18 +359,38 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         }
 
         if (!requestedClientName) {
+          const extractedName = extractFullNameFromMessage(
+            userMessage,
+            parsedData.clientName,
+          );
+          if (extractedName) {
+            requestedClientName = extractedName;
+            await userService.saveOrUpdateUser(chatId, requestedClientName, {
+              companyId,
+              client,
+            });
+          }
+        }
+
+        if (!requestedClientName) {
+          sessionService.updateMeta(sessionId, {
+            awaitingFullNameForBooking: true,
+            pendingBooking: {
+              courtName: requestedCourt,
+              dateStr: requestedDate,
+              timeStr: requestedTime,
+            },
+          });
           replyText =
-            "Perfecto, antes de reservar pasame tu *nombre y apellido* (ej: Juan Pérez).";
+            "Antes de reservar, necesito tu *nombre completo* (ej: *Juan Pérez*). Te lo pido para dejar el turno a tu nombre y guardarte en la base de clientes.";
           sessionService.addMessage(sessionId, "assistant", replyText);
           return replyText;
         }
 
-        if (parsedData.clientName) {
-          await userService.saveOrUpdateUser(chatId, parsedData.clientName, {
-            companyId,
-            client,
-          });
-        }
+        sessionService.updateMeta(sessionId, {
+          awaitingFullNameForBooking: false,
+          pendingBooking: null,
+        });
 
         const bookingResult = await bookingService.createNewBooking({
           companyId,
@@ -230,32 +401,11 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           clientPhone: number,
         });
 
-        if (bookingResult.success) {
-          replyText =
-            `✅ *¡Reserva Confirmada!* 🎾\n\n` +
-            `👤 *Jugador:* ${requestedClientName}\n` +
-            `📌 *Cancha:* ${bookingResult.data.courtName}\n` +
-            `📅 *Fecha:* ${getFormattedDate(requestedDate)}\n` +
-            `⏰ *Hora:* ${bookingResult.data.startTime} - ${bookingResult.data.endTime}\n` +
-            `💰 *Precio:* $${bookingResult.data.price}`;
-        } else {
-          if (bookingResult.error === "BUSY")
-            replyText = "🚫 Ese turno ya está ocupado. ¿Te busco otro?";
-          else if (bookingResult.error === "INVALID_TIME")
-            replyText = "⚠️ Ese horario no existe en la grilla.";
-          else if (bookingResult.error === "PAST_TIME")
-            replyText =
-              "⏰ Ese horario ya pasó o ya comenzó. Decime otro turno y te ayudo a reservarlo.";
-          else if (bookingResult.error === "CANCHA_NOT_FOUND")
-            replyText =
-              "⚠️ No encontré esa cancha. Decime el nombre exacto o te asigno la primera disponible.";
-          else if (bookingResult.error === "SUSPENDED")
-            replyText =
-              `🚫 *Tu cuenta está suspendida.*\n\n` +
-              `Has acumulado demasiadas cancelaciones y no podés reservar nuevos turnos por el momento.\n` +
-              `Contactá a la administración del club para regularizar tu situación.`;
-          else replyText = "⚠️ Hubo un error técnico al reservar.";
-        }
+        replyText = buildBookingReplyText(
+          requestedDate,
+          requestedClientName,
+          bookingResult,
+        );
       }
 
       // CASO B: DISPONIBILIDAD

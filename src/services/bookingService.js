@@ -4,6 +4,8 @@ const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
 const User = require("../models/user.model");
 const { sendAdminNotification } = require("./notificationService");
+const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
+const { getPenaltyLimit } = require("./appConfig.service");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
 
@@ -174,7 +176,7 @@ const createNewBooking = async ({
     await sendAdminNotification(
       "new_booking",
       "Nuevo Turno (WhatsApp)",
-      `Cliente: ${newBooking.clientName}\nFecha: ${newBooking.date.toLocaleDateString()}\nHora: ${slot.startTime}\nCancha: ${selectedCourt.name}`,
+      `Cliente: ${newBooking.clientName}\nFecha: ${formatBookingDateShort(newBooking.date)}\nHora: ${slot.startTime}\nCancha: ${selectedCourt.name}`,
       { bookingId: newBooking._id, companyId },
       { companyId },
     );
@@ -290,7 +292,7 @@ const cancelBooking = async ({ companyId = null, clientPhone, dateStr, timeStr }
     await booking.save();
 
     // 4. Penalizar al usuario
-    const PENALTY_LIMIT = 2;
+    const PENALTY_LIMIT = await getPenaltyLimit(companyId);
     const user = await User.findOne({ ...scope, phoneNumber: clientPhone });
     let newPenalties = 0;
     let nowSuspended = false;
@@ -310,7 +312,7 @@ const cancelBooking = async ({ companyId = null, clientPhone, dateStr, timeStr }
     await sendAdminNotification(
       "booking_cancelled",
       `Turno Cancelado${suspendedNote}`,
-      `Cliente: ${booking.clientName}\nTeléfono: ${clientPhone}\nFecha: ${booking.date.toLocaleDateString()}\nHora: ${slot.startTime}\nPenalizaciones: ${newPenalties}/${PENALTY_LIMIT}`,
+      `Cliente: ${booking.clientName}\nTeléfono: ${clientPhone}\nFecha: ${formatBookingDateShort(booking.date)}\nHora: ${slot.startTime}\nPenalizaciones: ${newPenalties}/${PENALTY_LIMIT}`,
       { bookingId: booking._id, companyId },
       { companyId },
     );
