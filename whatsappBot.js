@@ -4,6 +4,9 @@ const app = require("./src/app");
 const {
   syncAllWhatsappFromConfig,
 } = require("./src/services/whatsappControl.service");
+const {
+  startAttendanceConfirmationMonitor,
+} = require("./src/services/attendanceConfirmation.service");
 
 const PORT = process.env.PORT || 3000;
 
@@ -20,6 +23,8 @@ connectDB()
     console.log(
       "✅ Estado de WhatsApp sincronizado desde configuración (multiempresa).",
     );
+    startAttendanceConfirmationMonitor();
+    console.log("✅ Monitor de confirmación de asistencia iniciado.");
   })
   .catch((err) => {
     console.error("❌ Error al conectar MongoDB:", err);

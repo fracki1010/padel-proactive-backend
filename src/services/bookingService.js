@@ -7,6 +7,7 @@ const { sendAdminNotification } = require("./notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const { getPenaltyLimit } = require("./appConfig.service");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
+const DAILY_BOOKING_LIMIT_PER_CLIENT = 3;
 const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
 
 const getDatePartsInTimezone = (date, timeZone = TIMEZONE) => {
@@ -91,6 +92,24 @@ const createNewBooking = async ({
     const slot = await TimeSlot.findOne({ ...scope, startTime: timeStr });
     if (!slot) {
       return { success: false, error: "INVALID_TIME" }; // "Ese horario no existe"
+    }
+
+    // 2.0 Límite diario por cliente: máximo 3 reservas activas por día
+    const clientDailyBookingsCount = await Booking.countDocuments({
+      ...scope,
+      clientPhone,
+      date: bookingDate,
+      status: { $ne: "cancelado" },
+    });
+
+    if (clientDailyBookingsCount >= DAILY_BOOKING_LIMIT_PER_CLIENT) {
+      return {
+        success: false,
+        error: "DAILY_LIMIT_REACHED",
+        data: {
+          limit: DAILY_BOOKING_LIMIT_PER_CLIENT,
+        },
+      };
     }
 
     // 2.1 Evitar duplicados del mismo cliente en la misma fecha/hora

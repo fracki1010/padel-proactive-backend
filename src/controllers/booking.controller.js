@@ -4,6 +4,7 @@ const Court = require("../models/court.model");
 const User = require("../models/user.model");
 const { sendAdminNotification } = require("../services/notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
+const DAILY_BOOKING_LIMIT_PER_CLIENT = 3;
 
 const resolveCompanyId = (req) => {
   if (req.user?.role === "super_admin") {
@@ -168,6 +169,27 @@ const createBooking = async (req, res) => {
     // C. Preparar fecha exacta
     const bookingDate = new Date(date);
     bookingDate.setUTCHours(0, 0, 0, 0);
+
+    const normalizedClientPhone = String(clientPhone || "").trim();
+    const isMaintenanceBooking =
+      normalizedClientPhone === "" || normalizedClientPhone === "MANTENIMIENTO";
+
+    // C.1 Límite diario: máximo 3 reservas activas por cliente
+    if (!isMaintenanceBooking && status !== "suspendido") {
+      const dailyBookingsCount = await Booking.countDocuments({
+        ...companyScope(req, companyId),
+        clientPhone: normalizedClientPhone,
+        date: bookingDate,
+        status: { $ne: "cancelado" },
+      });
+
+      if (dailyBookingsCount >= DAILY_BOOKING_LIMIT_PER_CLIENT) {
+        return res.status(409).json({
+          success: false,
+          error: `Este cliente ya tiene ${DAILY_BOOKING_LIMIT_PER_CLIENT} reservas activas para ese día.`,
+        });
+      }
+    }
 
     // D. Validar Disponibilidad
     const existingBooking = await Booking.findOne({

@@ -2,6 +2,8 @@ const groqService = require("../services/groqService");
 const sessionService = require("../services/sessionService");
 const bookingService = require("../services/bookingService");
 const userService = require("../services/userService");
+const Booking = require("../models/booking.model");
+const User = require("../models/user.model");
 const { sendAdminNotification } = require("../services/notificationService");
 const { getFormattedDate } = require("../utils/getFormattedDate");
 const { getNumberByUser } = require("../utils/getNumberByUser");
@@ -355,11 +357,27 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
       `Si querés otra cancha u otro horario, decime y te ayudo.`
     );
   }
+  if (bookingResult.error === "DAILY_LIMIT_REACHED") {
+    return `⚠️ Ya alcanzaste el límite de 3 reservas para el ${getFormattedDate(requestedDate)}.`;
+  }
   return "⚠️ Hubo un error técnico al reservar.";
 };
 
 const buildSecondBookingConfirmationText = () =>
   "Ya tenés una reserva activa. ¿Querés reservar *otro turno*? Respondé *sí* o *no*.";
+
+const parseAttendanceAnswer = (value = "") => {
+  const text = normalizeLooseText(value);
+  const yesSet = new Set(["1", "si asisto"]);
+  const noSet = new Set(["2", "no asisto"]);
+
+  if (yesSet.has(text)) return "YES";
+  if (noSet.has(text)) return "NO";
+  return null;
+};
+
+const buildAttendanceOptionsOnlyReply = () =>
+  "Para este turno solo puedo recibir una opción:\n1) SI ASISTO\n2) NO ASISTO";
 
 const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
   try {
@@ -379,6 +397,110 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     const number = await getNumberByUser(chatId, client);
     console.log(`👤 Mensaje de: ${knownName || chatId}`);
     console.log(`📞 Número de WhatsApp: ${number}`);
+
+    if (sessionMeta.awaitingAttendanceConfirmation && sessionMeta.attendanceBookingId) {
+      const attendanceBooking = await Booking.findOne({
+        _id: sessionMeta.attendanceBookingId,
+        companyId: companyId || null,
+      }).populate("timeSlot");
+
+      if (
+        !attendanceBooking ||
+        attendanceBooking.status === "cancelado" ||
+        attendanceBooking.attendanceConfirmationStatus !== "pending"
+      ) {
+        sessionService.updateMeta(sessionId, {
+          awaitingAttendanceConfirmation: false,
+          attendanceBookingId: null,
+        });
+      } else {
+        const attendanceAnswer = parseAttendanceAnswer(userMessage);
+        if (!attendanceAnswer) {
+          const optionsOnlyReply = buildAttendanceOptionsOnlyReply();
+          sessionService.addMessage(sessionId, "user", userMessage);
+          sessionService.addMessage(sessionId, "assistant", optionsOnlyReply);
+          return optionsOnlyReply;
+        }
+
+        if (attendanceAnswer === "YES") {
+          await Booking.updateOne(
+            { _id: attendanceBooking._id },
+            {
+              $set: {
+                attendanceConfirmationStatus: "confirmed",
+                attendanceConfirmationRespondedAt: new Date(),
+              },
+            },
+          );
+
+          const updatedUser = await User.findOneAndUpdate(
+            {
+              companyId: companyId || null,
+              phoneNumber: attendanceBooking.clientPhone,
+            },
+            {
+              $inc: { attendanceConfirmedCount: 1 },
+            },
+            { new: true },
+          );
+
+          const confirmedCount = updatedUser?.attendanceConfirmedCount || 0;
+          const attendanceOkReply =
+            confirmedCount >= 3
+              ? "Perfecto, gracias por confirmar ✅ Ya te marcamos como cliente cumplidor, no te vamos a pedir esta confirmación previa en próximos turnos."
+              : "Perfecto, gracias por confirmar ✅ Te esperamos en el club.";
+
+          sessionService.updateMeta(sessionId, {
+            awaitingAttendanceConfirmation: false,
+            attendanceBookingId: null,
+          });
+          sessionService.addMessage(sessionId, "user", userMessage);
+          sessionService.addMessage(sessionId, "assistant", attendanceOkReply);
+          return attendanceOkReply;
+        }
+
+        const bookingIsoDate = new Date(attendanceBooking.date)
+          .toISOString()
+          .slice(0, 10);
+        const bookingTime = attendanceBooking.timeSlot?.startTime;
+        const cancelResult = await bookingService.cancelBooking({
+          companyId,
+          clientPhone: number,
+          dateStr: bookingIsoDate,
+          timeStr: bookingTime,
+        });
+
+        await Booking.updateOne(
+          { _id: attendanceBooking._id },
+          {
+            $set: {
+              attendanceConfirmationStatus: "declined",
+              attendanceConfirmationRespondedAt: new Date(),
+            },
+          },
+        );
+
+        sessionService.updateMeta(sessionId, {
+          awaitingAttendanceConfirmation: false,
+          attendanceBookingId: null,
+        });
+
+        let declinedReply = "Turno cancelado correctamente. Se aplicó la penalización correspondiente.";
+        if (cancelResult?.success) {
+          const penalties = cancelResult.penalties || 0;
+          const limit = cancelResult.penaltyLimit || 2;
+          declinedReply =
+            `Turno cancelado correctamente ❌\n` +
+            `Penalización aplicada: ${penalties}/${limit}.`;
+        } else if (cancelResult?.error === "NOT_FOUND") {
+          declinedReply = "No encontré un turno activo para cancelar, probablemente ya se canceló antes.";
+        }
+
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", declinedReply);
+        return declinedReply;
+      }
+    }
 
     if (
       sessionMeta.awaitingExtraBookingConfirmation &&
