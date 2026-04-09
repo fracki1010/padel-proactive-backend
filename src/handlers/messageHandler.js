@@ -652,8 +652,110 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       // SI ES UN JSON VÁLIDO (Acción o Mensaje)
       // ==========================================
 
+      // CASO 0: MODO DEGRADADO (sin IA por rate limit)
+      if (parsedData.action === "SERVICE_DEGRADED") {
+        const retryText = parsedData.retryAfterText || "unos minutos";
+        const fallback = inferFallbackAction(userMessage);
+
+        if (fallback?.action === "CHECK_AVAILABILITY") {
+          const requestedDate = fallback.date || getTodayIsoArgentina();
+          const requestedTime = normalizeTimeString(fallback.time);
+          const availability = await bookingService.getAvailableSlots(
+            requestedDate,
+            { companyId },
+          );
+
+          if (availability.success && availability.slots.length > 0) {
+            if (requestedTime) {
+              const exactMatch = availability.slots.find((s) => s.time === requestedTime);
+              if (exactMatch) {
+                sessionService.updateMeta(sessionId, {
+                  pendingBookingOffer: {
+                    courtName: "INDIFERENTE",
+                    dateStr: requestedDate,
+                    timeStr: requestedTime,
+                    createdAt: Date.now(),
+                  },
+                });
+                replyText =
+                  `🟡 *Modo básico activo* (IA con límite, aprox ${retryText}).\n` +
+                  `✅ Tengo disponibilidad para *${getFormattedDate(requestedDate)} a las ${requestedTime}*.\n` +
+                  `💰 Precio: $${exactMatch.price}\n\n` +
+                  `_¿Te lo reservo?_`;
+              } else {
+                const alternatives = availability.slots.slice(0, 5);
+                const list = alternatives.map((s) => `• ${s.time} ($${s.price})`).join("\n");
+                sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
+                replyText =
+                  `🟡 *Modo básico activo* (IA con límite, aprox ${retryText}).\n` +
+                  `🚫 No me queda disponible *${requestedTime}* para el ${getFormattedDate(requestedDate)}.\n\n` +
+                  (alternatives.length
+                    ? `Te puedo ofrecer estos horarios:\n${list}\n\n_¿Cuál te reservo?_`
+                    : "No me quedan horarios para esa fecha.");
+              }
+            } else {
+              const lista = availability.slots
+                .map((s) => `• ${s.time} ($${s.price})`)
+                .join("\n");
+              sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
+              replyText =
+                `🟡 *Modo básico activo* (IA con límite, aprox ${retryText}).\n` +
+                `📅 *Libres para el ${getFormattedDate(requestedDate)}:*\n\n${lista}\n\n_¿Cuál te reservo?_`;
+            }
+          } else {
+            sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
+            replyText = requestedTime
+              ? `🟡 Modo básico activo. No tengo disponibilidad para el ${getFormattedDate(requestedDate)} a las ${requestedTime}.`
+              : "🟡 Modo básico activo. Todo ocupado para esa fecha.";
+          }
+        } else if (hasDirectBookingIntent(userMessage)) {
+          const requestedDate = extractDateFromMessage(userMessage) || getTodayIsoArgentina();
+          const requestedTime = normalizeTimeString(extractTimeFromMessage(userMessage));
+
+          if (!requestedTime) {
+            replyText =
+              `🟡 *Modo básico activo* (IA con límite, aprox ${retryText}). ` +
+              "Para reservar necesito la hora exacta (ej: 19:30).";
+          } else {
+            const availability = await bookingService.getAvailableSlots(
+              requestedDate,
+              { companyId },
+            );
+            const exactMatch =
+              availability.success &&
+              availability.slots.find((s) => s.time === requestedTime);
+
+            if (exactMatch) {
+              sessionService.updateMeta(sessionId, {
+                pendingBookingOffer: {
+                  courtName: "INDIFERENTE",
+                  dateStr: requestedDate,
+                  timeStr: requestedTime,
+                  createdAt: Date.now(),
+                },
+              });
+              replyText =
+                `🟡 *Modo básico activo* (IA con límite, aprox ${retryText}).\n` +
+                `✅ Tengo disponibilidad para *${getFormattedDate(requestedDate)} a las ${requestedTime}*.\n` +
+                `💰 Precio: $${exactMatch.price}\n\n` +
+                `_¿Te lo reservo?_`;
+            } else {
+              sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
+              replyText =
+                `🟡 *Modo básico activo* (IA con límite, aprox ${retryText}).\n` +
+                `🚫 No encontré disponibilidad para *${getFormattedDate(requestedDate)} a las ${requestedTime}*.` +
+                "\nDecime otro horario y te lo reviso.";
+            }
+          }
+        } else {
+          replyText =
+            parsedData.message ||
+            `🟡 Modo básico activo por límite diario de IA. Volvé a intentar en ${retryText}.`;
+        }
+      }
+
       // CASO A: RESERVAR
-      if (parsedData.action === "CREATE_BOOKING") {
+      else if (parsedData.action === "CREATE_BOOKING") {
         const requestedDate = parsedData.date;
         const requestedTime = normalizeTimeString(parsedData.time);
         const requestedCourt = (parsedData.courtName || "INDIFERENTE").trim();

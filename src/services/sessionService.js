@@ -12,9 +12,9 @@ const addMessage = (chatId, role, content) => {
     }
     sessions[chatId].push({ role, content });
 
-    // Mantener solo los últimos 12 mensajes para no saturar a la IA
-    if (sessions[chatId].length > 12) {
-        sessions[chatId] = sessions[chatId].slice(-12);
+    // Mantener solo los últimos 8 mensajes para bajar consumo de tokens
+    if (sessions[chatId].length > 8) {
+        sessions[chatId] = sessions[chatId].slice(-8);
     }
 };
 
