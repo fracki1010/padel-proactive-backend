@@ -93,6 +93,27 @@ const createNewBooking = async ({
       return { success: false, error: "INVALID_TIME" }; // "Ese horario no existe"
     }
 
+    // 2.1 Evitar duplicados del mismo cliente en la misma fecha/hora
+    const existingClientBooking = await Booking.findOne({
+      ...scope,
+      clientPhone,
+      date: bookingDate,
+      timeSlot: slot._id,
+      status: { $ne: "cancelado" },
+    });
+
+    if (existingClientBooking) {
+      return {
+        success: false,
+        error: "ALREADY_BOOKED",
+        data: {
+          bookingId: existingClientBooking._id,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+        },
+      };
+    }
+
     let selectedCourt = null;
 
     // =================================================================
@@ -199,6 +220,26 @@ const createNewBooking = async ({
     }
     console.error("Error bookingService:", error);
     return { success: false, error: "INTERNAL_ERROR" };
+  }
+};
+
+const hasActiveBookingForClient = async ({ companyId = null, clientPhone }) => {
+  try {
+    const scope = buildCompanyFilter(companyId);
+    const todayStr = getDatePartsInTimezone(new Date());
+    const todayDate = dateStringToUtcMidnight(todayStr);
+
+    const existing = await Booking.findOne({
+      ...scope,
+      clientPhone,
+      status: { $ne: "cancelado" },
+      date: { $gte: todayDate },
+    }).lean();
+
+    return Boolean(existing);
+  } catch (error) {
+    console.error("Error verificando reservas activas del cliente:", error);
+    return false;
   }
 };
 
@@ -334,4 +375,9 @@ const cancelBooking = async ({ companyId = null, clientPhone, dateStr, timeStr }
   }
 };
 
-module.exports = { createNewBooking, getAvailableSlots, cancelBooking };
+module.exports = {
+  createNewBooking,
+  getAvailableSlots,
+  cancelBooking,
+  hasActiveBookingForClient,
+};
