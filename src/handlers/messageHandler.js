@@ -178,8 +178,42 @@ const isPlaceholderName = (value = "") => {
   return placeholders.has(normalized);
 };
 
+const isNonNameReply = (value = "") => {
+  const normalized = normalizeSpanishText(value)
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return true;
+
+  const blockedPhrases = [
+    "si",
+    "si por favor",
+    "por favor",
+    "dale",
+    "ok",
+    "okay",
+    "oka",
+    "listo",
+    "de una",
+    "confirmo",
+    "confirmado",
+    "reservalo",
+    "reserva",
+    "hazlo",
+    "hace la reserva",
+    "quiero reservar",
+    "quiero una cancha",
+  ];
+
+  if (blockedPhrases.includes(normalized)) return true;
+
+  return /^(si|dale|ok|listo|confirmo)\b/.test(normalized);
+};
+
 const extractFullNameFromMessage = (rawMessage, aiCandidate = "") => {
   const raw = String(rawMessage || "").trim();
+  if (isNonNameReply(raw)) return null;
 
   const explicitPatterns = [
     /(?:mi\s+nombre\s+es|soy)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,})/i,
@@ -199,7 +233,8 @@ const extractFullNameFromMessage = (rawMessage, aiCandidate = "") => {
   if (
     candidateFromAi &&
     isLikelyFullName(candidateFromAi) &&
-    !isPlaceholderName(candidateFromAi)
+    !isPlaceholderName(candidateFromAi) &&
+    !isNonNameReply(candidateFromAi)
   ) {
     const normalizedMessage = normalizeSpanishText(raw)
       .replace(/[^a-z\s]/g, " ")
@@ -216,6 +251,11 @@ const extractFullNameFromMessage = (rawMessage, aiCandidate = "") => {
 
   return null;
 };
+
+const isValidClientName = (value = "") =>
+  isLikelyFullName(value) &&
+  !isPlaceholderName(value) &&
+  !isNonNameReply(value);
 
 const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult) => {
   if (bookingResult.success) {
@@ -259,6 +299,9 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       companyId,
     });
     let knownName = registeredUser ? registeredUser.name : null;
+    if (knownName && !isValidClientName(knownName)) {
+      knownName = null;
+    }
     const number = await getNumberByUser(chatId, client);
     console.log(`👤 Mensaje de: ${knownName || chatId}`);
     console.log(`📞 Número de WhatsApp: ${number}`);
@@ -266,7 +309,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     // Si estábamos esperando nombre completo para una reserva pendiente, lo resolvemos antes de llamar a IA.
     if (!knownName && sessionMeta.awaitingFullNameForBooking) {
       const fullName = extractFullNameFromMessage(userMessage);
-      if (!fullName) {
+      if (!fullName || !isValidClientName(fullName)) {
         const retryNamePrompt =
           "Antes de continuar con tu turno, pasame tu *nombre completo* para registrarte (ej: *Juan Pérez*). Es para dejar el turno a tu nombre.";
         sessionService.addMessage(sessionId, "user", userMessage);
@@ -358,12 +401,12 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           return replyText;
         }
 
-        if (!requestedClientName) {
+        if (!requestedClientName || !isValidClientName(requestedClientName)) {
           const extractedName = extractFullNameFromMessage(
             userMessage,
             parsedData.clientName,
           );
-          if (extractedName) {
+          if (extractedName && isValidClientName(extractedName)) {
             requestedClientName = extractedName;
             await userService.saveOrUpdateUser(chatId, requestedClientName, {
               companyId,
@@ -372,7 +415,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           }
         }
 
-        if (!requestedClientName) {
+        if (!requestedClientName || !isValidClientName(requestedClientName)) {
           sessionService.updateMeta(sessionId, {
             awaitingFullNameForBooking: true,
             pendingBooking: {
