@@ -3,6 +3,7 @@ const TimeSlot = require("../models/timeSlot.model");
 const Court = require("../models/court.model");
 const User = require("../models/user.model");
 const { sendAdminNotification } = require("../services/notificationService");
+const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 
 const resolveCompanyId = (req) => {
   if (req.user?.role === "super_admin") {
@@ -204,7 +205,7 @@ const createBooking = async (req, res) => {
       await sendAdminNotification(
         "new_booking",
         "Nuevo Turno Reservado",
-        `Cliente: ${newBooking.clientName}\nFecha: ${newBooking.date.toLocaleDateString()}\nHora: ${newBooking.timeSlot.startTime}\nCancha: ${newBooking.court.name}`,
+        `Cliente: ${newBooking.clientName}\nFecha: ${formatBookingDateShort(newBooking.date)}\nHora: ${newBooking.timeSlot.startTime}\nCancha: ${newBooking.court.name}`,
         { bookingId: newBooking._id, companyId },
         { companyId },
       );

@@ -17,6 +17,11 @@ const appConfigSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    penaltyLimit: {
+      type: Number,
+      default: 2,
+      min: 1,
+    },
   },
   {
     timestamps: true,
