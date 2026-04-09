@@ -654,17 +654,30 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
       // CASO A: RESERVAR
       if (parsedData.action === "CREATE_BOOKING") {
+        const requestedDate = parsedData.date;
+        const requestedTime = normalizeTimeString(parsedData.time);
+        const requestedCourt = (parsedData.courtName || "INDIFERENTE").trim();
         const canCreateBookingFromMessage = hasDirectBookingIntent(userMessage);
         if (!canCreateBookingFromMessage) {
+          if (
+            requestedDate &&
+            isValidIsoDate(requestedDate) &&
+            requestedTime
+          ) {
+            sessionService.updateMeta(sessionId, {
+              pendingBookingOffer: {
+                courtName: requestedCourt,
+                dateStr: requestedDate,
+                timeStr: requestedTime,
+                createdAt: Date.now(),
+              },
+            });
+          }
           replyText =
             "Si querés que lo reserve, decime *\"reservalo\"* o *\"confirmo\"* y te lo tomo al instante.";
           sessionService.addMessage(sessionId, "assistant", replyText);
           return replyText;
         }
-
-        const requestedDate = parsedData.date;
-        const requestedTime = normalizeTimeString(parsedData.time);
-        const requestedCourt = (parsedData.courtName || "INDIFERENTE").trim();
         let requestedClientName = normalizeNameText(knownName || "");
 
         if (!requestedDate || !isValidIsoDate(requestedDate)) {
