@@ -188,10 +188,34 @@ const isAffirmativeBookingReply = (value = "") => {
   return /^(si|dale|ok|confirmo|listo)\b/.test(text);
 };
 
+const isNegativeBookingReply = (value = "") => {
+  const text = normalizeLooseText(value);
+  if (!text) return false;
+
+  const negatives = new Set([
+    "no",
+    "mejor no",
+    "no gracias",
+    "cancelar",
+    "dejalo",
+    "deja",
+    "olvidate",
+  ]);
+
+  if (negatives.has(text)) return true;
+  return /^(no|cancelar|dejalo)\b/.test(text);
+};
+
 const hasDirectBookingIntent = (value = "") => {
   const text = normalizeLooseText(value);
   if (!text) return false;
-  return /(reserv|quiero.*turno|quiero.*cancha|anotame|agendame|confirma.*turno)/.test(
+  const referencesPastBooking =
+    /(ya me hizo la reserva|ya me habia hecho la reserva|ya reserve|ya tenia reserva|ya esta reservado)/.test(
+      text,
+    );
+  if (referencesPastBooking) return false;
+
+  return /(reservar|reservalo|reservalo|quiero reservar|anotame|agendame|confirma.*turno|haceme la reserva|hace la reserva)/.test(
     text,
   );
 };
@@ -325,8 +349,17 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
       `Contactá a la administración del club para regularizar tu situación.`
     );
   }
+  if (bookingResult.error === "ALREADY_BOOKED") {
+    return (
+      `ℹ️ Ya tenés una reserva activa para el *${getFormattedDate(requestedDate)}* a las *${bookingResult.data?.startTime || "ese horario"}*.\n\n` +
+      `Si querés otra cancha u otro horario, decime y te ayudo.`
+    );
+  }
   return "⚠️ Hubo un error técnico al reservar.";
 };
+
+const buildSecondBookingConfirmationText = () =>
+  "Ya tenés una reserva activa. ¿Querés reservar *otro turno*? Respondé *sí* o *no*.";
 
 const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
   try {
@@ -346,6 +379,84 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     const number = await getNumberByUser(chatId, client);
     console.log(`👤 Mensaje de: ${knownName || chatId}`);
     console.log(`📞 Número de WhatsApp: ${number}`);
+
+    if (
+      sessionMeta.awaitingExtraBookingConfirmation &&
+      sessionMeta.pendingBooking?.dateStr &&
+      sessionMeta.pendingBooking?.timeStr
+    ) {
+      if (
+        isAffirmativeBookingReply(userMessage) ||
+        hasDirectBookingIntent(userMessage)
+      ) {
+        const pendingBooking = sessionMeta.pendingBooking;
+        const pendingClientName = normalizeNameText(
+          sessionMeta.pendingBookingClientName || knownName || "",
+        );
+
+        if (!pendingClientName || !isValidClientName(pendingClientName)) {
+          sessionService.updateMeta(sessionId, {
+            awaitingExtraBookingConfirmation: false,
+            pendingBooking: {
+              courtName: pendingBooking.courtName || "INDIFERENTE",
+              dateStr: pendingBooking.dateStr,
+              timeStr: pendingBooking.timeStr,
+            },
+            pendingBookingClientName: null,
+            awaitingFullNameForBooking: true,
+            pendingBookingOffer: null,
+          });
+          const needNameReply =
+            "Antes de reservar, necesito tu *nombre completo* (ej: *Juan Pérez*).";
+          sessionService.addMessage(sessionId, "user", userMessage);
+          sessionService.addMessage(sessionId, "assistant", needNameReply);
+          return needNameReply;
+        }
+
+        const bookingResult = await bookingService.createNewBooking({
+          companyId,
+          courtName: pendingBooking.courtName || "INDIFERENTE",
+          dateStr: pendingBooking.dateStr,
+          timeStr: pendingBooking.timeStr,
+          clientName: pendingClientName,
+          clientPhone: number,
+        });
+
+        const bookingReply = buildBookingReplyText(
+          pendingBooking.dateStr,
+          pendingClientName,
+          bookingResult,
+        );
+        sessionService.updateMeta(sessionId, {
+          awaitingExtraBookingConfirmation: false,
+          pendingBooking: null,
+          pendingBookingClientName: null,
+          pendingBookingOffer: null,
+          awaitingFullNameForBooking: false,
+        });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", bookingReply);
+        return bookingReply;
+      }
+
+      if (isNegativeBookingReply(userMessage)) {
+        sessionService.updateMeta(sessionId, {
+          awaitingExtraBookingConfirmation: false,
+          pendingBooking: null,
+          pendingBookingClientName: null,
+        });
+        const cancelExtraBookingReply =
+          "Perfecto, no reservo otro turno. Si querés, te ayudo con otra cosa.";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", cancelExtraBookingReply);
+        return cancelExtraBookingReply;
+      }
+
+      const askAgainReply = "¿Querés reservar otro turno? Respondé *sí* o *no*.";
+      sessionService.addMessage(sessionId, "user", userMessage);
+      sessionService.addMessage(sessionId, "assistant", askAgainReply);
+      return askAgainReply;
+    }
 
     // Si hay una oferta de reserva pendiente, solo se confirma con respuesta afirmativa.
     // Si cambió de tema, se limpia para evitar reservas accidentales en mensajes futuros.
@@ -391,6 +502,28 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           return needNameReply;
         }
 
+        const hasActiveBooking = await bookingService.hasActiveBookingForClient({
+          companyId,
+          clientPhone: number,
+        });
+        if (hasActiveBooking) {
+          sessionService.updateMeta(sessionId, {
+            awaitingExtraBookingConfirmation: true,
+            pendingBooking: {
+              courtName: pendingBookingOffer.courtName || "INDIFERENTE",
+              dateStr: pendingBookingOffer.dateStr,
+              timeStr: pendingBookingOffer.timeStr,
+            },
+            pendingBookingClientName: requestedClientName,
+            pendingBookingOffer: null,
+            awaitingFullNameForBooking: false,
+          });
+          const askExtraBookingReply = buildSecondBookingConfirmationText();
+          sessionService.addMessage(sessionId, "user", userMessage);
+          sessionService.addMessage(sessionId, "assistant", askExtraBookingReply);
+          return askExtraBookingReply;
+        }
+
         const bookingResult = await bookingService.createNewBooking({
           companyId,
           courtName: pendingBookingOffer.courtName || "INDIFERENTE",
@@ -409,6 +542,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           pendingBookingOffer: null,
           awaitingFullNameForBooking: false,
           pendingBooking: null,
+          awaitingExtraBookingConfirmation: false,
+          pendingBookingClientName: null,
         });
         sessionService.addMessage(sessionId, "user", userMessage);
         sessionService.addMessage(sessionId, "assistant", bookingReply);
@@ -437,6 +572,27 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
       const pendingBooking = sessionMeta.pendingBooking || null;
       if (pendingBooking?.dateStr && pendingBooking?.timeStr) {
+        const hasActiveBooking = await bookingService.hasActiveBookingForClient({
+          companyId,
+          clientPhone: number,
+        });
+        if (hasActiveBooking) {
+          sessionService.updateMeta(sessionId, {
+            awaitingExtraBookingConfirmation: true,
+            pendingBooking: {
+              courtName: pendingBooking.courtName || "INDIFERENTE",
+              dateStr: pendingBooking.dateStr,
+              timeStr: pendingBooking.timeStr,
+            },
+            pendingBookingClientName: knownName,
+            awaitingFullNameForBooking: false,
+          });
+          const askExtraBookingReply = buildSecondBookingConfirmationText();
+          sessionService.addMessage(sessionId, "user", userMessage);
+          sessionService.addMessage(sessionId, "assistant", askExtraBookingReply);
+          return askExtraBookingReply;
+        }
+
         const bookingResult = await bookingService.createNewBooking({
           companyId,
           courtName: pendingBooking.courtName || "INDIFERENTE",
@@ -454,6 +610,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         sessionService.updateMeta(sessionId, {
           awaitingFullNameForBooking: false,
           pendingBooking: null,
+          awaitingExtraBookingConfirmation: false,
+          pendingBookingClientName: null,
         });
         sessionService.addMessage(sessionId, "user", userMessage);
         sessionService.addMessage(sessionId, "assistant", replyText);
@@ -463,10 +621,12 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       const continueReply =
         `Perfecto, ${knownName}. Ya te registré en el sistema ✅\n` +
         "Ahora sí, decime fecha y hora del turno y te lo reservo.";
-      sessionService.updateMeta(sessionId, {
-        awaitingFullNameForBooking: false,
-        pendingBooking: null,
-      });
+        sessionService.updateMeta(sessionId, {
+          awaitingFullNameForBooking: false,
+          pendingBooking: null,
+          awaitingExtraBookingConfirmation: false,
+          pendingBookingClientName: null,
+        });
       sessionService.addMessage(sessionId, "user", userMessage);
       sessionService.addMessage(sessionId, "assistant", continueReply);
       return continueReply;
@@ -555,6 +715,27 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           pendingBooking: null,
           pendingBookingOffer: null,
         });
+
+        const hasActiveBooking = await bookingService.hasActiveBookingForClient({
+          companyId,
+          clientPhone: number,
+        });
+        if (hasActiveBooking) {
+          sessionService.updateMeta(sessionId, {
+            awaitingExtraBookingConfirmation: true,
+            pendingBooking: {
+              courtName: requestedCourt,
+              dateStr: requestedDate,
+              timeStr: requestedTime,
+            },
+            pendingBookingClientName: requestedClientName,
+            pendingBookingOffer: null,
+            awaitingFullNameForBooking: false,
+          });
+          replyText = buildSecondBookingConfirmationText();
+          sessionService.addMessage(sessionId, "assistant", replyText);
+          return replyText;
+        }
 
         const bookingResult = await bookingService.createNewBooking({
           companyId,
