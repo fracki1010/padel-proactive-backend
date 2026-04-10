@@ -181,6 +181,9 @@ const getChatResponse = async (
     - Si el usuario quiere cancelar un turno, genera 'CANCEL_BOOKING'.
     - Si pide "turno fijo" (o similar), genera 'FIXED_TURN_REQUEST'. No prometas confirmación automática.
     - Para cancelar, DEBES confirmar la fecha y hora con el usuario antes de proceder si los datos no son claros.
+    - IMPORTANTE: nunca asumas confirmación final por un "sí" ambiguo.
+    - Si el usuario corrige horario/día/cancha, trátalo como edición del pedido, no como confirmación.
+    - Si el pedido menciona más de un turno en el mismo mensaje, prioriza claridad y no lo reduzcas a un solo turno.
     
     [AMBIGUEDADES - REGLAS OBLIGATORIAS]
     - Frases como "¿tenés algo para hoy a las 17?" o "algo para las 17" significan CONSULTA DE DISPONIBILIDAD, no reserva confirmada.

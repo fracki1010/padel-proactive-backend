@@ -4,6 +4,7 @@ const bookingService = require("../services/bookingService");
 const userService = require("../services/userService");
 const Booking = require("../models/booking.model");
 const User = require("../models/user.model");
+const TimeSlot = require("../models/timeSlot.model");
 const { sendAdminNotification } = require("../services/notificationService");
 const { getFormattedDate } = require("../utils/getFormattedDate");
 const { getNumberByUser } = require("../utils/getNumberByUser");
@@ -79,6 +80,54 @@ const addDaysToIsoDate = (isoDate, days) => {
   return `${y}-${m}-${d}`;
 };
 
+const getArgentinaDateParts = (date = new Date()) => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const year = Number(parts.find((p) => p.type === "year")?.value || 0);
+  const month = Number(parts.find((p) => p.type === "month")?.value || 0);
+  const day = Number(parts.find((p) => p.type === "day")?.value || 0);
+  const weekdayRaw = String(
+    parts.find((p) => p.type === "weekday")?.value || "",
+  ).toLowerCase();
+
+  const weekdayMap = {
+    lun: 1,
+    mar: 2,
+    mie: 3,
+    mié: 3,
+    jue: 4,
+    vie: 5,
+    sab: 6,
+    sáb: 6,
+    dom: 0,
+  };
+
+  return {
+    year,
+    month,
+    day,
+    weekday: weekdayMap[weekdayRaw] ?? 0,
+  };
+};
+
+const getNextWeekdayIsoDate = (targetWeekday, options = {}) => {
+  const includeToday = Boolean(options.includeToday);
+  const today = getArgentinaDateParts();
+  const todayIso = `${today.year}-${String(today.month).padStart(2, "0")}-${String(
+    today.day,
+  ).padStart(2, "0")}`;
+
+  let diff = (targetWeekday - today.weekday + 7) % 7;
+  if (!includeToday && diff === 0) diff = 7;
+  return addDaysToIsoDate(todayIso, diff);
+};
+
 const extractDateFromMessage = (rawText) => {
   const text = normalizeSpanishText(rawText);
   const today = getTodayIsoArgentina();
@@ -86,6 +135,22 @@ const extractDateFromMessage = (rawText) => {
   if (text.includes("pasado manana")) return addDaysToIsoDate(today, 2);
   if (text.includes("manana")) return addDaysToIsoDate(today, 1);
   if (text.includes("hoy")) return today;
+
+  const weekdayMatchers = [
+    { pattern: /\blunes\b/, weekday: 1 },
+    { pattern: /\bmartes\b/, weekday: 2 },
+    { pattern: /\bmiercoles\b/, weekday: 3 },
+    { pattern: /\bjueves\b/, weekday: 4 },
+    { pattern: /\bviernes\b/, weekday: 5 },
+    { pattern: /\bsabado\b/, weekday: 6 },
+    { pattern: /\bdomingo\b/, weekday: 0 },
+  ];
+
+  for (const matcher of weekdayMatchers) {
+    if (matcher.pattern.test(text)) {
+      return getNextWeekdayIsoDate(matcher.weekday, { includeToday: true });
+    }
+  }
 
   const isoMatch = text.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (isoMatch && isValidIsoDate(isoMatch[1])) return isoMatch[1];
@@ -119,6 +184,11 @@ const extractTimeFromMessage = (rawText) => {
 
   const aLasMatch = text.match(/a\s*las\s*([01]?\d|2[0-3])\b/);
   if (aLasMatch) return `${aLasMatch[1].padStart(2, "0")}:00`;
+
+  const compactHourMinuteMatch = text.match(/\b([01]\d|2[0-3])([0-5]\d)\b/);
+  if (compactHourMinuteMatch) {
+    return `${compactHourMinuteMatch[1]}:${compactHourMinuteMatch[2]}`;
+  }
 
   return null;
 };
@@ -364,7 +434,126 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
 };
 
 const buildSecondBookingConfirmationText = () =>
-  "Ya tenés una reserva activa. ¿Querés reservar *otro turno*? Respondé *sí* o *no*.";
+  "Ya tenés una reserva activa. Para continuar sin errores, respondé *CONFIRMAR EXTRA* o *CANCELAR*.";
+
+const formatIsoDateAsDayMonthYear = (isoDate = "") => {
+  if (!isValidIsoDate(isoDate)) return String(isoDate || "");
+  const [year, month, day] = isoDate.split("-");
+  return `${day}/${month}/${year}`;
+};
+
+const toDraftLabelByIndex = (index) => String.fromCharCode(65 + index);
+
+const buildDraftFromRaw = (entry = {}, index = 0) => ({
+  id: toDraftLabelByIndex(index),
+  courtName: (entry.courtName || "INDIFERENTE").trim(),
+  dateStr: entry.dateStr,
+  timeStr: entry.timeStr,
+});
+
+const parseStrictDraftConfirmation = (value = "", draftCount = 1) => {
+  const text = normalizeLooseText(value);
+  if (!text) return null;
+
+  if (/^confirmar\s+todo$/.test(text)) {
+    return { type: "ALL" };
+  }
+
+  const byLetter = text.match(/^confirmar\s+([a-z])$/);
+  if (byLetter) {
+    const index = byLetter[1].charCodeAt(0) - 97;
+    if (index >= 0 && index < draftCount) {
+      return { type: "ONE", index };
+    }
+    return null;
+  }
+
+  if (draftCount === 1) {
+    if (/^confirmar(?:\s+reserva|\s+turno)?$/.test(text)) {
+      return { type: "ALL" };
+    }
+  }
+
+  if (text === "confirmar extra") {
+    return { type: "ALL" };
+  }
+
+  return null;
+};
+
+const extractBookingDraftsFromMessage = (rawText, fallbackCourt = "INDIFERENTE") => {
+  const text = String(rawText || "").trim();
+  if (!text) return [];
+
+  const rawSegments = text
+    .split(/\s+y\s+/i)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (!rawSegments.length) return [];
+
+  const draftCandidates = [];
+  for (const segment of rawSegments) {
+    const dateStr = extractDateFromMessage(segment);
+    const timeStr = normalizeTimeString(extractTimeFromMessage(segment));
+    if (dateStr && timeStr) {
+      draftCandidates.push({
+        dateStr,
+        timeStr,
+        courtName: fallbackCourt,
+      });
+    }
+  }
+
+  const unique = [];
+  const seen = new Set();
+  for (const candidate of draftCandidates) {
+    const key = `${candidate.dateStr}|${candidate.timeStr}|${candidate.courtName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(candidate);
+  }
+
+  if (unique.length < 2) return [];
+  return unique.map((candidate, index) => buildDraftFromRaw(candidate, index));
+};
+
+const buildBookingDraftSummaryReply = async ({
+  companyId = null,
+  clientName = "Cliente",
+  drafts = [],
+}) => {
+  const lines = [];
+  for (let i = 0; i < drafts.length; i += 1) {
+    const draft = drafts[i];
+    const slot = await TimeSlot.findOne({
+      companyId: companyId || null,
+      startTime: draft.timeStr,
+    })
+      .select("endTime price")
+      .lean();
+
+    const priceText =
+      typeof slot?.price === "number" ? `$${slot.price}` : "a confirmar";
+    const endTimeText = slot?.endTime ? ` - ${slot.endTime}` : "";
+    lines.push(
+      `${draft.id}) 👤 ${clientName}\n` +
+        `   📌 Cancha: ${draft.courtName}\n` +
+        `   📅 Fecha: ${formatIsoDateAsDayMonthYear(draft.dateStr)}\n` +
+        `   ⏰ Hora: ${draft.timeStr}${endTimeText}\n` +
+        `   💰 Precio: ${priceText}`,
+    );
+  }
+
+  const confirmLine =
+    drafts.length === 1
+      ? "Para avanzar respondé: *CONFIRMAR RESERVA* o *CANCELAR*."
+      : "Para avanzar respondé: *CONFIRMAR TODO*, *CONFIRMAR A*, *CONFIRMAR B* o *CANCELAR*.";
+
+  return (
+    `Resumen previo (sin reservar todavía):\n\n${lines.join("\n\n")}\n\n` +
+    `${confirmLine}`
+  );
+};
 
 const parseAttendanceAnswer = (value = "") => {
   const text = normalizeLooseText(value);
@@ -503,14 +692,189 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     }
 
     if (
+      Array.isArray(sessionMeta.pendingBookingDrafts) &&
+      sessionMeta.pendingBookingDrafts.length > 0
+    ) {
+      const pendingDrafts = sessionMeta.pendingBookingDrafts;
+      const pendingClientName = normalizeNameText(
+        sessionMeta.pendingBookingClientName || knownName || "",
+      );
+      const strictConfirmation = parseStrictDraftConfirmation(
+        userMessage,
+        pendingDrafts.length,
+      );
+
+      if (isNegativeBookingReply(userMessage)) {
+        sessionService.updateMeta(sessionId, {
+          pendingBookingDrafts: null,
+          pendingBookingClientName: null,
+          pendingBookingOffer: null,
+          awaitingExtraBookingConfirmation: false,
+        });
+        const cancelDraftReply =
+          pendingDrafts.length > 1
+            ? "Perfecto, no reservo esos turnos."
+            : "Perfecto, no reservo ese turno.";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", cancelDraftReply);
+        return cancelDraftReply;
+      }
+
+      const updatedDrafts = extractBookingDraftsFromMessage(
+        userMessage,
+        pendingDrafts[0]?.courtName || "INDIFERENTE",
+      );
+      if (updatedDrafts.length >= 2) {
+        const summaryReply = await buildBookingDraftSummaryReply({
+          companyId,
+          clientName: pendingClientName || "Cliente",
+          drafts: updatedDrafts,
+        });
+        sessionService.updateMeta(sessionId, {
+          pendingBookingDrafts: updatedDrafts,
+          pendingBookingOffer: null,
+          awaitingExtraBookingConfirmation: false,
+        });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", summaryReply);
+        return summaryReply;
+      }
+
+      if (!strictConfirmation) {
+        const askSpecificConfirmationReply =
+          pendingDrafts.length > 1
+            ? "Para evitar errores, indicame exactamente: *CONFIRMAR TODO*, *CONFIRMAR A*, *CONFIRMAR B* o *CANCELAR*."
+            : "Para evitar errores, confirmame con *CONFIRMAR RESERVA* o *CANCELAR*.";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(
+          sessionId,
+          "assistant",
+          askSpecificConfirmationReply,
+        );
+        return askSpecificConfirmationReply;
+      }
+
+      if (!pendingClientName || !isValidClientName(pendingClientName)) {
+        sessionService.updateMeta(sessionId, {
+          awaitingFullNameForBooking: true,
+          pendingBookingClientName: null,
+          pendingBookingOffer: null,
+        });
+        const needNameReply =
+          "Antes de reservar, necesito tu *nombre completo* (ej: *Juan Pérez*).";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", needNameReply);
+        return needNameReply;
+      }
+
+      const selectedDrafts =
+        strictConfirmation.type === "ONE"
+          ? [pendingDrafts[strictConfirmation.index]].filter(Boolean)
+          : pendingDrafts;
+
+      const executionResults = [];
+      for (const draft of selectedDrafts) {
+        const result = await bookingService.createNewBooking({
+          companyId,
+          courtName: draft.courtName || "INDIFERENTE",
+          dateStr: draft.dateStr,
+          timeStr: draft.timeStr,
+          clientName: pendingClientName,
+          clientPhone: number,
+        });
+        executionResults.push({ draft, result });
+      }
+
+      const successMessages = executionResults
+        .filter((item) => item.result?.success)
+        .map((item) =>
+          buildBookingReplyText(
+            item.draft.dateStr,
+            pendingClientName,
+            item.result,
+          ),
+        );
+
+      const failedMessages = executionResults
+        .filter((item) => !item.result?.success)
+        .map((item) => {
+          const failureReason = buildBookingReplyText(
+            item.draft.dateStr,
+            pendingClientName,
+            item.result,
+          );
+          return (
+            `⚠️ No pude reservar el borrador ${item.draft.id} ` +
+            `(${formatIsoDateAsDayMonthYear(item.draft.dateStr)} ${item.draft.timeStr}).\n` +
+            `${failureReason}`
+          );
+        });
+
+      let finalReply = "";
+      if (successMessages.length && failedMessages.length) {
+        finalReply =
+          `${successMessages.join("\n\n")}\n\n` +
+          `${failedMessages.join("\n\n")}`;
+      } else if (successMessages.length) {
+        finalReply = successMessages.join("\n\n");
+      } else {
+        finalReply = failedMessages.join("\n\n") || "⚠️ No pude reservar los turnos solicitados.";
+      }
+
+      sessionService.updateMeta(sessionId, {
+        pendingBookingDrafts: null,
+        pendingBookingClientName: null,
+        pendingBookingOffer: null,
+        pendingBooking: null,
+        awaitingExtraBookingConfirmation: false,
+        awaitingFullNameForBooking: false,
+      });
+      sessionService.addMessage(sessionId, "user", userMessage);
+      sessionService.addMessage(sessionId, "assistant", finalReply);
+      return finalReply;
+    }
+
+    if (
       sessionMeta.awaitingExtraBookingConfirmation &&
       sessionMeta.pendingBooking?.dateStr &&
       sessionMeta.pendingBooking?.timeStr
     ) {
-      if (
-        isAffirmativeBookingReply(userMessage) ||
-        hasDirectBookingIntent(userMessage)
-      ) {
+      const strictExtraConfirmation = parseStrictDraftConfirmation(userMessage, 1);
+      const pendingBooking = sessionMeta.pendingBooking;
+      const editedDate = extractDateFromMessage(userMessage);
+      const editedTime = normalizeTimeString(extractTimeFromMessage(userMessage));
+
+      if (editedDate && editedTime) {
+        const editedDraft = buildDraftFromRaw(
+          {
+            courtName: pendingBooking.courtName || "INDIFERENTE",
+            dateStr: editedDate,
+            timeStr: editedTime,
+          },
+          0,
+        );
+        const summaryReply = await buildBookingDraftSummaryReply({
+          companyId,
+          clientName:
+            normalizeNameText(sessionMeta.pendingBookingClientName || knownName || "") ||
+            "Cliente",
+          drafts: [editedDraft],
+        });
+        sessionService.updateMeta(sessionId, {
+          awaitingExtraBookingConfirmation: true,
+          pendingBooking: {
+            courtName: editedDraft.courtName,
+            dateStr: editedDraft.dateStr,
+            timeStr: editedDraft.timeStr,
+          },
+          pendingBookingOffer: null,
+        });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", summaryReply);
+        return summaryReply;
+      }
+
+      if (strictExtraConfirmation) {
         const pendingBooking = sessionMeta.pendingBooking;
         const pendingClientName = normalizeNameText(
           sessionMeta.pendingBookingClientName || knownName || "",
@@ -574,14 +938,14 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         return cancelExtraBookingReply;
       }
 
-      const askAgainReply = "¿Querés reservar otro turno? Respondé *sí* o *no*.";
+      const askAgainReply =
+        "Para evitar errores, confirmame con *CONFIRMAR EXTRA* o cancelá con *CANCELAR*.";
       sessionService.addMessage(sessionId, "user", userMessage);
       sessionService.addMessage(sessionId, "assistant", askAgainReply);
       return askAgainReply;
     }
 
-    // Si hay una oferta de reserva pendiente, solo se confirma con respuesta afirmativa.
-    // Si cambió de tema, se limpia para evitar reservas accidentales en mensajes futuros.
+    // Si hay una oferta pendiente, solo se ejecuta con confirmación estricta.
     const pendingBookingOffer = sessionMeta.pendingBookingOffer || null;
     if (
       pendingBookingOffer?.dateStr &&
@@ -593,7 +957,13 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
       if (isExpired) {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
-      } else if (isAffirmativeBookingReply(userMessage)) {
+      } else if (isNegativeBookingReply(userMessage)) {
+        sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
+        const cancelledOfferReply = "Perfecto, no reservo ese turno.";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", cancelledOfferReply);
+        return cancelledOfferReply;
+      } else if (parseStrictDraftConfirmation(userMessage, 1)) {
         let requestedClientName = normalizeNameText(knownName || "");
 
         if (!requestedClientName || !isValidClientName(requestedClientName)) {
@@ -670,6 +1040,12 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         sessionService.addMessage(sessionId, "user", userMessage);
         sessionService.addMessage(sessionId, "assistant", bookingReply);
         return bookingReply;
+      } else if (isAffirmativeBookingReply(userMessage)) {
+        const strictConfirmReply =
+          "Para confirmar sin errores, respondé exactamente *CONFIRMAR RESERVA* o *CANCELAR*.";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", strictConfirmReply);
+        return strictConfirmReply;
       } else if (!hasDirectBookingIntent(userMessage)) {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
       }
@@ -693,51 +1069,54 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       knownName = savedUser?.name || fullName;
 
       const pendingBooking = sessionMeta.pendingBooking || null;
-      if (pendingBooking?.dateStr && pendingBooking?.timeStr) {
-        const hasActiveBooking = await bookingService.hasActiveBookingForClient({
+      const pendingBookingDrafts = Array.isArray(sessionMeta.pendingBookingDrafts)
+        ? sessionMeta.pendingBookingDrafts
+        : [];
+      if (pendingBookingDrafts.length > 0) {
+        const summaryReply = await buildBookingDraftSummaryReply({
           companyId,
-          clientPhone: number,
-        });
-        if (hasActiveBooking) {
-          sessionService.updateMeta(sessionId, {
-            awaitingExtraBookingConfirmation: true,
-            pendingBooking: {
-              courtName: pendingBooking.courtName || "INDIFERENTE",
-              dateStr: pendingBooking.dateStr,
-              timeStr: pendingBooking.timeStr,
-            },
-            pendingBookingClientName: knownName,
-            awaitingFullNameForBooking: false,
-          });
-          const askExtraBookingReply = buildSecondBookingConfirmationText();
-          sessionService.addMessage(sessionId, "user", userMessage);
-          sessionService.addMessage(sessionId, "assistant", askExtraBookingReply);
-          return askExtraBookingReply;
-        }
-
-        const bookingResult = await bookingService.createNewBooking({
-          companyId,
-          courtName: pendingBooking.courtName || "INDIFERENTE",
-          dateStr: pendingBooking.dateStr,
-          timeStr: pendingBooking.timeStr,
           clientName: knownName,
-          clientPhone: number,
+          drafts: pendingBookingDrafts,
         });
+        sessionService.updateMeta(sessionId, {
+          pendingBookingClientName: knownName,
+          awaitingFullNameForBooking: false,
+          pendingBookingOffer: null,
+        });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", summaryReply);
+        return summaryReply;
+      }
 
-        const replyText = buildBookingReplyText(
-          pendingBooking.dateStr,
-          knownName,
-          bookingResult,
+      if (pendingBooking?.dateStr && pendingBooking?.timeStr) {
+        const draft = buildDraftFromRaw(
+          {
+            courtName: pendingBooking.courtName || "INDIFERENTE",
+            dateStr: pendingBooking.dateStr,
+            timeStr: pendingBooking.timeStr,
+          },
+          0,
         );
+        const summaryReply = await buildBookingDraftSummaryReply({
+          companyId,
+          clientName: knownName,
+          drafts: [draft],
+        });
         sessionService.updateMeta(sessionId, {
           awaitingFullNameForBooking: false,
           pendingBooking: null,
+          pendingBookingOffer: {
+            courtName: draft.courtName,
+            dateStr: draft.dateStr,
+            timeStr: draft.timeStr,
+            createdAt: Date.now(),
+          },
           awaitingExtraBookingConfirmation: false,
-          pendingBookingClientName: null,
+          pendingBookingClientName: knownName,
         });
         sessionService.addMessage(sessionId, "user", userMessage);
-        sessionService.addMessage(sessionId, "assistant", replyText);
-        return replyText;
+        sessionService.addMessage(sessionId, "assistant", summaryReply);
+        return summaryReply;
       }
 
       const continueReply =
@@ -881,7 +1260,41 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const requestedDate = parsedData.date;
         const requestedTime = normalizeTimeString(parsedData.time);
         const requestedCourt = (parsedData.courtName || "INDIFERENTE").trim();
+        const detectedDrafts = extractBookingDraftsFromMessage(
+          userMessage,
+          requestedCourt,
+        );
         const canCreateBookingFromMessage = hasDirectBookingIntent(userMessage);
+
+        if (detectedDrafts.length >= 2) {
+          const pendingClientName = normalizeNameText(knownName || "");
+          sessionService.updateMeta(sessionId, {
+            pendingBookingDrafts: detectedDrafts,
+            pendingBookingClientName: pendingClientName || null,
+            pendingBookingOffer: null,
+            pendingBooking: null,
+            awaitingExtraBookingConfirmation: false,
+          });
+
+          if (!pendingClientName || !isValidClientName(pendingClientName)) {
+            sessionService.updateMeta(sessionId, {
+              awaitingFullNameForBooking: true,
+            });
+            replyText =
+              "Antes de reservar esos turnos, necesito tu *nombre completo* (ej: *Juan Pérez*).";
+            sessionService.addMessage(sessionId, "assistant", replyText);
+            return replyText;
+          }
+
+          replyText = await buildBookingDraftSummaryReply({
+            companyId,
+            clientName: pendingClientName,
+            drafts: detectedDrafts,
+          });
+          sessionService.addMessage(sessionId, "assistant", replyText);
+          return replyText;
+        }
+
         if (!canCreateBookingFromMessage) {
           if (
             requestedDate &&
@@ -898,7 +1311,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             });
           }
           replyText =
-            "Si querés que lo reserve, decime *\"reservalo\"* o *\"confirmo\"* y te lo tomo al instante.";
+            "Si querés que lo reserve, respondé exactamente *CONFIRMAR RESERVA*.";
           sessionService.addMessage(sessionId, "assistant", replyText);
           return replyText;
         }
@@ -947,47 +1360,35 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           return replyText;
         }
 
+        const singleDraft = buildDraftFromRaw(
+          {
+            courtName: requestedCourt,
+            dateStr: requestedDate,
+            timeStr: requestedTime,
+          },
+          0,
+        );
         sessionService.updateMeta(sessionId, {
           awaitingFullNameForBooking: false,
           pendingBooking: null,
-          pendingBookingOffer: null,
+          pendingBookingDrafts: null,
+          pendingBookingClientName: requestedClientName,
+          pendingBookingOffer: {
+            courtName: singleDraft.courtName,
+            dateStr: singleDraft.dateStr,
+            timeStr: singleDraft.timeStr,
+            createdAt: Date.now(),
+          },
+          awaitingExtraBookingConfirmation: false,
         });
 
-        const hasActiveBooking = await bookingService.hasActiveBookingForClient({
+        replyText = await buildBookingDraftSummaryReply({
           companyId,
-          clientPhone: number,
-        });
-        if (hasActiveBooking) {
-          sessionService.updateMeta(sessionId, {
-            awaitingExtraBookingConfirmation: true,
-            pendingBooking: {
-              courtName: requestedCourt,
-              dateStr: requestedDate,
-              timeStr: requestedTime,
-            },
-            pendingBookingClientName: requestedClientName,
-            pendingBookingOffer: null,
-            awaitingFullNameForBooking: false,
-          });
-          replyText = buildSecondBookingConfirmationText();
-          sessionService.addMessage(sessionId, "assistant", replyText);
-          return replyText;
-        }
-
-        const bookingResult = await bookingService.createNewBooking({
-          companyId,
-          courtName: requestedCourt,
-          dateStr: requestedDate,
-          timeStr: requestedTime,
           clientName: requestedClientName,
-          clientPhone: number,
+          drafts: [singleDraft],
         });
-
-        replyText = buildBookingReplyText(
-          requestedDate,
-          requestedClientName,
-          bookingResult,
-        );
+        sessionService.addMessage(sessionId, "assistant", replyText);
+        return replyText;
       }
 
       // CASO B: DISPONIBILIDAD
