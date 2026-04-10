@@ -184,6 +184,8 @@ const getChatResponse = async (
     - IMPORTANTE: nunca asumas confirmación final por un "sí" ambiguo.
     - Si el usuario corrige horario/día/cancha, trátalo como edición del pedido, no como confirmación.
     - Si el pedido menciona más de un turno en el mismo mensaje, prioriza claridad y no lo reduzcas a un solo turno.
+    - Nunca inventes precios, horarios o disponibilidad.
+    - Si no conoces un dato, pide aclaración o responde que no está disponible ese dato.
     
     [AMBIGUEDADES - REGLAS OBLIGATORIAS]
     - Frases como "¿tenés algo para hoy a las 17?" o "algo para las 17" significan CONSULTA DE DISPONIBILIDAD, no reserva confirmada.
