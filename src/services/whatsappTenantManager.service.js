@@ -8,11 +8,17 @@ const {
   setAuthenticated,
   setAuthFailure,
   setReady,
+  setDisconnected,
+  setStartAttempt,
+  setLastError,
+  incrementReconnectAttempts,
+  resetReconnectAttempts,
 } = require("../state/whatsapp.state");
 
 const clients = new Map();
 
 const WA_REMOTE_HTML =
+  process.env.WA_REMOTE_HTML ||
   "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html";
 
 const buildClientId = (companyId = null) => `tenant-${buildCompanyKey(companyId)}`;
@@ -21,7 +27,7 @@ const createClient = (companyId = null) => {
   const key = buildCompanyKey(companyId);
   const client = new Client({
     authStrategy: new LocalAuth({ clientId: buildClientId(companyId) }),
-    executablePath: "/usr/bin/chromium",
+    executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium",
     webVersionCache: {
       type: "remote",
       remotePath: WA_REMOTE_HTML,
@@ -64,11 +70,14 @@ const createClient = (companyId = null) => {
   client.on("ready", () => {
     client.isReady = true;
     console.log(`🌟 [${key}] BOT DE WHATSAPP LISTO Y CONECTADO`);
+    resetReconnectAttempts(companyId);
     setReady(companyId);
   });
 
-  client.on("disconnected", () => {
+  client.on("disconnected", (reason) => {
     client.isReady = false;
+    console.warn(`⚠️ [${key}] Cliente desconectado: ${reason || "desconocido"}`);
+    setDisconnected(companyId, reason);
   });
 
   client.on("message", async (message) => {
@@ -110,50 +119,75 @@ const createClient = (companyId = null) => {
   return client;
 };
 
+const createEntry = (companyId = null) => ({
+  companyId,
+  client: createClient(companyId),
+  isStarting: false,
+  stopRequestedDuringStart: false,
+  startPromise: null,
+  hasInitialized: false,
+});
+
 const ensureEntry = (companyId = null) => {
   const key = buildCompanyKey(companyId);
   if (!clients.has(key)) {
-    clients.set(key, {
-      companyId,
-      client: createClient(companyId),
-      isStarting: false,
-      stopRequestedDuringStart: false,
-    });
+    clients.set(key, createEntry(companyId));
   }
   return clients.get(key);
 };
 
 const startClient = async (companyId = null) => {
+  const key = buildCompanyKey(companyId);
   const entry = ensureEntry(companyId);
   const { client } = entry;
 
-  if (client.isReady || entry.isStarting) return client;
+  if (client.isReady) return client;
+  if (entry.isStarting && entry.startPromise) return entry.startPromise;
 
   entry.stopRequestedDuringStart = false;
   entry.isStarting = true;
+  setStartAttempt(companyId, "Inicializando cliente de WhatsApp...");
+  console.log(`[WhatsApp][${key}] startClient initialize requested.`);
 
-  try {
-    await client.initialize();
-  } finally {
-    entry.isStarting = false;
-    if (entry.stopRequestedDuringStart) {
-      entry.stopRequestedDuringStart = false;
-      await stopClient(companyId);
+  entry.startPromise = (async () => {
+    try {
+      await client.initialize();
+      entry.hasInitialized = true;
+      console.log(`[WhatsApp][${key}] startClient initialize OK.`);
+      return client;
+    } catch (error) {
+      const message = error?.message || String(error);
+      setLastError(companyId, message);
+      console.error(`[WhatsApp][${key}] startClient initialize ERROR:`, message);
+      throw error;
+    } finally {
+      entry.isStarting = false;
+      entry.startPromise = null;
+      if (entry.stopRequestedDuringStart) {
+        entry.stopRequestedDuringStart = false;
+        await stopClient(companyId);
+      }
     }
-  }
+  })();
 
-  return client;
+  return entry.startPromise;
 };
 
 const stopClient = async (companyId = null) => {
-  const entry = ensureEntry(companyId);
+  const key = buildCompanyKey(companyId);
+  const entry = clients.get(key);
+  if (!entry) return;
+
   if (entry.isStarting) {
     entry.stopRequestedDuringStart = true;
+    console.log(`[WhatsApp][${key}] stop requested during start; deferred.`);
     return;
   }
 
   try {
+    console.log(`[WhatsApp][${key}] stopClient destroy requested.`);
     await entry.client.destroy();
+    console.log(`[WhatsApp][${key}] stopClient destroy OK.`);
   } catch (_error) {
     // Ignorar cuando el cliente todavía no estaba levantado.
   } finally {
@@ -163,8 +197,68 @@ const stopClient = async (companyId = null) => {
 
 const getClient = (companyId = null) => ensureEntry(companyId).client;
 
+const getReadyClient = (companyId = null) => {
+  const key = buildCompanyKey(companyId);
+  const entry = clients.get(key);
+
+  if (!entry) {
+    throw new Error(
+      `No existe cliente de WhatsApp para la empresa '${key}'. Inicializalo primero.`,
+    );
+  }
+
+  if (entry.isStarting || !entry.hasInitialized) {
+    throw new Error(`El cliente de WhatsApp para '${key}' no está inicializado.`);
+  }
+
+  if (!entry.client || !entry.client.isReady) {
+    throw new Error(`El cliente de WhatsApp para '${key}' no está listo.`);
+  }
+
+  return entry.client;
+};
+
+const restartClient = async (companyId = null) => {
+  const key = buildCompanyKey(companyId);
+  const entry = clients.get(key);
+
+  if (entry?.isStarting) {
+    throw new Error(
+      `Ya hay un arranque en curso para la empresa '${key}'. Reintentá en unos segundos.`,
+    );
+  }
+
+  console.log(`[WhatsApp][${key}] restart requested.`);
+  incrementReconnectAttempts(companyId);
+
+  if (entry?.client) {
+    try {
+      await entry.client.destroy();
+      console.log(`[WhatsApp][${key}] previous client destroyed.`);
+    } catch (_error) {
+      // Ignorar si no estaba completamente iniciado.
+    }
+  }
+
+  clients.set(key, createEntry(companyId));
+  try {
+    const client = await startClient(companyId);
+    console.log(`[WhatsApp][${key}] restart OK.`);
+    return client;
+  } catch (error) {
+    setLastError(companyId, error?.message || String(error));
+    console.error(
+      `[WhatsApp][${key}] restart ERROR:`,
+      error?.message || error,
+    );
+    throw error;
+  }
+};
+
 module.exports = {
   startClient,
   stopClient,
   getClient,
+  getReadyClient,
+  restartClient,
 };

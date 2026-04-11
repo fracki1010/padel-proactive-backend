@@ -4,6 +4,7 @@ const User = require("../models/user.model");
 const sessionService = require("./sessionService");
 const { getClient } = require("./whatsappTenantManager.service");
 const { getWhatsappState } = require("../state/whatsapp.state");
+const { isMongoConnected } = require("../config/database");
 
 const CONFIG_KEY = "main";
 const CHECK_INTERVAL_MS = 60 * 1000;
@@ -171,6 +172,12 @@ const processCompany = async (companyId = null) => {
 
 const runAttendanceSweep = async () => {
   if (isRunning) return;
+  if (!isMongoConnected()) {
+    console.warn(
+      "[AttendanceConfirmation] Barrido omitido: MongoDB no está conectado.",
+    );
+    return;
+  }
   isRunning = true;
 
   try {
@@ -179,7 +186,10 @@ const runAttendanceSweep = async () => {
       await processCompany(companyId);
     }
   } catch (error) {
-    console.error("[AttendanceConfirmation] Error en barrido:", error);
+    console.error(
+      "[AttendanceConfirmation] Error en barrido:",
+      error?.message || error,
+    );
   } finally {
     isRunning = false;
   }
@@ -194,4 +204,3 @@ const startAttendanceConfirmationMonitor = () => {
 module.exports = {
   startAttendanceConfirmationMonitor,
 };
-
