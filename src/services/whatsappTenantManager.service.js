@@ -27,7 +27,10 @@ const createClient = (companyId = null) => {
   const key = buildCompanyKey(companyId);
   const client = new Client({
     authStrategy: new LocalAuth({ clientId: buildClientId(companyId) }),
-    executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium",
+    executablePath:
+      process.env.PUPPETEER_EXECUTABLE_PATH ||
+      process.env.CHROMIUM_PATH ||
+      "/usr/bin/chromium",
     webVersionCache: {
       type: "remote",
       remotePath: WA_REMOTE_HTML,
