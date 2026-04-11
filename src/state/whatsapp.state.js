@@ -17,6 +17,11 @@ function createBaseState() {
     authenticatedAt: null,
     readyAt: null,
     authFailure: null,
+    lastError: null,
+    lastDisconnectReason: null,
+    startingAt: null,
+    stoppedAt: null,
+    reconnectAttempts: 0,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -47,6 +52,7 @@ function setDisabled(companyId = null, message = "WhatsApp desactivado") {
   state.loadingPercent = null;
   state.loadingMessage = message;
   state.authFailure = null;
+  state.stoppedAt = new Date().toISOString();
   touch(state);
 }
 
@@ -56,6 +62,18 @@ function setInitializing(companyId = null, message = "Inicializando") {
   state.status = "initializing";
   state.loadingMessage = message;
   state.authFailure = null;
+  touch(state);
+}
+
+function setStartAttempt(
+  companyId = null,
+  message = "Inicializando cliente de WhatsApp...",
+) {
+  const state = ensureState(companyId);
+  state.status = "initializing";
+  state.startingAt = new Date().toISOString();
+  state.loadingMessage = message;
+  state.lastError = null;
   touch(state);
 }
 
@@ -95,6 +113,7 @@ function setAuthFailure(companyId = null, message) {
   if (!state.enabled) return;
   state.status = "auth_failure";
   state.authFailure = message || "Error de autenticación";
+  state.lastError = state.authFailure;
   touch(state);
 }
 
@@ -107,6 +126,47 @@ function setReady(companyId = null) {
   state.loadingPercent = null;
   state.loadingMessage = null;
   state.readyAt = new Date().toISOString();
+  state.lastError = null;
+  state.lastDisconnectReason = null;
+  state.reconnectAttempts = 0;
+  touch(state);
+}
+
+function setLastError(companyId = null, errorMessage) {
+  const state = ensureState(companyId);
+  state.lastError =
+    typeof errorMessage === "string" && errorMessage.trim()
+      ? errorMessage
+      : "Error desconocido";
+  touch(state);
+}
+
+function setDisconnected(companyId = null, reason) {
+  const state = ensureState(companyId);
+  state.status = "disconnected";
+  state.qr = null;
+  state.hasQr = false;
+  state.loadingPercent = null;
+  state.loadingMessage = "Cliente desconectado";
+  state.lastDisconnectReason =
+    typeof reason === "string" && reason.trim()
+      ? reason
+      : reason != null
+        ? String(reason)
+        : "desconocido";
+  state.stoppedAt = new Date().toISOString();
+  touch(state);
+}
+
+function incrementReconnectAttempts(companyId = null) {
+  const state = ensureState(companyId);
+  state.reconnectAttempts = Number(state.reconnectAttempts || 0) + 1;
+  touch(state);
+}
+
+function resetReconnectAttempts(companyId = null) {
+  const state = ensureState(companyId);
+  state.reconnectAttempts = 0;
   touch(state);
 }
 
@@ -129,9 +189,14 @@ module.exports = {
   setEnabled,
   setDisabled,
   setInitializing,
+  setStartAttempt,
   setQr,
   setLoading,
   setAuthenticated,
   setAuthFailure,
   setReady,
+  setLastError,
+  setDisconnected,
+  incrementReconnectAttempts,
+  resetReconnectAttempts,
 };

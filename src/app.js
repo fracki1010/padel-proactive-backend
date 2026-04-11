@@ -57,6 +57,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/chat", chatRoutes); // El chat puede necesitar ser público si el bot consulta algo, pero el bot usa handlers directamente.
 app.use("/api/bookings", protect, bookingRoutes);
 app.use("/api/config", protect, require("./routes/config.routes"));
+app.use("/api/whatsapp", protect, require("./routes/whatsapp.routes"));
 app.use("/api/users", protect, require("./routes/user.routes"));
 app.use("/api/notifications", protect, require("./routes/notification.routes"));
 app.use(
