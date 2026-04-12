@@ -13,7 +13,8 @@ services:
     ports:
       - "${BIND_IP:-127.0.0.1}:${HOST_PORT:-3000}:3000"
     volumes:
-      - ./.wwebjs_auth:/usr/src/app/.wwebjs_auth
+      - whatsapp_sessions:/usr/src/app/.wwebjs_auth
+      - whatsapp_cache:/usr/src/app/.wwebjs_cache
     healthcheck:
       test:
         [
@@ -31,3 +32,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  whatsapp_sessions:
+  whatsapp_cache:
