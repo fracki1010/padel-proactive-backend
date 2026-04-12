@@ -203,6 +203,14 @@ const extractTimeFromMessage = (rawText) => {
 const inferFallbackAction = (rawText) => {
   const text = normalizeSpanishText(rawText);
 
+  const hasMyBookingsIntent =
+    /(mis\s+reservas|mis\s+turnos|que\s+reservas\s+tengo|que\s+turnos\s+tengo|tengo\s+reservas|tengo\s+turnos|reservas\s+vigentes|turnos\s+vigentes)/.test(
+      text,
+    );
+  if (hasMyBookingsIntent) {
+    return { action: "LIST_ACTIVE_BOOKINGS" };
+  }
+
   const isFixedTurn =
     /turno\s*fijo|fijo\s+semanal|semanal|todas\s+las\s+semanas/.test(text);
   if (isFixedTurn) {
@@ -435,7 +443,8 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
     );
   }
   if (bookingResult.error === "DAILY_LIMIT_REACHED") {
-    return `⚠️ Ya alcanzaste el límite de 3 reservas para el ${getFormattedDate(requestedDate)}.`;
+    const limit = bookingResult?.data?.limit || 0;
+    return `⚠️ Ya alcanzaste el límite de ${limit} reservas para el ${getFormattedDate(requestedDate)}.`;
   }
   return "⚠️ Hubo un error técnico al reservar.";
 };
@@ -457,6 +466,34 @@ const buildDraftFromRaw = (entry = {}, index = 0) => ({
   dateStr: entry.dateStr,
   timeStr: entry.timeStr,
 });
+
+const extractRequestedCourtsCount = (rawText = "") => {
+  const normalizedText = normalizeSpanishText(rawText);
+  const wordToNumber = {
+    un: 1,
+    una: 1,
+    dos: 2,
+    tres: 3,
+    cuatro: 4,
+    cinco: 5,
+    seis: 6,
+  };
+
+  const numericMatch = normalizedText.match(
+    /\b(\d+)\s+(?:cancha|canchas|turno|turnos|reserva|reservas)\b/,
+  );
+  if (numericMatch) return Math.max(1, Number(numericMatch[1]));
+
+  const wordMatch = normalizedText.match(
+    /\b(un|una|dos|tres|cuatro|cinco|seis)\s+(?:cancha|canchas|turno|turnos|reserva|reservas)\b/,
+  );
+  if (wordMatch) return Math.max(1, wordToNumber[wordMatch[1]] || 1);
+
+  const byMultiplier = normalizedText.match(/\bx\s*(\d+)\b/);
+  if (byMultiplier) return Math.max(1, Number(byMultiplier[1]));
+
+  return 1;
+};
 
 const parseStrictDraftConfirmation = (value = "", draftCount = 1) => {
   const text = normalizeLooseText(value);
@@ -520,8 +557,41 @@ const extractBookingDraftsFromMessage = (rawText, fallbackCourt = "INDIFERENTE")
     unique.push(candidate);
   }
 
-  if (unique.length < 2) return [];
-  return unique.map((candidate, index) => buildDraftFromRaw(candidate, index));
+  if (unique.length >= 2) {
+    return unique.map((candidate, index) => buildDraftFromRaw(candidate, index));
+  }
+
+  if (unique.length === 1) {
+    const requestedCourtsCount = extractRequestedCourtsCount(rawText);
+    if (requestedCourtsCount >= 2) {
+      const cappedCount = Math.min(requestedCourtsCount, 6);
+      return Array.from({ length: cappedCount }, (_, index) =>
+        buildDraftFromRaw(unique[0], index),
+      );
+    }
+  }
+
+  return [];
+};
+
+const buildActiveBookingsReply = (bookings = []) => {
+  if (!Array.isArray(bookings) || bookings.length === 0) {
+    return "📭 No encontré reservas vigentes a tu nombre.";
+  }
+
+  const lines = bookings.map((booking, index) => {
+    const dateText = getFormattedDate(booking.date);
+    const timeText = booking.endTime
+      ? `${booking.startTime} - ${booking.endTime}`
+      : booking.startTime;
+    return (
+      `${index + 1}) 📅 ${dateText}\n` +
+      `   ⏰ ${timeText}\n` +
+      `   📌 ${booking.courtName}`
+    );
+  });
+
+  return `🎾 *Estas son tus reservas vigentes:*\n\n${lines.join("\n\n")}`;
 };
 
 const buildBookingDraftSummaryReply = async ({
@@ -922,6 +992,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         strictConfirmation.type === "ONE"
           ? [pendingDrafts[strictConfirmation.index]].filter(Boolean)
           : pendingDrafts;
+      const allowSameClientSameSlot = selectedDrafts.length > 1;
 
       const executionResults = [];
       for (const draft of selectedDrafts) {
@@ -932,6 +1003,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           timeStr: draft.timeStr,
           clientName: pendingClientName,
           clientPhone: number,
+          allowSameClientSameSlot,
         });
         executionResults.push({ draft, result });
       }
@@ -1328,6 +1400,15 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           sessionService.updateMeta(sessionId, {
             pendingBookingOffer: availabilityResponse.pendingBookingOffer,
           });
+        } else if (fallback?.action === "LIST_ACTIVE_BOOKINGS") {
+          const activeBookings = await bookingService.getActiveBookingsForClient({
+            companyId,
+            clientPhone: number,
+            limit: 15,
+          });
+          replyText = activeBookings.success
+            ? buildActiveBookingsReply(activeBookings.data)
+            : "⚠️ No pude consultar tus reservas vigentes en este momento.";
         } else if (hasDirectBookingIntent(userMessage)) {
           const requestedDate = extractDateFromMessage(userMessage) || getTodayIsoArgentina();
           const requestedTime = normalizeTimeString(extractTimeFromMessage(userMessage));
@@ -1533,7 +1614,23 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         });
       }
 
-      // CASO C: CANCELAR TURNO
+      // CASO C: LISTAR RESERVAS VIGENTES DEL CLIENTE
+      else if (parsedData.action === "LIST_ACTIVE_BOOKINGS") {
+        sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
+        const activeBookings = await bookingService.getActiveBookingsForClient({
+          companyId,
+          clientPhone: number,
+          limit: 15,
+        });
+
+        if (activeBookings.success) {
+          replyText = buildActiveBookingsReply(activeBookings.data);
+        } else {
+          replyText = "⚠️ No pude consultar tus reservas vigentes en este momento.";
+        }
+      }
+
+      // CASO D: CANCELAR TURNO
       else if (parsedData.action === "CANCEL_BOOKING") {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
         const requestedDate = parsedData.date;
@@ -1583,7 +1680,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         }
       }
 
-      // CASO D: PEDIDO DE TURNO FIJO
+      // CASO E: PEDIDO DE TURNO FIJO
       else if (parsedData.action === "FIXED_TURN_REQUEST") {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
         const requestedDate = parsedData.date || "Sin fecha";
@@ -1603,13 +1700,13 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           "Perfecto. Ya le aviso al admin para que gestione ese *turno fijo* y te confirme por acá.";
       }
 
-      // CASO E: SOLO MENSAJE (La IA respondió en JSON con campo "message")
+      // CASO F: SOLO MENSAJE (La IA respondió en JSON con campo "message")
       else if (parsedData.message) {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
         replyText = parsedData.message;
       }
 
-      // CASO F: JSON DESCONOCIDO
+      // CASO G: JSON DESCONOCIDO
       else {
         const fallback = inferFallbackAction(userMessage);
         if (fallback?.action === "CHECK_AVAILABILITY") {
@@ -1630,6 +1727,15 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           sessionService.updateMeta(sessionId, {
             pendingBookingOffer: availabilityResponse.pendingBookingOffer,
           });
+        } else if (fallback?.action === "LIST_ACTIVE_BOOKINGS") {
+          const activeBookings = await bookingService.getActiveBookingsForClient({
+            companyId,
+            clientPhone: number,
+            limit: 15,
+          });
+          replyText = activeBookings.success
+            ? buildActiveBookingsReply(activeBookings.data)
+            : "⚠️ No pude consultar tus reservas vigentes en este momento.";
         } else if (fallback?.action === "FIXED_TURN_REQUEST") {
           sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
           const requestedDate = fallback.date || "Sin fecha";
@@ -1675,6 +1781,15 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         sessionService.updateMeta(sessionId, {
           pendingBookingOffer: availabilityResponse.pendingBookingOffer,
         });
+      } else if (fallback?.action === "LIST_ACTIVE_BOOKINGS") {
+        const activeBookings = await bookingService.getActiveBookingsForClient({
+          companyId,
+          clientPhone: number,
+          limit: 15,
+        });
+        replyText = activeBookings.success
+          ? buildActiveBookingsReply(activeBookings.data)
+          : "⚠️ No pude consultar tus reservas vigentes en este momento.";
       } else if (fallback?.action === "FIXED_TURN_REQUEST") {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
         const requestedDate = fallback.date || "Sin fecha";
