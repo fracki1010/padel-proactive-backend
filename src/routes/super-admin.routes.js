@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   listCompanies,
   createCompany,
+  updateCompany,
   updateCompanyStatus,
   listAdmins,
   createAdmin,
@@ -12,6 +13,7 @@ const {
 
 router.get("/companies", listCompanies);
 router.post("/companies", createCompany);
+router.put("/companies/:id", updateCompany);
 router.put("/companies/:id/status", updateCompanyStatus);
 
 router.get("/admins", listAdmins);

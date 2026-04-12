@@ -15,6 +15,8 @@ const normalizeSlug = (value = "") =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
 
+const normalizeAddress = (value = "") => String(value || "").trim();
+
 const listCompanies = async (_req, res) => {
   try {
     const companies = await Company.find().sort({ createdAt: -1 });
@@ -26,7 +28,7 @@ const listCompanies = async (_req, res) => {
 
 const createCompany = async (req, res) => {
   try {
-    const { name, slug } = req.body;
+    const { name, slug, address } = req.body;
 
     if (!name || !String(name).trim()) {
       return res
@@ -36,6 +38,7 @@ const createCompany = async (req, res) => {
 
     const cleanName = String(name).trim();
     const cleanSlug = normalizeSlug(slug || cleanName);
+    const cleanAddress = normalizeAddress(address);
 
     if (!cleanSlug) {
       return res.status(400).json({
@@ -55,8 +58,89 @@ const createCompany = async (req, res) => {
       });
     }
 
-    const company = await Company.create({ name: cleanName, slug: cleanSlug });
+    const company = await Company.create({
+      name: cleanName,
+      slug: cleanSlug,
+      address: cleanAddress,
+    });
     return res.status(201).json({ success: true, data: company });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+const updateCompany = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const payload = req.body || {};
+    const nextName = Object.prototype.hasOwnProperty.call(payload, "name")
+      ? String(payload.name || "").trim()
+      : null;
+    const nextSlugRaw = Object.prototype.hasOwnProperty.call(payload, "slug")
+      ? String(payload.slug || "").trim()
+      : null;
+    const nextAddress = Object.prototype.hasOwnProperty.call(payload, "address")
+      ? normalizeAddress(payload.address)
+      : null;
+
+    const hasName = nextName !== null;
+    const hasSlug = nextSlugRaw !== null;
+    const hasAddress = nextAddress !== null;
+
+    if (!hasName && !hasSlug && !hasAddress) {
+      return res.status(400).json({
+        success: false,
+        error: "Debés enviar al menos uno de estos campos: name, slug, address.",
+      });
+    }
+
+    const company = await Company.findById(id);
+    if (!company) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Empresa no encontrada." });
+    }
+
+    const updates = {};
+    const finalName = hasName ? nextName : company.name;
+    let finalSlug = hasSlug ? normalizeSlug(nextSlugRaw) : company.slug;
+
+    if (hasName && !nextName) {
+      return res.status(400).json({
+        success: false,
+        error: "El nombre de la empresa no puede quedar vacío.",
+      });
+    }
+
+    if (!finalSlug && finalName) {
+      finalSlug = normalizeSlug(finalName);
+    }
+
+    if (!finalSlug) {
+      return res.status(400).json({
+        success: false,
+        error: "No se pudo generar un slug válido para la empresa.",
+      });
+    }
+
+    if (hasName) updates.name = finalName;
+    if (hasSlug || (hasName && !hasSlug)) updates.slug = finalSlug;
+    if (hasAddress) updates.address = nextAddress;
+
+    const duplicate = await Company.findOne({
+      _id: { $ne: id },
+      $or: [{ name: finalName }, { slug: finalSlug }],
+    }).lean();
+
+    if (duplicate) {
+      return res.status(400).json({
+        success: false,
+        error: "Ya existe una empresa con ese nombre o slug.",
+      });
+    }
+
+    const updated = await Company.findByIdAndUpdate(id, { $set: updates }, { new: true });
+    return res.status(200).json({ success: true, data: updated });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -106,7 +190,7 @@ const listAdmins = async (req, res) => {
 
     const admins = await Admin.find(filter)
       .select("-password")
-      .populate("companyId", "name slug isActive")
+      .populate("companyId", "name slug address isActive")
       .sort({ createdAt: -1 });
 
     return res.status(200).json({ success: true, data: admins });
@@ -166,7 +250,7 @@ const createAdmin = async (req, res) => {
 
     const populatedAdmin = await Admin.findById(admin._id)
       .select("-password")
-      .populate("companyId", "name slug isActive");
+      .populate("companyId", "name slug address isActive");
 
     return res.status(201).json({ success: true, data: populatedAdmin });
   } catch (error) {
@@ -211,7 +295,7 @@ const updateAdminStatus = async (req, res) => {
 
     const populatedAdmin = await Admin.findById(id)
       .select("-password")
-      .populate("companyId", "name slug isActive");
+      .populate("companyId", "name slug address isActive");
 
     return res.status(200).json({ success: true, data: populatedAdmin });
   } catch (error) {
@@ -293,6 +377,7 @@ const bootstrapDefaultTenant = async (req, res) => {
 module.exports = {
   listCompanies,
   createCompany,
+  updateCompany,
   updateCompanyStatus,
   listAdmins,
   createAdmin,
