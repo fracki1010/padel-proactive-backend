@@ -7,7 +7,9 @@ const { sendAdminNotification } = require("./notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const { getPenaltyLimit } = require("./appConfig.service");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
-const DAILY_BOOKING_LIMIT_PER_CLIENT = 3;
+const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
+  process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
+);
 const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
 
 const getDatePartsInTimezone = (date, timeZone = TIMEZONE) => {
@@ -63,6 +65,11 @@ const hasSlotStarted = (dateStr, timeStr, timeZone = TIMEZONE) => {
   return slotTimeToMinutes(timeStr) <= getCurrentMinutesInTimezone(timeZone);
 };
 
+const isBookingStillUpcoming = (dateValue, startTime, timeZone = TIMEZONE) => {
+  const bookingIsoDate = getDatePartsInTimezone(new Date(dateValue), timeZone);
+  return !hasSlotStarted(bookingIsoDate, startTime, timeZone);
+};
+
 /**
  * Crea una nueva reserva.
  * Soporta selección automática ("INDIFERENTE") o específica de cancha.
@@ -74,6 +81,7 @@ const createNewBooking = async ({
   timeStr,
   clientName,
   clientPhone,
+  allowSameClientSameSlot = false,
 }) => {
   try {
     const scope = buildCompanyFilter(companyId);
@@ -113,24 +121,26 @@ const createNewBooking = async ({
     }
 
     // 2.1 Evitar duplicados del mismo cliente en la misma fecha/hora
-    const existingClientBooking = await Booking.findOne({
-      ...scope,
-      clientPhone,
-      date: bookingDate,
-      timeSlot: slot._id,
-      status: { $ne: "cancelado" },
-    });
+    if (!allowSameClientSameSlot) {
+      const existingClientBooking = await Booking.findOne({
+        ...scope,
+        clientPhone,
+        date: bookingDate,
+        timeSlot: slot._id,
+        status: { $ne: "cancelado" },
+      });
 
-    if (existingClientBooking) {
-      return {
-        success: false,
-        error: "ALREADY_BOOKED",
-        data: {
-          bookingId: existingClientBooking._id,
-          startTime: slot.startTime,
-          endTime: slot.endTime,
-        },
-      };
+      if (existingClientBooking) {
+        return {
+          success: false,
+          error: "ALREADY_BOOKED",
+          data: {
+            bookingId: existingClientBooking._id,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+          },
+        };
+      }
     }
 
     let selectedCourt = null;
@@ -259,6 +269,60 @@ const hasActiveBookingForClient = async ({ companyId = null, clientPhone }) => {
   } catch (error) {
     console.error("Error verificando reservas activas del cliente:", error);
     return false;
+  }
+};
+
+const getActiveBookingsForClient = async ({
+  companyId = null,
+  clientPhone,
+  limit = 10,
+}) => {
+  try {
+    const scope = buildCompanyFilter(companyId);
+    const todayStr = getDatePartsInTimezone(new Date());
+    const todayDate = dateStringToUtcMidnight(todayStr);
+
+    const bookings = await Booking.find({
+      ...scope,
+      clientPhone,
+      status: { $ne: "cancelado" },
+      date: { $gte: todayDate },
+    })
+      .populate("court", "name")
+      .populate("timeSlot", "startTime endTime")
+      .sort({ date: 1, createdAt: 1 })
+      .limit(Math.max(1, Number(limit) || 10))
+      .lean();
+
+    const upcoming = bookings.filter((booking) => {
+      const startTime = booking?.timeSlot?.startTime;
+      if (!startTime) return false;
+      return isBookingStillUpcoming(booking.date, startTime);
+    });
+
+    const sortedUpcoming = upcoming.sort((a, b) => {
+      const dateA = getDatePartsInTimezone(new Date(a.date));
+      const dateB = getDatePartsInTimezone(new Date(b.date));
+      if (dateA !== dateB) return dateA.localeCompare(dateB);
+      return String(a?.timeSlot?.startTime || "").localeCompare(
+        String(b?.timeSlot?.startTime || ""),
+      );
+    });
+
+    return {
+      success: true,
+      data: sortedUpcoming.map((booking) => ({
+        bookingId: booking._id,
+        date: getDatePartsInTimezone(new Date(booking.date)),
+        courtName: booking?.court?.name || "Cancha",
+        startTime: booking?.timeSlot?.startTime || "",
+        endTime: booking?.timeSlot?.endTime || "",
+        status: booking?.status || "confirmado",
+      })),
+    };
+  } catch (error) {
+    console.error("Error obteniendo reservas vigentes del cliente:", error);
+    return { success: false, error: "INTERNAL_ERROR", data: [] };
   }
 };
 
@@ -399,4 +463,5 @@ module.exports = {
   getAvailableSlots,
   cancelBooking,
   hasActiveBookingForClient,
+  getActiveBookingsForClient,
 };
