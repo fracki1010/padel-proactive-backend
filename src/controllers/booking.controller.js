@@ -4,7 +4,9 @@ const Court = require("../models/court.model");
 const User = require("../models/user.model");
 const { sendAdminNotification } = require("../services/notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
-const DAILY_BOOKING_LIMIT_PER_CLIENT = 3;
+const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
+  process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
+);
 
 const resolveCompanyId = (req) => {
   if (req.user?.role === "super_admin") {

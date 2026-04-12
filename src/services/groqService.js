@@ -187,6 +187,7 @@ const getChatResponse = async (
     - Eres amable, conciso y vas al grano.
     - Si el usuario quiere reservar, genera el JSON 'CREATE_BOOKING'.
     - Si pregunta disponibilidad, genera 'CHECK_AVAILABILITY'.
+    - Si pregunta por sus reservas/turnos vigentes, genera 'LIST_ACTIVE_BOOKINGS'.
     - Si el usuario quiere cancelar un turno, genera 'CANCEL_BOOKING'.
     - Si pide "turno fijo" (o similar), genera 'FIXED_TURN_REQUEST'. No prometas confirmación automática.
     - Para cancelar, DEBES confirmar la fecha y hora con el usuario antes de proceder si los datos no son claros.
@@ -229,7 +230,12 @@ const getChatResponse = async (
       "time": "HH:mm"
     }
 
-    CASO 4: PEDIDO DE TURNO FIJO
+    CASO 4: LISTAR RESERVAS VIGENTES DEL CLIENTE
+    {
+      "action": "LIST_ACTIVE_BOOKINGS"
+    }
+
+    CASO 5: PEDIDO DE TURNO FIJO
     {
       "action": "FIXED_TURN_REQUEST",
       "date": "YYYY-MM-DD", // opcional
@@ -237,7 +243,7 @@ const getChatResponse = async (
       "message": "Resumen corto del pedido"
     }
 
-    CASO 5: CHARLA NORMAL
+    CASO 6: CHARLA NORMAL
     {
        "message": "Respuesta normal..."
     }
