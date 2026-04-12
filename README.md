@@ -9,3 +9,4 @@
 
 1. Backend: `npm run dev`
 2. Frontend: `cd ../padel-proactive-frontend && npm run dev`
+ pero
