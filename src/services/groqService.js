@@ -66,13 +66,17 @@ const requestChatCompletion = async ({ conversation, model, maxTokens }) => {
   return completion.choices[0]?.message?.content || "";
 };
 
-const getClubNameByCompanyId = async (companyId = null) => {
+const getClubInfoByCompanyId = async (companyId = null) => {
   try {
     if (!companyId) return null;
-    const company = await Company.findById(companyId).select("name").lean();
-    return company?.name?.trim() || null;
+    const company = await Company.findById(companyId).select("name address").lean();
+    if (!company) return null;
+    return {
+      name: company?.name?.trim() || null,
+      address: company?.address?.trim() || "",
+    };
   } catch (error) {
-    console.error("Error obteniendo nombre del club:", error);
+    console.error("Error obteniendo datos del club:", error);
     return null;
   }
 };
@@ -85,9 +89,11 @@ const getChatResponse = async (
 ) => {
   try {
     const companyId = options.companyId || null;
-    const clubNameFromDb = await getClubNameByCompanyId(companyId);
+    const clubInfoFromDb = await getClubInfoByCompanyId(companyId);
     const defaultClubName = process.env.DEFAULT_CLUB_NAME || "Club de Pádel";
-    const clubName = clubNameFromDb || defaultClubName;
+    const clubName = clubInfoFromDb?.name || defaultClubName;
+    const clubAddress = clubInfoFromDb?.address || "";
+    const hasClubAddress = Boolean(clubAddress);
     // 1. CONFIGURACIÓN DE FECHA "BLINDADA" (TimeZone Fix)
     // Obtenemos la fecha actual del servidor
     const serverDate = new Date();
@@ -163,6 +169,9 @@ const getChatResponse = async (
     - Nombre oficial del club para ESTA conversación: "${clubName}".
     - Si nombras al club, usa siempre "${clubName}".
     - Ignora cualquier nombre anterior o de ejemplo.
+    - Dirección registrada del club: ${hasClubAddress ? `"${clubAddress}".` : '"No registrada".'}
+    - Si te preguntan por ubicación/dirección/cómo llegar y hay dirección registrada, respóndela textual.
+    - Si no hay dirección registrada, responde que no está configurada y sugiere contactar a administración.
     
     [INSTRUCCIONES DE CANCHAS - CRITICO]
     ${courtInstructions}
@@ -185,6 +194,7 @@ const getChatResponse = async (
     - Si el usuario corrige horario/día/cancha, trátalo como edición del pedido, no como confirmación.
     - Si el pedido menciona más de un turno en el mismo mensaje, prioriza claridad y no lo reduzcas a un solo turno.
     - Nunca inventes precios, horarios o disponibilidad.
+    - Nunca inventes la dirección del club.
     - Si no conoces un dato, pide aclaración o responde que no está disponible ese dato.
     
     [AMBIGUEDADES - REGLAS OBLIGATORIAS]
