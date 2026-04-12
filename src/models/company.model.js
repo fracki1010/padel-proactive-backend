@@ -15,6 +15,12 @@ const companySchema = new mongoose.Schema(
       lowercase: true,
       unique: true,
     },
+    address: {
+      type: String,
+      trim: true,
+      default: "",
+      maxlength: 240,
+    },
     isActive: {
       type: Boolean,
       default: true,
