@@ -12,6 +12,58 @@ const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
 const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
+const normalizePhoneDigits = (value = "") => String(value || "").replace(/\D/g, "");
+const normalizeWhatsappId = (value = "") => String(value || "").trim().toLowerCase();
+const whatsappIdsMatch = (bookingWhatsappId = "", requestWhatsappId = "") => {
+  const booking = normalizeWhatsappId(bookingWhatsappId);
+  const request = normalizeWhatsappId(requestWhatsappId);
+  if (!booking || !request) return false;
+  return booking === request;
+};
+
+const buildPhoneVariants = (phoneRaw = "") => {
+  const digits = normalizePhoneDigits(phoneRaw);
+  const variants = new Set();
+  if (!digits) return variants;
+
+  variants.add(digits);
+
+  // Compatibilidad AR: algunos flujos guardan con 549..., otros con 54...
+  if (digits.startsWith("549")) {
+    variants.add(`54${digits.slice(3)}`);
+  } else if (digits.startsWith("54")) {
+    variants.add(`549${digits.slice(2)}`);
+  }
+
+  if (digits.startsWith("0") && digits.length > 1) {
+    variants.add(digits.slice(1));
+  }
+
+  return variants;
+};
+
+const phonesMatch = (bookingPhoneRaw = "", requestPhoneRaw = "") => {
+  const bookingDigits = normalizePhoneDigits(bookingPhoneRaw);
+  if (!bookingDigits) return false;
+
+  const requestVariants = buildPhoneVariants(requestPhoneRaw);
+  if (requestVariants.has(bookingDigits)) return true;
+
+  const bookingVariants = buildPhoneVariants(bookingDigits);
+  for (const variant of bookingVariants) {
+    if (requestVariants.has(variant)) return true;
+  }
+
+  // Fallback: comparar últimos 8 dígitos (útil cuando hay prefijos distintos)
+  if (bookingDigits.length >= 8) {
+    const bookingTail = bookingDigits.slice(-8);
+    for (const variant of requestVariants) {
+      if (variant.length >= 8 && variant.slice(-8) === bookingTail) return true;
+    }
+  }
+
+  return false;
+};
 
 const getDatePartsInTimezone = (date, timeZone = TIMEZONE) => {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -82,6 +134,7 @@ const createNewBooking = async ({
   timeStr,
   clientName,
   clientPhone,
+  clientWhatsappId = null,
   allowSameClientSameSlot = false,
 }) => {
   try {
@@ -219,6 +272,7 @@ const createNewBooking = async ({
       timeSlot: slot._id,
       clientName,
       clientPhone,
+      clientWhatsappId: normalizeWhatsappId(clientWhatsappId) || null,
       finalPrice: slot.price, // Congelamos el precio actual
       status: "confirmado",
     });
@@ -253,18 +307,30 @@ const createNewBooking = async ({
   }
 };
 
-const hasActiveBookingForClient = async ({ companyId = null, clientPhone }) => {
+const hasActiveBookingForClient = async ({
+  companyId = null,
+  clientPhone,
+  clientWhatsappId = null,
+}) => {
   try {
     const scope = buildCompanyFilter(companyId);
     const todayStr = getDatePartsInTimezone(new Date());
     const todayDate = dateStringToUtcMidnight(todayStr);
 
-    const existing = await Booking.findOne({
+    const candidates = await Booking.find({
       ...scope,
-      clientPhone,
       status: { $ne: "cancelado" },
       date: { $gte: todayDate },
-    }).lean();
+    })
+      .select("clientPhone clientWhatsappId")
+      .limit(200)
+      .lean();
+
+    const existing = candidates.find(
+      (booking) =>
+        whatsappIdsMatch(booking?.clientWhatsappId, clientWhatsappId) ||
+        phonesMatch(booking?.clientPhone, clientPhone),
+    );
 
     return Boolean(existing);
   } catch (error) {
@@ -276,6 +342,7 @@ const hasActiveBookingForClient = async ({ companyId = null, clientPhone }) => {
 const getActiveBookingsForClient = async ({
   companyId = null,
   clientPhone,
+  clientWhatsappId = null,
   limit = 10,
 }) => {
   try {
@@ -285,30 +352,36 @@ const getActiveBookingsForClient = async ({
 
     const bookings = await Booking.find({
       ...scope,
-      clientPhone,
       status: { $ne: "cancelado" },
       date: { $gte: todayDate },
     })
       .populate("court", "name")
       .populate("timeSlot", "startTime endTime")
       .sort({ date: 1, createdAt: 1 })
-      .limit(Math.max(1, Number(limit) || 10))
       .lean();
 
-    const upcoming = bookings.filter((booking) => {
+    const matchingByClient = bookings.filter(
+      (booking) =>
+        whatsappIdsMatch(booking?.clientWhatsappId, clientWhatsappId) ||
+        phonesMatch(booking?.clientPhone, clientPhone),
+    );
+
+    const upcoming = matchingByClient.filter((booking) => {
       const startTime = booking?.timeSlot?.startTime;
       if (!startTime) return false;
       return isBookingStillUpcoming(booking.date, startTime);
     });
 
-    const sortedUpcoming = upcoming.sort((a, b) => {
+    const sortedUpcoming = upcoming
+      .sort((a, b) => {
       const dateA = getDatePartsInTimezone(new Date(a.date));
       const dateB = getDatePartsInTimezone(new Date(b.date));
       if (dateA !== dateB) return dateA.localeCompare(dateB);
       return String(a?.timeSlot?.startTime || "").localeCompare(
         String(b?.timeSlot?.startTime || ""),
       );
-    });
+      })
+      .slice(0, Math.max(1, Number(limit) || 10));
 
     return {
       success: true,
@@ -388,7 +461,13 @@ const getAvailableSlots = async (dateStr, options = {}) => {
  * Cancela una reserva de un cliente por teléfono, fecha y hora.
  * Aplica una penalización al usuario y lo suspende si llega a 2.
  */
-const cancelBooking = async ({ companyId = null, clientPhone, dateStr, timeStr }) => {
+const cancelBooking = async ({
+  companyId = null,
+  clientPhone,
+  clientWhatsappId = null,
+  dateStr,
+  timeStr,
+}) => {
   try {
     const scope = buildCompanyFilter(companyId);
     const bookingDate = dateStringToUtcMidnight(dateStr);
@@ -400,13 +479,18 @@ const cancelBooking = async ({ companyId = null, clientPhone, dateStr, timeStr }
     }
 
     // 2. Buscar la reserva activa del cliente en esa fecha y hora
-    const booking = await Booking.findOne({
+    const bookingsInSlot = await Booking.find({
       ...scope,
-      clientPhone,
       date: bookingDate,
       timeSlot: slot._id,
       status: { $ne: "cancelado" },
     });
+
+    const booking = bookingsInSlot.find(
+      (item) =>
+        whatsappIdsMatch(item?.clientWhatsappId, clientWhatsappId) ||
+        phonesMatch(item?.clientPhone, clientPhone),
+    );
 
     if (!booking) {
       return { success: false, error: "NOT_FOUND" };
