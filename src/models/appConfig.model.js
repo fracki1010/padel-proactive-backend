@@ -17,6 +17,10 @@ const appConfigSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    oneHourReminderEnabled: {
+      type: Boolean,
+      default: true,
+    },
     penaltyLimit: {
       type: Number,
       default: 2,

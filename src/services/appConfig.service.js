@@ -27,6 +27,7 @@ const ensureAppConfig = async (companyId = null) => {
     companyId: companyId || null,
     key: CONFIG_KEY,
     whatsappEnabled: false,
+    oneHourReminderEnabled: true,
     penaltyLimit: DEFAULT_PENALTY_LIMIT,
     cancellationGroupEnabled: false,
     cancellationGroupId: "",
@@ -46,6 +47,26 @@ const setPenaltyLimit = async (penaltyLimit, companyId = null) => {
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { penaltyLimit: normalized } },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+};
+
+const getOneHourReminderEnabled = async (companyId = null) => {
+  const config = await ensureAppConfig(companyId);
+  if (typeof config.oneHourReminderEnabled === "boolean") {
+    return config.oneHourReminderEnabled;
+  }
+  return true;
+};
+
+const setOneHourReminderEnabled = async (enabled, companyId = null) => {
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    {
+      $set: {
+        oneHourReminderEnabled: Boolean(enabled),
+      },
+    },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
 };
@@ -117,8 +138,10 @@ const setDailyAvailabilityDigestLastSentDate = async (
 module.exports = {
   DEFAULT_PENALTY_LIMIT,
   ensureAppConfig,
+  getOneHourReminderEnabled,
   getPenaltyLimit,
   setPenaltyLimit,
+  setOneHourReminderEnabled,
   getWhatsappCancellationGroupSettings,
   setWhatsappCancellationGroupSettings,
   setDailyAvailabilityDigestStatus,

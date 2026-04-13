@@ -5,6 +5,7 @@ const sessionService = require("./sessionService");
 const { getClient } = require("./whatsappTenantManager.service");
 const { getWhatsappState } = require("../state/whatsapp.state");
 const { isMongoConnected } = require("../config/database");
+const { getOneHourReminderEnabled } = require("./appConfig.service");
 
 const CONFIG_KEY = "main";
 const CHECK_INTERVAL_MS = 60 * 1000;
@@ -82,6 +83,9 @@ const buildAttendancePrompt = (booking) => {
 const processCompany = async (companyId = null) => {
   const waState = getWhatsappState(companyId);
   if (!waState.enabled) return;
+
+  const oneHourReminderEnabled = await getOneHourReminderEnabled(companyId);
+  if (!oneHourReminderEnabled) return;
 
   const client = getClient(companyId);
   if (!client || !client.isReady) return;
