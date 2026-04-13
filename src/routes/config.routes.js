@@ -8,7 +8,10 @@ const {
   DEFAULT_PENALTY_LIMIT,
   getPenaltyLimit,
   setPenaltyLimit,
+  getWhatsappCancellationGroupSettings,
+  setWhatsappCancellationGroupSettings,
 } = require("../services/appConfig.service");
+const { listWhatsappGroups } = require("../services/whatsappCancellationGroup.service");
 
 const resolveCompanyId = (req) => {
   if (req.user?.role === "super_admin") {
@@ -23,6 +26,10 @@ const companyScope = (req, companyId) => {
   }
   return { companyId: req.user?.companyId || null };
 };
+
+const firstBoolean = (values = []) => values.find((value) => typeof value === "boolean");
+const firstString = (values = []) =>
+  values.find((value) => typeof value === "string" && value.trim().length >= 0);
 
 // GET /api/config/courts
 router.get("/courts", async (req, res) => {
@@ -222,33 +229,150 @@ router.get("/whatsapp", async (_req, res) => {
   try {
     const companyId = resolveCompanyId(_req);
     const state = getWhatsappState(companyId);
-    res.status(200).json({ success: true, data: state });
+    const cancellationGroup = await getWhatsappCancellationGroupSettings(companyId);
+    res.status(200).json({
+      success: true,
+      data: {
+        ...state,
+        cancellationGroupEnabled: cancellationGroup.enabled,
+        cancellationGroupId: cancellationGroup.groupId,
+        cancellationGroupName: cancellationGroup.groupName,
+      },
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// PUT /api/config/whatsapp
-router.put("/whatsapp", async (req, res) => {
+const updateWhatsappConfig = async (req, res) => {
   try {
-    const { enabled } = req.body;
+    const body = req.body || {};
     const companyId = resolveCompanyId(req);
+    const whatsappEnabledCandidate = firstBoolean([
+      body.enabled,
+      body.isEnabled,
+      body.isActive,
+    ]);
+    const cancellationGroupEnabledCandidate = firstBoolean([
+      body.cancellationGroupEnabled,
+      body.cancelationGroupEnabled,
+      body.groupCancellationAlertsEnabled,
+      body.cancelledBookingGroupEnabled,
+      body.notifyCancelledBookingGroup,
+    ]);
+    const cancellationGroupIdCandidate = firstString([
+      body.cancellationGroupId,
+      body.cancelationGroupId,
+      body.groupCancellationAlertsId,
+      body.cancelledBookingGroupId,
+    ]);
+    const cancellationGroupNameCandidate = firstString([
+      body.cancellationGroupName,
+      body.cancelationGroupName,
+      body.groupCancellationAlertsName,
+      body.cancelledBookingGroupName,
+    ]);
 
-    if (typeof enabled !== "boolean") {
+    const hasWhatsappEnabledUpdate = typeof whatsappEnabledCandidate === "boolean";
+    const hasCancellationGroupUpdate =
+      typeof cancellationGroupEnabledCandidate === "boolean" ||
+      typeof cancellationGroupIdCandidate === "string" ||
+      typeof cancellationGroupNameCandidate === "string";
+
+    if (!hasWhatsappEnabledUpdate && !hasCancellationGroupUpdate) {
       return res.status(400).json({
         success: false,
-        error: "El campo 'enabled' debe ser booleano.",
+        error:
+          "Debés enviar al menos una configuración válida de WhatsApp (enabled o datos del grupo de cancelación).",
       });
     }
 
-    const state = await setWhatsappEnabled(enabled, companyId);
-    return res.status(200).json({ success: true, data: state });
+    let state = getWhatsappState(companyId);
+    if (hasWhatsappEnabledUpdate) {
+      state = await setWhatsappEnabled(whatsappEnabledCandidate, companyId);
+    }
+
+    let cancellationGroup = await getWhatsappCancellationGroupSettings(companyId);
+    if (hasCancellationGroupUpdate) {
+      const nextEnabled =
+        typeof cancellationGroupEnabledCandidate === "boolean"
+          ? cancellationGroupEnabledCandidate
+          : cancellationGroup.enabled;
+      const nextGroupId =
+        typeof cancellationGroupIdCandidate === "string"
+          ? cancellationGroupIdCandidate.trim()
+          : cancellationGroup.groupId;
+      const nextGroupName =
+        typeof cancellationGroupNameCandidate === "string"
+          ? cancellationGroupNameCandidate.trim()
+          : cancellationGroup.groupName;
+
+      if (nextEnabled && !nextGroupId) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Para activar avisos al grupo de cancelaciones debés informar un groupId válido.",
+        });
+      }
+
+      const savedConfig = await setWhatsappCancellationGroupSettings(
+        {
+          enabled: nextEnabled,
+          groupId: nextGroupId,
+          groupName: nextGroupName,
+        },
+        companyId,
+      );
+      cancellationGroup = {
+        enabled: Boolean(savedConfig.cancellationGroupEnabled),
+        groupId: String(savedConfig.cancellationGroupId || ""),
+        groupName: String(savedConfig.cancellationGroupName || ""),
+      };
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...state,
+        cancellationGroupEnabled: cancellationGroup.enabled,
+        cancellationGroupId: cancellationGroup.groupId,
+        cancellationGroupName: cancellationGroup.groupName,
+      },
+    });
   } catch (error) {
     const message = String(error?.message || "");
     if (message.includes("ya está abierta en otro proceso")) {
       return res.status(409).json({
         success: false,
         error: message,
+      });
+    }
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// PUT/PATCH /api/config/whatsapp
+router.put("/whatsapp", updateWhatsappConfig);
+router.patch("/whatsapp", updateWhatsappConfig);
+
+// GET /api/config/whatsapp/groups
+router.get("/whatsapp/groups", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const groups = await listWhatsappGroups(companyId);
+    return res.status(200).json({ success: true, data: { groups } });
+  } catch (error) {
+    const message = String(error?.message || "");
+    if (
+      message.includes("no está listo") ||
+      message.includes("no está inicializado") ||
+      message.includes("No existe cliente")
+    ) {
+      return res.status(200).json({
+        success: true,
+        data: { groups: [] },
+        error:
+          "WhatsApp todavía no está listo. Activá y vinculá la sesión para poder listar grupos.",
       });
     }
     return res.status(500).json({ success: false, error: error.message });

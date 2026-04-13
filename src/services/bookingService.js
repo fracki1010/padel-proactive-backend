@@ -6,6 +6,7 @@ const User = require("../models/user.model");
 const { sendAdminNotification } = require("./notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const { getPenaltyLimit } = require("./appConfig.service");
+const { notifyCancellationToGroup } = require("./whatsappCancellationGroup.service");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
@@ -440,6 +441,20 @@ const cancelBooking = async ({ companyId = null, clientPhone, dateStr, timeStr }
       { bookingId: booking._id, companyId },
       { companyId },
     );
+
+    try {
+      await notifyCancellationToGroup({
+        companyId,
+        booking,
+        time: slot.startTime,
+        cancelledBy: "cliente (WhatsApp)",
+      });
+    } catch (groupError) {
+      console.error(
+        `[CancellationGroup][${companyId || "global"}] Error notificando cancelación desde WhatsApp:`,
+        groupError?.message || groupError,
+      );
+    }
 
     return {
       success: true,
