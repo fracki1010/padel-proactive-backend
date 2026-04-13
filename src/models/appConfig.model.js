@@ -22,6 +22,20 @@ const appConfigSchema = new mongoose.Schema(
       default: 2,
       min: 1,
     },
+    cancellationGroupEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    cancellationGroupId: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    cancellationGroupName: {
+      type: String,
+      default: "",
+      trim: true,
+    },
   },
   {
     timestamps: true,

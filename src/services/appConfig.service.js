@@ -16,6 +16,9 @@ const normalizePenaltyLimit = (value) => {
   return parsed;
 };
 
+const normalizeString = (value) =>
+  typeof value === "string" ? value.trim() : String(value || "").trim();
+
 const ensureAppConfig = async (companyId = null) => {
   const existing = await AppConfig.findOne(buildConfigFilter(companyId));
   if (existing) return existing;
@@ -25,6 +28,9 @@ const ensureAppConfig = async (companyId = null) => {
     key: CONFIG_KEY,
     whatsappEnabled: false,
     penaltyLimit: DEFAULT_PENALTY_LIMIT,
+    cancellationGroupEnabled: false,
+    cancellationGroupId: "",
+    cancellationGroupName: "",
   });
 };
 
@@ -42,9 +48,41 @@ const setPenaltyLimit = async (penaltyLimit, companyId = null) => {
   );
 };
 
+const getWhatsappCancellationGroupSettings = async (companyId = null) => {
+  const config = await ensureAppConfig(companyId);
+  return {
+    enabled: Boolean(config.cancellationGroupEnabled),
+    groupId: normalizeString(config.cancellationGroupId),
+    groupName: normalizeString(config.cancellationGroupName),
+  };
+};
+
+const setWhatsappCancellationGroupSettings = async (
+  { enabled, groupId, groupName },
+  companyId = null,
+) => {
+  const nextEnabled = Boolean(enabled);
+  const nextGroupId = normalizeString(groupId);
+  const nextGroupName = normalizeString(groupName);
+
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    {
+      $set: {
+        cancellationGroupEnabled: nextEnabled,
+        cancellationGroupId: nextGroupId,
+        cancellationGroupName: nextGroupName,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+};
+
 module.exports = {
   DEFAULT_PENALTY_LIMIT,
   ensureAppConfig,
   getPenaltyLimit,
   setPenaltyLimit,
+  getWhatsappCancellationGroupSettings,
+  setWhatsappCancellationGroupSettings,
 };
