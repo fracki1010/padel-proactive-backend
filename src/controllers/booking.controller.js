@@ -7,6 +7,11 @@ const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
+const toIsoDateOnly = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  return date.toISOString().slice(0, 10);
+};
 
 const resolveCompanyId = (req) => {
   if (req.user?.role === "super_admin") {
@@ -108,10 +113,15 @@ const getBookings = async (req, res) => {
       return orderA - orderB;
     });
 
+    const normalizedBookings = bookings.map((booking) => ({
+      ...(typeof booking.toObject === "function" ? booking.toObject() : booking),
+      date: toIsoDateOnly(booking.date),
+    }));
+
     res.status(200).json({
       success: true,
-      count: bookings.length,
-      data: bookings,
+      count: normalizedBookings.length,
+      data: normalizedBookings,
     });
   } catch (error) {
     console.error("Error en getBookings:", error);
