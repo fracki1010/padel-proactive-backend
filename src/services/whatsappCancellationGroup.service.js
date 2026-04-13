@@ -1,4 +1,3 @@
-const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const { getWhatsappState } = require("../state/whatsapp.state");
 const { getReadyClient } = require("./whatsappTenantManager.service");
 const {
@@ -12,23 +11,45 @@ const normalizeChatId = (value) => {
   return `${raw}@g.us`;
 };
 
-const formatCancellationMessage = ({
-  clientName,
-  date,
-  time,
-  courtName,
-  cancelledBy = "sistema",
-}) => {
+const TIMEZONE = "America/Argentina/Buenos_Aires";
+
+const getIsoDateInTimezone = (value, timeZone = TIMEZONE) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  return `${year}-${month}-${day}`;
+};
+
+const getBookingIsoDate = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+};
+
+const getTodayIsoInTimezone = (timeZone = TIMEZONE) => {
+  return getIsoDateInTimezone(new Date(), timeZone);
+};
+
+const isTodayInTimezone = (value, timeZone = TIMEZONE) => {
+  return getBookingIsoDate(value) === getTodayIsoInTimezone(timeZone);
+};
+
+const formatCancellationMessage = ({ time, courtName }) => {
   return [
     "🎾 *Turno liberado*",
     "",
-    `👤 *Cliente:* ${clientName || "N/D"}`,
-    `📅 *Fecha:* ${formatBookingDateShort(date)}`,
     `⏰ *Hora:* ${time || "N/D"}`,
     `🏟️ *Cancha:* ${courtName || "N/D"}`,
     "",
-    `ℹ️ Cancelado por: ${cancelledBy}`,
-    "Si te interesa, pedilo por este mismo número.",
+    "Si te interesa, pedilo por este chat.",
   ].join("\n");
 };
 
@@ -37,8 +58,11 @@ const notifyCancellationToGroup = async ({
   booking,
   time,
   courtName,
-  cancelledBy = "sistema",
 }) => {
+  if (!isTodayInTimezone(booking?.date)) {
+    return { sent: false, reason: "booking_not_today" };
+  }
+
   const settings = await getWhatsappCancellationGroupSettings(companyId);
   if (!settings.enabled) {
     return { sent: false, reason: "group_alerts_disabled" };
@@ -62,11 +86,8 @@ const notifyCancellationToGroup = async ({
   }
 
   const message = formatCancellationMessage({
-    clientName: booking?.clientName,
-    date: booking?.date,
     time: time || booking?.timeSlot?.startTime,
     courtName: courtName || booking?.court?.name,
-    cancelledBy,
   });
 
   await client.sendMessage(groupId, message);
@@ -92,4 +113,6 @@ const listWhatsappGroups = async (companyId = null) => {
 module.exports = {
   notifyCancellationToGroup,
   listWhatsappGroups,
+  getIsoDateInTimezone,
+  getTodayIsoInTimezone,
 };
