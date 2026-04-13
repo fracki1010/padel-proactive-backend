@@ -28,6 +28,7 @@ const bookingSchema = new mongoose.Schema(
     // 4. QUIÉN
     clientName: { type: String, required: true },
     clientPhone: { type: String, required: true },
+    clientWhatsappId: { type: String, default: null },
 
     // 5. ESTADO
     status: {
