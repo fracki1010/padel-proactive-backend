@@ -1634,12 +1634,18 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       // CASO C: LISTAR RESERVAS VIGENTES DEL CLIENTE
       else if (parsedData.action === "LIST_ACTIVE_BOOKINGS") {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
+        console.log(
+          `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS via AI chatId=${chatId} canonicalClientPhone=${canonicalClientPhone}`,
+        );
         const activeBookings = await bookingService.getActiveBookingsForClient({
           companyId,
           clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
           limit: 15,
         });
+        console.log(
+          `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS result success=${activeBookings?.success} count=${activeBookings?.data?.length || 0}`,
+        );
 
         if (activeBookings.success) {
           replyText = buildActiveBookingsReply(activeBookings.data);
@@ -1747,12 +1753,18 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             pendingBookingOffer: availabilityResponse.pendingBookingOffer,
           });
         } else if (fallback?.action === "LIST_ACTIVE_BOOKINGS") {
+          console.log(
+            `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS via fallback chatId=${chatId} canonicalClientPhone=${canonicalClientPhone}`,
+          );
           const activeBookings = await bookingService.getActiveBookingsForClient({
             companyId,
             clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
             limit: 15,
           });
+          console.log(
+            `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS fallback result success=${activeBookings?.success} count=${activeBookings?.data?.length || 0}`,
+          );
           replyText = activeBookings.success
             ? buildActiveBookingsReply(activeBookings.data)
             : "⚠️ No pude consultar tus reservas vigentes en este momento.";
@@ -1802,12 +1814,18 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           pendingBookingOffer: availabilityResponse.pendingBookingOffer,
         });
       } else if (fallback?.action === "LIST_ACTIVE_BOOKINGS") {
+        console.log(
+          `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS via plain-fallback chatId=${chatId} canonicalClientPhone=${canonicalClientPhone}`,
+        );
         const activeBookings = await bookingService.getActiveBookingsForClient({
           companyId,
           clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
           limit: 15,
         });
+        console.log(
+          `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS plain-fallback result success=${activeBookings?.success} count=${activeBookings?.data?.length || 0}`,
+        );
         replyText = activeBookings.success
           ? buildActiveBookingsReply(activeBookings.data)
           : "⚠️ No pude consultar tus reservas vigentes en este momento.";
