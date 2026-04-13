@@ -360,6 +360,14 @@ const getActiveBookingsForClient = async ({
       .sort({ date: 1, createdAt: 1 })
       .lean();
 
+      console.log('scope:', scope);
+      console.log('clientPhone:', clientPhone);
+      console.log('clientWhatsappId:', clientWhatsappId);
+      console.log('bookings:', bookings);
+
+      
+      
+
     const matchingByClient = bookings.filter(
       (booking) =>
         whatsappIdsMatch(booking?.clientWhatsappId, clientWhatsappId) ||
