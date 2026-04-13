@@ -319,6 +319,11 @@ const getActiveBookingsForClient = async ({
     const scope = buildCompanyFilter(companyId);
     const todayStr = getDatePartsInTimezone(new Date());
     const todayDate = dateStringToUtcMidnight(todayStr);
+    const debugPrefix = `[BookingsLookup][${companyId || "global"}]`;
+
+    console.log(
+      `${debugPrefix} request clientPhone=${String(clientPhone)} clientWhatsappId=${String(clientWhatsappId || "")} today=${todayStr}`,
+    );
 
     const bookings = await Booking.find({
       ...scope,
@@ -330,17 +335,41 @@ const getActiveBookingsForClient = async ({
       .sort({ date: 1, createdAt: 1 })
       .lean();
 
+    console.log(`${debugPrefix} candidates=${bookings.length}`);
+
     const matchingByClient = bookings.filter(
       (booking) =>
         whatsappIdsMatch(booking?.clientWhatsappId, clientWhatsappId) ||
         phonesMatch(booking?.clientPhone, clientPhone),
     );
 
+    const sampleAudit = bookings.slice(0, 25).map((booking) => {
+      const byWhatsapp = whatsappIdsMatch(
+        booking?.clientWhatsappId,
+        clientWhatsappId,
+      );
+      const byPhone = phonesMatch(booking?.clientPhone, clientPhone);
+      return {
+        bookingId: String(booking?._id || ""),
+        bookingPhone: String(booking?.clientPhone || ""),
+        bookingWhatsappId: String(booking?.clientWhatsappId || ""),
+        byWhatsapp,
+        byPhone,
+        matched: byWhatsapp || byPhone,
+        date: booking?.date ? new Date(booking.date).toISOString().slice(0, 10) : "",
+        startTime: String(booking?.timeSlot?.startTime || ""),
+        status: String(booking?.status || ""),
+      };
+    });
+    console.log(`${debugPrefix} sampleAudit=`, sampleAudit);
+    console.log(`${debugPrefix} matchedByClient=${matchingByClient.length}`);
+
     const upcoming = matchingByClient.filter((booking) => {
       const startTime = booking?.timeSlot?.startTime;
       if (!startTime) return false;
       return isBookingStillUpcoming(booking.date, startTime);
     });
+    console.log(`${debugPrefix} upcoming=${upcoming.length}`);
 
     const sortedUpcoming = upcoming
       .sort((a, b) => {
@@ -352,6 +381,7 @@ const getActiveBookingsForClient = async ({
       );
       })
       .slice(0, Math.max(1, Number(limit) || 10));
+    console.log(`${debugPrefix} returning=${sortedUpcoming.length}`);
 
     return {
       success: true,
