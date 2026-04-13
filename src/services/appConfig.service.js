@@ -31,6 +31,8 @@ const ensureAppConfig = async (companyId = null) => {
     cancellationGroupEnabled: false,
     cancellationGroupId: "",
     cancellationGroupName: "",
+    dailyAvailabilityDigestEnabled: false,
+    dailyAvailabilityDigestLastSentDate: "",
   });
 };
 
@@ -54,6 +56,10 @@ const getWhatsappCancellationGroupSettings = async (companyId = null) => {
     enabled: Boolean(config.cancellationGroupEnabled),
     groupId: normalizeString(config.cancellationGroupId),
     groupName: normalizeString(config.cancellationGroupName),
+    dailyAvailabilityDigestEnabled: Boolean(config.dailyAvailabilityDigestEnabled),
+    dailyAvailabilityDigestLastSentDate: normalizeString(
+      config.dailyAvailabilityDigestLastSentDate,
+    ),
   };
 };
 
@@ -78,6 +84,36 @@ const setWhatsappCancellationGroupSettings = async (
   );
 };
 
+const setDailyAvailabilityDigestStatus = async (
+  enabled,
+  companyId = null,
+) => {
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    {
+      $set: {
+        dailyAvailabilityDigestEnabled: Boolean(enabled),
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+};
+
+const setDailyAvailabilityDigestLastSentDate = async (
+  isoDate,
+  companyId = null,
+) => {
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    {
+      $set: {
+        dailyAvailabilityDigestLastSentDate: normalizeString(isoDate),
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+};
+
 module.exports = {
   DEFAULT_PENALTY_LIMIT,
   ensureAppConfig,
@@ -85,4 +121,6 @@ module.exports = {
   setPenaltyLimit,
   getWhatsappCancellationGroupSettings,
   setWhatsappCancellationGroupSettings,
+  setDailyAvailabilityDigestStatus,
+  setDailyAvailabilityDigestLastSentDate,
 };

@@ -7,6 +7,9 @@ const {
 const {
   startAttendanceConfirmationMonitor,
 } = require("./src/services/attendanceConfirmation.service");
+const {
+  startDailyAvailabilityDigestMonitor,
+} = require("./src/services/dailyAvailabilityDigest.service");
 
 const PORT = process.env.PORT || 3000;
 
@@ -25,6 +28,8 @@ connectDB()
     );
     startAttendanceConfirmationMonitor();
     console.log("✅ Monitor de confirmación de asistencia iniciado.");
+    startDailyAvailabilityDigestMonitor();
+    console.log("✅ Monitor de disponibilidad diaria iniciado.");
   })
   .catch((err) => {
     console.error("❌ Error al conectar MongoDB:", err);

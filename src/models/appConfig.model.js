@@ -36,6 +36,15 @@ const appConfigSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    dailyAvailabilityDigestEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    dailyAvailabilityDigestLastSentDate: {
+      type: String,
+      default: "",
+      trim: true,
+    },
   },
   {
     timestamps: true,
