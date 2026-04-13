@@ -576,7 +576,7 @@ const extractBookingDraftsFromMessage = (rawText, fallbackCourt = "INDIFERENTE")
 
 const buildActiveBookingsReply = (bookings = []) => {
   if (!Array.isArray(bookings) || bookings.length === 0) {
-    return "📭 No encontré reservas vigentes a tu nombre.";
+    return "📭 No encontré reservas vigentes para este número de WhatsApp.";
   }
 
   const lines = bookings.map((booking, index) => {
@@ -876,6 +876,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const cancelResult = await bookingService.cancelBooking({
           companyId,
           clientPhone: number,
+            clientWhatsappId: chatId,
           dateStr: bookingIsoDate,
           timeStr: bookingTime,
         });
@@ -1003,6 +1004,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           timeStr: draft.timeStr,
           clientName: pendingClientName,
           clientPhone: number,
+            clientWhatsappId: chatId,
           allowSameClientSameSlot,
         });
         executionResults.push({ draft, result });
@@ -1129,6 +1131,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           timeStr: pendingBooking.timeStr,
           clientName: pendingClientName,
           clientPhone: number,
+            clientWhatsappId: chatId,
         });
 
         const bookingReply = buildBookingReplyText(
@@ -1220,6 +1223,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const hasActiveBooking = await bookingService.hasActiveBookingForClient({
           companyId,
           clientPhone: number,
+            clientWhatsappId: chatId,
         });
         if (hasActiveBooking) {
           sessionService.updateMeta(sessionId, {
@@ -1246,6 +1250,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           timeStr: pendingBookingOffer.timeStr,
           clientName: requestedClientName,
           clientPhone: number,
+            clientWhatsappId: chatId,
         });
 
         const bookingReply = buildBookingReplyText(
@@ -1404,6 +1409,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           const activeBookings = await bookingService.getActiveBookingsForClient({
             companyId,
             clientPhone: number,
+            clientWhatsappId: chatId,
             limit: 15,
           });
           replyText = activeBookings.success
@@ -1620,6 +1626,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const activeBookings = await bookingService.getActiveBookingsForClient({
           companyId,
           clientPhone: number,
+            clientWhatsappId: chatId,
           limit: 15,
         });
 
@@ -1646,6 +1653,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const cancelResult = await bookingService.cancelBooking({
           companyId,
           clientPhone: number,
+            clientWhatsappId: chatId,
           dateStr: requestedDate,
           timeStr: requestedTime,
         });
@@ -1731,6 +1739,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           const activeBookings = await bookingService.getActiveBookingsForClient({
             companyId,
             clientPhone: number,
+            clientWhatsappId: chatId,
             limit: 15,
           });
           replyText = activeBookings.success
@@ -1785,6 +1794,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const activeBookings = await bookingService.getActiveBookingsForClient({
           companyId,
           clientPhone: number,
+            clientWhatsappId: chatId,
           limit: 15,
         });
         replyText = activeBookings.success
