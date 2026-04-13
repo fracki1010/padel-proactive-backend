@@ -10,6 +10,7 @@ const {
   setPenaltyLimit,
   getWhatsappCancellationGroupSettings,
   setWhatsappCancellationGroupSettings,
+  setDailyAvailabilityDigestStatus,
 } = require("../services/appConfig.service");
 const { listWhatsappGroups } = require("../services/whatsappCancellationGroup.service");
 
@@ -237,6 +238,8 @@ router.get("/whatsapp", async (_req, res) => {
         cancellationGroupEnabled: cancellationGroup.enabled,
         cancellationGroupId: cancellationGroup.groupId,
         cancellationGroupName: cancellationGroup.groupName,
+        dailyAvailabilityDigestEnabled:
+          cancellationGroup.dailyAvailabilityDigestEnabled,
       },
     });
   } catch (error) {
@@ -260,6 +263,11 @@ const updateWhatsappConfig = async (req, res) => {
       body.cancelledBookingGroupEnabled,
       body.notifyCancelledBookingGroup,
     ]);
+    const dailyAvailabilityDigestEnabledCandidate = firstBoolean([
+      body.dailyAvailabilityDigestEnabled,
+      body.dailyGroupAvailabilityEnabled,
+      body.groupDailyAvailabilityDigestEnabled,
+    ]);
     const cancellationGroupIdCandidate = firstString([
       body.cancellationGroupId,
       body.cancelationGroupId,
@@ -278,8 +286,14 @@ const updateWhatsappConfig = async (req, res) => {
       typeof cancellationGroupEnabledCandidate === "boolean" ||
       typeof cancellationGroupIdCandidate === "string" ||
       typeof cancellationGroupNameCandidate === "string";
+    const hasDailyAvailabilityDigestUpdate =
+      typeof dailyAvailabilityDigestEnabledCandidate === "boolean";
 
-    if (!hasWhatsappEnabledUpdate && !hasCancellationGroupUpdate) {
+    if (
+      !hasWhatsappEnabledUpdate &&
+      !hasCancellationGroupUpdate &&
+      !hasDailyAvailabilityDigestUpdate
+    ) {
       return res.status(400).json({
         success: false,
         error:
@@ -327,7 +341,27 @@ const updateWhatsappConfig = async (req, res) => {
         enabled: Boolean(savedConfig.cancellationGroupEnabled),
         groupId: String(savedConfig.cancellationGroupId || ""),
         groupName: String(savedConfig.cancellationGroupName || ""),
+        dailyAvailabilityDigestEnabled: Boolean(
+          savedConfig.dailyAvailabilityDigestEnabled,
+        ),
       };
+    }
+
+    if (hasDailyAvailabilityDigestUpdate) {
+      if (!cancellationGroup.groupId) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Para activar el resumen diario debés configurar primero un grupo válido.",
+        });
+      }
+      const savedDigestConfig = await setDailyAvailabilityDigestStatus(
+        dailyAvailabilityDigestEnabledCandidate,
+        companyId,
+      );
+      cancellationGroup.dailyAvailabilityDigestEnabled = Boolean(
+        savedDigestConfig.dailyAvailabilityDigestEnabled,
+      );
     }
 
     return res.status(200).json({
@@ -337,6 +371,8 @@ const updateWhatsappConfig = async (req, res) => {
         cancellationGroupEnabled: cancellationGroup.enabled,
         cancellationGroupId: cancellationGroup.groupId,
         cancellationGroupName: cancellationGroup.groupName,
+        dailyAvailabilityDigestEnabled:
+          cancellationGroup.dailyAvailabilityDigestEnabled,
       },
     });
   } catch (error) {
