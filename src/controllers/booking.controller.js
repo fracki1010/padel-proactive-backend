@@ -4,6 +4,7 @@ const Court = require("../models/court.model");
 const User = require("../models/user.model");
 const { sendAdminNotification } = require("../services/notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
+const { notifyCancellationToGroup } = require("../services/whatsappCancellationGroup.service");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
@@ -285,7 +286,18 @@ const updateBooking = async (req, res) => {
   try {
     const { id } = req.params;
     const companyId = resolveCompanyId(req);
+    const scope = companyScope(req, companyId);
     console.log(`Actualizando reserva ${id}:`, req.body);
+
+    const previousBooking = await Booking.findOne({ _id: id, ...scope }).populate([
+      "court",
+      "timeSlot",
+    ]);
+    if (!previousBooking) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Reserva no encontrada" });
+    }
 
     // Limpiar campos que no deben actualizarse directamente o que darían error
     const updateData = { ...req.body };
@@ -296,15 +308,43 @@ const updateBooking = async (req, res) => {
     delete updateData.__v;
 
     const updatedBooking = await Booking.findOneAndUpdate(
-      { _id: id, ...companyScope(req, companyId) },
+      { _id: id, ...scope },
       { $set: updateData },
       { new: true, runValidators: true },
     ).populate(["court", "timeSlot"]);
 
-    if (!updatedBooking) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Reserva no encontrada" });
+    const wasCancelledBefore = previousBooking.status === "cancelado";
+    const isCancelledNow = updatedBooking.status === "cancelado";
+    const shouldNotifyCancellation = !wasCancelledBefore && isCancelledNow;
+
+    if (shouldNotifyCancellation) {
+      try {
+        await sendAdminNotification(
+          "booking_cancelled",
+          "Turno Cancelado (Panel)",
+          `Cliente: ${updatedBooking.clientName}\nFecha: ${formatBookingDateShort(updatedBooking.date)}\nHora: ${updatedBooking?.timeSlot?.startTime || "N/D"}\nCancha: ${updatedBooking?.court?.name || "N/D"}`,
+          { bookingId: updatedBooking._id, companyId },
+          { companyId },
+        );
+      } catch (adminNotificationError) {
+        console.error(
+          `[BookingController][${companyId || "global"}] Error notificando cancelación al admin:`,
+          adminNotificationError?.message || adminNotificationError,
+        );
+      }
+
+      try {
+        await notifyCancellationToGroup({
+          companyId,
+          booking: updatedBooking,
+          cancelledBy: "administración",
+        });
+      } catch (groupError) {
+        console.error(
+          `[CancellationGroup][${companyId || "global"}] Error notificando cancelación desde panel:`,
+          groupError?.message || groupError,
+        );
+      }
     }
 
     res.status(200).json({ success: true, data: updatedBooking });
