@@ -12,7 +12,6 @@ const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
 const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
-const normalizePhoneDigits = (value = "") => String(value || "").replace(/\D/g, "");
 const normalizeWhatsappId = (value = "") => String(value || "").trim().toLowerCase();
 const whatsappIdsMatch = (bookingWhatsappId = "", requestWhatsappId = "") => {
   const booking = normalizeWhatsappId(bookingWhatsappId);
@@ -21,45 +20,16 @@ const whatsappIdsMatch = (bookingWhatsappId = "", requestWhatsappId = "") => {
   return booking === request;
 };
 
-const buildPhoneVariants = (phoneRaw = "") => {
-  const digits = normalizePhoneDigits(phoneRaw);
-  const variants = new Set();
-  if (!digits) return variants;
-
-  variants.add(digits);
-
-  // Compatibilidad AR: algunos flujos guardan con 549..., otros con 54...
-  if (digits.startsWith("549")) {
-    variants.add(`54${digits.slice(3)}`);
-  } else if (digits.startsWith("54")) {
-    variants.add(`549${digits.slice(2)}`);
-  }
-
-  if (digits.startsWith("0") && digits.length > 1) {
-    variants.add(digits.slice(1));
-  }
-
-  return variants;
-};
-
 const phonesMatch = (bookingPhoneRaw = "", requestPhoneRaw = "") => {
-  const bookingDigits = normalizePhoneDigits(bookingPhoneRaw);
-  if (!bookingDigits) return false;
+  // 1) Comparación literal tal cual llega/está guardado.
+  if (bookingPhoneRaw === requestPhoneRaw) return true;
+  if (String(bookingPhoneRaw) === String(requestPhoneRaw)) return true;
 
-  const requestVariants = buildPhoneVariants(requestPhoneRaw);
-  if (requestVariants.has(bookingDigits)) return true;
-
-  const bookingVariants = buildPhoneVariants(bookingDigits);
-  for (const variant of bookingVariants) {
-    if (requestVariants.has(variant)) return true;
-  }
-
-  // Fallback: comparar últimos 8 dígitos (útil cuando hay prefijos distintos)
-  if (bookingDigits.length >= 8) {
-    const bookingTail = bookingDigits.slice(-8);
-    for (const variant of requestVariants) {
-      if (variant.length >= 8 && variant.slice(-8) === bookingTail) return true;
-    }
+  // 2) Comparación numérica equivalente (por si uno llega number y el otro string).
+  const bookingNumber = Number(bookingPhoneRaw);
+  const requestNumber = Number(requestPhoneRaw);
+  if (Number.isFinite(bookingNumber) && Number.isFinite(requestNumber)) {
+    return bookingNumber === requestNumber;
   }
 
   return false;
@@ -359,14 +329,6 @@ const getActiveBookingsForClient = async ({
       .populate("timeSlot", "startTime endTime")
       .sort({ date: 1, createdAt: 1 })
       .lean();
-
-      console.log('scope:', scope);
-      console.log('clientPhone:', clientPhone);
-      console.log('clientWhatsappId:', clientWhatsappId);
-      console.log('bookings:', bookings);
-
-      
-      
 
     const matchingByClient = bookings.filter(
       (booking) =>
