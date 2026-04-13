@@ -209,7 +209,7 @@ const inferFallbackAction = (rawText) => {
   const text = normalizeSpanishText(rawText);
 
   const hasMyBookingsIntent =
-    /(mis\s+reservas|mis\s+turnos|que\s+reservas\s+tengo|que\s+turnos\s+tengo|tengo\s+reservas|tengo\s+turnos|reservas\s+vigentes|turnos\s+vigentes)/.test(
+    /(mis\s+reservas|mis\s+turnos|que\s+reservas\s+tengo|que\s+turnos\s+tengo|tengo\s+reservas|tengo\s+turnos|reservas\s+vigentes|turnos\s+vigentes|reserve\s+algun\s+turno|reserve\s+algo|tengo\s+algun\s+turno\s+reservado|me\s+reservaste\s+algo|hay\s+alguna\s+reserva\s+a\s+mi\s+nombre|si\s+reserve\s+algo|si\s+tengo\s+alguna\s+reserva)/.test(
       text,
     );
   if (hasMyBookingsIntent) {
