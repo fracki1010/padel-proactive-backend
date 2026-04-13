@@ -1,5 +1,10 @@
 const User = require("../models/user.model");
 const Booking = require("../models/booking.model");
+const toIsoDateOnly = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  return date.toISOString().slice(0, 10);
+};
 
 const resolveCompanyId = (req) => {
   if (req.user?.role === "super_admin") {
@@ -102,7 +107,12 @@ const getUserHistory = async (req, res) => {
       .populate("timeSlot")
       .sort({ date: -1 });
 
-    res.status(200).json({ success: true, data: bookings });
+    const normalizedBookings = bookings.map((booking) => ({
+      ...(typeof booking.toObject === "function" ? booking.toObject() : booking),
+      date: toIsoDateOnly(booking.date),
+    }));
+
+    res.status(200).json({ success: true, data: normalizedBookings });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
