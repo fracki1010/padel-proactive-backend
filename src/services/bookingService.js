@@ -88,11 +88,6 @@ const hasSlotStarted = (dateStr, timeStr, timeZone = TIMEZONE) => {
   return slotTimeToMinutes(timeStr) <= getCurrentMinutesInTimezone(timeZone);
 };
 
-const isBookingStillUpcoming = (dateValue, startTime, timeZone = TIMEZONE) => {
-  const bookingIsoDate = getDatePartsInTimezone(new Date(dateValue), timeZone);
-  return !hasSlotStarted(bookingIsoDate, startTime, timeZone);
-};
-
 /**
  * Crea una nueva reserva.
  * Soporta selección automática ("INDIFERENTE") o específica de cancha.
@@ -364,14 +359,14 @@ const getActiveBookingsForClient = async ({
     console.log(`${debugPrefix} sampleAudit=`, sampleAudit);
     console.log(`${debugPrefix} matchedByClient=${matchingByClient.length}`);
 
-    const upcoming = matchingByClient.filter((booking) => {
-      const startTime = booking?.timeSlot?.startTime;
-      if (!startTime) return false;
-      return isBookingStillUpcoming(booking.date, startTime);
-    });
-    console.log(`${debugPrefix} upcoming=${upcoming.length}`);
+    // "Reservas vigentes" = reservas activas desde hoy en adelante.
+    // No excluimos turnos de hoy que ya empezaron.
+    const activeCurrentAndFuture = matchingByClient.filter((booking) =>
+      Boolean(booking?.timeSlot?.startTime),
+    );
+    console.log(`${debugPrefix} activeCurrentAndFuture=${activeCurrentAndFuture.length}`);
 
-    const sortedUpcoming = upcoming
+    const sortedUpcoming = activeCurrentAndFuture
       .sort((a, b) => {
       const dateA = getDatePartsInTimezone(new Date(a.date));
       const dateB = getDatePartsInTimezone(new Date(b.date));
