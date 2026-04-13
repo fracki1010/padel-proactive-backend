@@ -57,6 +57,11 @@ const normalizeTimeString = (rawTime) => {
   return null;
 };
 
+const isLikelyPhoneNumber = (value = "") => {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.length >= 8 && digits.length <= 15;
+};
+
 const isValidIsoDate = (value) => {
   if (!value) return false;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return false;
@@ -805,8 +810,14 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       knownName = null;
     }
     const number = await getNumberByUser(chatId, client);
+    const registeredPhoneRaw = String(registeredUser?.phoneNumber || "").trim();
+    const canonicalClientPhone =
+      isLikelyPhoneNumber(registeredPhoneRaw)
+        ? registeredPhoneRaw
+        : number;
     console.log(`👤 Mensaje de: ${knownName || chatId}`);
-    console.log(`📞 Número de WhatsApp: ${number}`);
+    console.log(`📞 Número de WhatsApp detectado: ${number}`);
+    console.log(`📇 Número canónico para reservas: ${canonicalClientPhone}`);
 
     if (sessionMeta.awaitingAttendanceConfirmation && sessionMeta.attendanceBookingId) {
       const attendanceBooking = await Booking.findOne({
@@ -875,7 +886,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const bookingTime = attendanceBooking.timeSlot?.startTime;
         const cancelResult = await bookingService.cancelBooking({
           companyId,
-          clientPhone: number,
+          clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
           dateStr: bookingIsoDate,
           timeStr: bookingTime,
@@ -1003,7 +1014,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           dateStr: draft.dateStr,
           timeStr: draft.timeStr,
           clientName: pendingClientName,
-          clientPhone: number,
+          clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
           allowSameClientSameSlot,
         });
@@ -1130,7 +1141,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           dateStr: pendingBooking.dateStr,
           timeStr: pendingBooking.timeStr,
           clientName: pendingClientName,
-          clientPhone: number,
+          clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
         });
 
@@ -1222,7 +1233,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
         const hasActiveBooking = await bookingService.hasActiveBookingForClient({
           companyId,
-          clientPhone: number,
+          clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
         });
         if (hasActiveBooking) {
@@ -1249,7 +1260,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           dateStr: pendingBookingOffer.dateStr,
           timeStr: pendingBookingOffer.timeStr,
           clientName: requestedClientName,
-          clientPhone: number,
+          clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
         });
 
@@ -1408,7 +1419,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         } else if (fallback?.action === "LIST_ACTIVE_BOOKINGS") {
           const activeBookings = await bookingService.getActiveBookingsForClient({
             companyId,
-            clientPhone: number,
+            clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
             limit: 15,
           });
@@ -1625,7 +1636,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
         const activeBookings = await bookingService.getActiveBookingsForClient({
           companyId,
-          clientPhone: number,
+          clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
           limit: 15,
         });
@@ -1652,7 +1663,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
         const cancelResult = await bookingService.cancelBooking({
           companyId,
-          clientPhone: number,
+          clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
           dateStr: requestedDate,
           timeStr: requestedTime,
@@ -1738,7 +1749,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         } else if (fallback?.action === "LIST_ACTIVE_BOOKINGS") {
           const activeBookings = await bookingService.getActiveBookingsForClient({
             companyId,
-            clientPhone: number,
+            clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
             limit: 15,
           });
@@ -1793,7 +1804,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       } else if (fallback?.action === "LIST_ACTIVE_BOOKINGS") {
         const activeBookings = await bookingService.getActiveBookingsForClient({
           companyId,
-          clientPhone: number,
+          clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
           limit: 15,
         });
