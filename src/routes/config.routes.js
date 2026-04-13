@@ -6,8 +6,10 @@ const { getWhatsappState } = require("../state/whatsapp.state");
 const { setWhatsappEnabled } = require("../services/whatsappControl.service");
 const {
   DEFAULT_PENALTY_LIMIT,
+  getOneHourReminderEnabled,
   getPenaltyLimit,
   setPenaltyLimit,
+  setOneHourReminderEnabled,
   getWhatsappCancellationGroupSettings,
   setWhatsappCancellationGroupSettings,
   setDailyAvailabilityDigestStatus,
@@ -31,6 +33,26 @@ const companyScope = (req, companyId) => {
 const firstBoolean = (values = []) => values.find((value) => typeof value === "boolean");
 const firstString = (values = []) =>
   values.find((value) => typeof value === "string" && value.trim().length >= 0);
+
+const buildWhatsappConfigResponse = async (companyId) => {
+  const state = getWhatsappState(companyId);
+  const cancellationGroup = await getWhatsappCancellationGroupSettings(companyId);
+  const oneHourReminderEnabled = await getOneHourReminderEnabled(companyId);
+
+  return {
+    ...state,
+    oneHourReminderEnabled,
+    oneHourBeforeEnabled: oneHourReminderEnabled,
+    bookingReminderOneHourEnabled: oneHourReminderEnabled,
+    notifyOneHourBeforeMatch: oneHourReminderEnabled,
+    notifyOneHourBeforeBooking: oneHourReminderEnabled,
+    cancellationGroupEnabled: cancellationGroup.enabled,
+    cancellationGroupId: cancellationGroup.groupId,
+    cancellationGroupName: cancellationGroup.groupName,
+    dailyAvailabilityDigestEnabled:
+      cancellationGroup.dailyAvailabilityDigestEnabled,
+  };
+};
 
 // GET /api/config/courts
 router.get("/courts", async (req, res) => {
@@ -229,18 +251,9 @@ router.put("/slots/:id", async (req, res) => {
 router.get("/whatsapp", async (_req, res) => {
   try {
     const companyId = resolveCompanyId(_req);
-    const state = getWhatsappState(companyId);
-    const cancellationGroup = await getWhatsappCancellationGroupSettings(companyId);
     res.status(200).json({
       success: true,
-      data: {
-        ...state,
-        cancellationGroupEnabled: cancellationGroup.enabled,
-        cancellationGroupId: cancellationGroup.groupId,
-        cancellationGroupName: cancellationGroup.groupName,
-        dailyAvailabilityDigestEnabled:
-          cancellationGroup.dailyAvailabilityDigestEnabled,
-      },
+      data: await buildWhatsappConfigResponse(companyId),
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -268,6 +281,13 @@ const updateWhatsappConfig = async (req, res) => {
       body.dailyGroupAvailabilityEnabled,
       body.groupDailyAvailabilityDigestEnabled,
     ]);
+    const oneHourReminderEnabledCandidate = firstBoolean([
+      body.oneHourReminderEnabled,
+      body.oneHourBeforeEnabled,
+      body.bookingReminderOneHourEnabled,
+      body.notifyOneHourBeforeMatch,
+      body.notifyOneHourBeforeBooking,
+    ]);
     const cancellationGroupIdCandidate = firstString([
       body.cancellationGroupId,
       body.cancelationGroupId,
@@ -288,22 +308,24 @@ const updateWhatsappConfig = async (req, res) => {
       typeof cancellationGroupNameCandidate === "string";
     const hasDailyAvailabilityDigestUpdate =
       typeof dailyAvailabilityDigestEnabledCandidate === "boolean";
+    const hasOneHourReminderUpdate =
+      typeof oneHourReminderEnabledCandidate === "boolean";
 
     if (
       !hasWhatsappEnabledUpdate &&
       !hasCancellationGroupUpdate &&
-      !hasDailyAvailabilityDigestUpdate
+      !hasDailyAvailabilityDigestUpdate &&
+      !hasOneHourReminderUpdate
     ) {
       return res.status(400).json({
         success: false,
         error:
-          "Debés enviar al menos una configuración válida de WhatsApp (enabled o datos del grupo de cancelación).",
+          "Debés enviar al menos una configuración válida de WhatsApp (enabled, recordatorio 1 hora o datos del grupo de cancelación).",
       });
     }
 
-    let state = getWhatsappState(companyId);
     if (hasWhatsappEnabledUpdate) {
-      state = await setWhatsappEnabled(whatsappEnabledCandidate, companyId);
+      await setWhatsappEnabled(whatsappEnabledCandidate, companyId);
     }
 
     let cancellationGroup = await getWhatsappCancellationGroupSettings(companyId);
@@ -364,16 +386,13 @@ const updateWhatsappConfig = async (req, res) => {
       );
     }
 
+    if (hasOneHourReminderUpdate) {
+      await setOneHourReminderEnabled(oneHourReminderEnabledCandidate, companyId);
+    }
+
     return res.status(200).json({
       success: true,
-      data: {
-        ...state,
-        cancellationGroupEnabled: cancellationGroup.enabled,
-        cancellationGroupId: cancellationGroup.groupId,
-        cancellationGroupName: cancellationGroup.groupName,
-        dailyAvailabilityDigestEnabled:
-          cancellationGroup.dailyAvailabilityDigestEnabled,
-      },
+      data: await buildWhatsappConfigResponse(companyId),
     });
   } catch (error) {
     const message = String(error?.message || "");
@@ -390,6 +409,89 @@ const updateWhatsappConfig = async (req, res) => {
 // PUT/PATCH /api/config/whatsapp
 router.put("/whatsapp", updateWhatsappConfig);
 router.patch("/whatsapp", updateWhatsappConfig);
+
+// GET /api/config/notifications/reminders
+router.get("/notifications/reminders", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const enabled = await getOneHourReminderEnabled(companyId);
+    return res.status(200).json({
+      success: true,
+      data: {
+        oneHourReminderEnabled: enabled,
+        oneHourBeforeEnabled: enabled,
+        bookingReminderOneHourEnabled: enabled,
+        notifyOneHourBeforeMatch: enabled,
+        notifyOneHourBeforeBooking: enabled,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+const updateOneHourReminderConfig = async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const body = req.body || {};
+    const enabledCandidate = firstBoolean([
+      body.oneHourReminderEnabled,
+      body.oneHourBeforeEnabled,
+      body.bookingReminderOneHourEnabled,
+      body.notifyOneHourBeforeMatch,
+      body.notifyOneHourBeforeBooking,
+    ]);
+
+    if (typeof enabledCandidate !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        error: "Debés enviar un booleano para el recordatorio de 1 hora.",
+      });
+    }
+
+    const updated = await setOneHourReminderEnabled(enabledCandidate, companyId);
+    const enabled =
+      typeof updated.oneHourReminderEnabled === "boolean"
+        ? updated.oneHourReminderEnabled
+        : Boolean(enabledCandidate);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        oneHourReminderEnabled: enabled,
+        oneHourBeforeEnabled: enabled,
+        bookingReminderOneHourEnabled: enabled,
+        notifyOneHourBeforeMatch: enabled,
+        notifyOneHourBeforeBooking: enabled,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// PUT/PATCH /api/config/notifications/reminders
+router.put("/notifications/reminders", updateOneHourReminderConfig);
+router.patch("/notifications/reminders", updateOneHourReminderConfig);
+
+// Compatibility aliases used by frontend fallbacks.
+router.get("/settings", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const enabled = await getOneHourReminderEnabled(companyId);
+    return res.status(200).json({
+      success: true,
+      data: {
+        oneHourReminderEnabled: enabled,
+        bookingReminderOneHourEnabled: enabled,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+router.put("/settings", updateOneHourReminderConfig);
+router.patch("/settings", updateOneHourReminderConfig);
 
 // GET /api/config/whatsapp/groups
 router.get("/whatsapp/groups", async (req, res) => {
