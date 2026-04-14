@@ -2,6 +2,9 @@ const AppConfig = require("../models/appConfig.model");
 
 const CONFIG_KEY = "main";
 const DEFAULT_PENALTY_LIMIT = 2;
+const DEFAULT_PENALTY_SYSTEM_ENABLED = true;
+const DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES = 60;
+const DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT = 3;
 
 const buildConfigFilter = (companyId = null) => ({
   companyId: companyId || null,
@@ -12,6 +15,22 @@ const normalizePenaltyLimit = (value) => {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
     return DEFAULT_PENALTY_LIMIT;
+  }
+  return parsed;
+};
+
+const normalizeAttendanceReminderLeadMinutes = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 5 || parsed > 240) {
+    return DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES;
+  }
+  return parsed;
+};
+
+const normalizeTrustedClientConfirmationCount = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 20) {
+    return DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT;
   }
   return parsed;
 };
@@ -28,7 +47,10 @@ const ensureAppConfig = async (companyId = null) => {
     key: CONFIG_KEY,
     whatsappEnabled: false,
     oneHourReminderEnabled: true,
+    attendanceReminderLeadMinutes: DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
+    trustedClientConfirmationCount: DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
     penaltyLimit: DEFAULT_PENALTY_LIMIT,
+    penaltySystemEnabled: DEFAULT_PENALTY_SYSTEM_ENABLED,
     cancellationGroupEnabled: false,
     cancellationGroupId: "",
     cancellationGroupName: "",
@@ -47,6 +69,64 @@ const setPenaltyLimit = async (penaltyLimit, companyId = null) => {
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { penaltyLimit: normalized } },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+};
+
+const getPenaltySystemEnabled = async (companyId = null) => {
+  const config = await ensureAppConfig(companyId);
+  if (typeof config.penaltySystemEnabled === "boolean") {
+    return config.penaltySystemEnabled;
+  }
+  return DEFAULT_PENALTY_SYSTEM_ENABLED;
+};
+
+const setPenaltySystemEnabled = async (enabled, companyId = null) => {
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $set: { penaltySystemEnabled: Boolean(enabled) } },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+};
+
+const getAttendanceReminderLeadMinutes = async (companyId = null) => {
+  const config = await ensureAppConfig(companyId);
+  return normalizeAttendanceReminderLeadMinutes(
+    config.attendanceReminderLeadMinutes,
+  );
+};
+
+const setAttendanceReminderLeadMinutes = async (
+  attendanceReminderLeadMinutes,
+  companyId = null,
+) => {
+  const normalized = normalizeAttendanceReminderLeadMinutes(
+    attendanceReminderLeadMinutes,
+  );
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $set: { attendanceReminderLeadMinutes: normalized } },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+};
+
+const getTrustedClientConfirmationCount = async (companyId = null) => {
+  const config = await ensureAppConfig(companyId);
+  return normalizeTrustedClientConfirmationCount(
+    config.trustedClientConfirmationCount,
+  );
+};
+
+const setTrustedClientConfirmationCount = async (
+  trustedClientConfirmationCount,
+  companyId = null,
+) => {
+  const normalized = normalizeTrustedClientConfirmationCount(
+    trustedClientConfirmationCount,
+  );
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $set: { trustedClientConfirmationCount: normalized } },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
 };
@@ -136,12 +216,21 @@ const setDailyAvailabilityDigestLastSentDate = async (
 };
 
 module.exports = {
+  DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
   DEFAULT_PENALTY_LIMIT,
+  DEFAULT_PENALTY_SYSTEM_ENABLED,
+  DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
   ensureAppConfig,
+  getAttendanceReminderLeadMinutes,
   getOneHourReminderEnabled,
   getPenaltyLimit,
+  getPenaltySystemEnabled,
+  getTrustedClientConfirmationCount,
+  setAttendanceReminderLeadMinutes,
   setPenaltyLimit,
+  setPenaltySystemEnabled,
   setOneHourReminderEnabled,
+  setTrustedClientConfirmationCount,
   getWhatsappCancellationGroupSettings,
   setWhatsappCancellationGroupSettings,
   setDailyAvailabilityDigestStatus,

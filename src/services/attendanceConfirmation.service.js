@@ -5,13 +5,17 @@ const sessionService = require("./sessionService");
 const { getClient } = require("./whatsappTenantManager.service");
 const { getWhatsappState } = require("../state/whatsapp.state");
 const { isMongoConnected } = require("../config/database");
-const { getOneHourReminderEnabled } = require("./appConfig.service");
+const {
+  getAttendanceReminderLeadMinutes,
+  getOneHourReminderEnabled,
+  getTrustedClientConfirmationCount,
+} = require("./appConfig.service");
 
 const CONFIG_KEY = "main";
 const CHECK_INTERVAL_MS = 60 * 1000;
 const ARG_TZ_OFFSET = "-03:00";
-const ASK_WINDOW_MIN = 62;
-const ASK_WINDOW_MAX = 50;
+const ASK_WINDOW_BEFORE_MINUTES = 2;
+const ASK_WINDOW_AFTER_MINUTES = 10;
 
 let timer = null;
 let isRunning = false;
@@ -65,13 +69,18 @@ const getEnabledCompanyIds = async () => {
   return configs.map((cfg) => cfg.companyId || null);
 };
 
-const buildAttendancePrompt = (booking) => {
+const buildAttendancePrompt = (booking, reminderLeadMinutes) => {
   const startTime = booking.timeSlot?.startTime || "";
   const endTime = booking.timeSlot?.endTime || "";
   const courtName = booking.court?.name || "tu cancha";
 
+  const reminderText =
+    reminderLeadMinutes === 60
+      ? "en 1 hora"
+      : `en ${reminderLeadMinutes} minutos`;
+
   return (
-    `⏰ Tu turno empieza en 1 hora.\n` +
+    `⏰ Tu turno empieza ${reminderText}.\n` +
     `📌 ${courtName} - ${startTime}${endTime ? ` a ${endTime}` : ""}\n\n` +
     `Confirmá asistencia respondiendo SOLO una opción:\n` +
     `1) SI ASISTO\n` +
@@ -89,6 +98,10 @@ const processCompany = async (companyId = null) => {
 
   const client = getClient(companyId);
   if (!client || !client.isReady) return;
+  const trustedClientConfirmationCount =
+    await getTrustedClientConfirmationCount(companyId);
+  const attendanceReminderLeadMinutes =
+    await getAttendanceReminderLeadMinutes(companyId);
 
   const todayIso = getTodayIsoArgentina();
   const tomorrowIso = addDaysIso(todayIso, 1);
@@ -119,8 +132,10 @@ const processCompany = async (companyId = null) => {
       phoneNumber: booking.clientPhone,
     }).lean();
 
-    // Cliente cumplidor (3 confirmaciones): no volvemos a preguntar.
-    if ((user?.attendanceConfirmedCount || 0) >= 3) {
+    // Cliente cumplidor: no volvemos a preguntar.
+    if (
+      (user?.attendanceConfirmedCount || 0) >= trustedClientConfirmationCount
+    ) {
       await Booking.updateOne(
         { _id: booking._id, attendanceConfirmationStatus: null },
         {
@@ -137,7 +152,12 @@ const processCompany = async (companyId = null) => {
 
     const startDate = buildBookingStartDate(booking.date, startTime);
     const minutesLeft = (startDate.getTime() - now.getTime()) / 60000;
-    if (minutesLeft > ASK_WINDOW_MIN || minutesLeft < ASK_WINDOW_MAX) continue;
+    if (
+      minutesLeft > attendanceReminderLeadMinutes + ASK_WINDOW_BEFORE_MINUTES ||
+      minutesLeft < attendanceReminderLeadMinutes - ASK_WINDOW_AFTER_MINUTES
+    ) {
+      continue;
+    }
 
     const locked = await Booking.findOneAndUpdate(
       {
@@ -158,7 +178,10 @@ const processCompany = async (companyId = null) => {
     if (!locked) continue;
 
     try {
-      await client.sendMessage(user.whatsappId, buildAttendancePrompt(booking));
+      await client.sendMessage(
+        user.whatsappId,
+        buildAttendancePrompt(booking, attendanceReminderLeadMinutes),
+      );
 
       const sessionId = buildSessionId(companyId, user.whatsappId);
       sessionService.updateMeta(sessionId, {
