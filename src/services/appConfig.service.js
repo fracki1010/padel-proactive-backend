@@ -5,7 +5,7 @@ const DEFAULT_PENALTY_LIMIT = 2;
 const DEFAULT_PENALTY_SYSTEM_ENABLED = true;
 const DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES = 60;
 const DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT = 3;
-const DEFAULT_CANCELLATION_LOCK_HOURS = 0;
+const DEFAULT_CANCELLATION_LOCK_HOURS = 2;
 
 const buildConfigFilter = (companyId = null) => ({
   companyId: companyId || null,
@@ -49,7 +49,17 @@ const normalizeString = (value) =>
 
 const ensureAppConfig = async (companyId = null) => {
   const existing = await AppConfig.findOne(buildConfigFilter(companyId));
-  if (existing) return existing;
+  if (existing) {
+    if (
+      existing.cancellationLockHours === undefined ||
+      existing.cancellationLockHours === null ||
+      Number.isNaN(Number(existing.cancellationLockHours))
+    ) {
+      existing.cancellationLockHours = DEFAULT_CANCELLATION_LOCK_HOURS;
+      await existing.save();
+    }
+    return existing;
+  }
 
   return AppConfig.create({
     companyId: companyId || null,
