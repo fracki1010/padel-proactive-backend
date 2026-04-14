@@ -13,6 +13,8 @@ const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
 );
 const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
 const normalizeWhatsappId = (value = "") => String(value || "").trim().toLowerCase();
+const escapeRegex = (value = "") =>
+  String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const whatsappIdsMatch = (bookingWhatsappId = "", requestWhatsappId = "") => {
   const booking = normalizeWhatsappId(bookingWhatsappId);
   const request = normalizeWhatsappId(requestWhatsappId);
@@ -197,17 +199,18 @@ const createNewBooking = async ({
     }
     // CASO B: EL USUARIO ELIGIÓ UNA ESPECÍFICA (Ej: "Cancha 1" o "Techada")
     else {
+      const escapedCourtName = escapeRegex(courtName);
       // a) Buscamos esa cancha específica
       selectedCourt = await Court.findOne({
         ...scope,
-        name: { $regex: new RegExp(`^${courtName}$`, "i") },
+        name: { $regex: new RegExp(`^${escapedCourtName}$`, "i") },
       });
 
       if (!selectedCourt) {
         // Intento fallback: Búsqueda parcial por si dijo "la 1" en vez de "Cancha 1"
         selectedCourt = await Court.findOne({
           ...scope,
-          name: { $regex: courtName, $options: "i" },
+          name: { $regex: escapedCourtName, $options: "i" },
         });
         if (!selectedCourt)
           return { success: false, error: "CANCHA_NOT_FOUND" };
