@@ -3,9 +3,11 @@ const Booking = require("../models/booking.model");
 const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
 const User = require("../models/user.model");
+const Admin = require("../models/admin.model");
 const { sendAdminNotification } = require("./notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const {
+  getCancellationLockHours,
   getPenaltyLimit,
   getPenaltySystemEnabled,
 } = require("./appConfig.service");
@@ -91,6 +93,45 @@ const hasSlotStarted = (dateStr, timeStr, timeZone = TIMEZONE) => {
   if (isPastDateInTimezone(dateStr, timeZone)) return true;
   if (!isTodayInTimezone(dateStr, timeZone)) return false;
   return slotTimeToMinutes(timeStr) <= getCurrentMinutesInTimezone(timeZone);
+};
+
+const getDaysDiffFromTodayInTimezone = (dateStr, timeZone = TIMEZONE) => {
+  const todayStr = getDatePartsInTimezone(new Date(), timeZone);
+  const currentDayUtc = dateStringToUtcMidnight(todayStr);
+  const targetDayUtc = dateStringToUtcMidnight(dateStr);
+  const diffMs = targetDayUtc.getTime() - currentDayUtc.getTime();
+  return Math.floor(diffMs / (24 * 60 * 60 * 1000));
+};
+
+const getMinutesUntilSlotStart = (dateStr, timeStr, timeZone = TIMEZONE) => {
+  const daysDiff = getDaysDiffFromTodayInTimezone(dateStr, timeZone);
+  const slotMinutes = slotTimeToMinutes(timeStr);
+  const nowMinutes = getCurrentMinutesInTimezone(timeZone);
+  return daysDiff * 24 * 60 + slotMinutes - nowMinutes;
+};
+
+const getCancellationContactPhone = async (companyId = null) => {
+  const adminQuery = {
+    phone: { $exists: true, $ne: "" },
+    isActive: true,
+  };
+  if (companyId) {
+    adminQuery.$or = [{ companyId }, { role: "super_admin" }];
+  }
+
+  const admins = await Admin.find(adminQuery).select("phone companyId role").lean();
+  if (!admins.length) return "";
+
+  if (!companyId) {
+    return String(admins[0].phone || "").trim();
+  }
+
+  const companyAdmin = admins.find(
+    (admin) => String(admin?.companyId || "") === String(companyId),
+  );
+  if (companyAdmin?.phone) return String(companyAdmin.phone).trim();
+
+  return String(admins[0].phone || "").trim();
 };
 
 /**
@@ -495,6 +536,25 @@ const cancelBooking = async ({
 
     if (!booking) {
       return { success: false, error: "NOT_FOUND" };
+    }
+
+    const cancellationLockHours = await getCancellationLockHours(companyId);
+    if (cancellationLockHours > 0) {
+      const minutesUntilStart = getMinutesUntilSlotStart(dateStr, slot.startTime);
+      const lockWindowMinutes = cancellationLockHours * 60;
+
+      if (minutesUntilStart < lockWindowMinutes) {
+        const contactPhone = await getCancellationContactPhone(companyId);
+        return {
+          success: false,
+          error: "CANCELLATION_BLOCKED_WINDOW",
+          data: {
+            cancellationLockHours,
+            minutesUntilStart,
+            contactPhone,
+          },
+        };
+      }
     }
 
     // 3. Cancelar
