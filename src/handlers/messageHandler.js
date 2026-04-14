@@ -924,6 +924,15 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           declinedReply = cancelResult?.penaltyApplied
             ? `Turno cancelado correctamente ❌\nPenalización aplicada: ${penalties}/${limit}.`
             : "Turno cancelado correctamente ❌\nPenalizaciones desactivadas en la configuración actual.";
+        } else if (cancelResult?.error === "CANCELLATION_BLOCKED_WINDOW") {
+          const lockHours = Number(cancelResult?.data?.cancellationLockHours || 0);
+          const contactPhone = String(cancelResult?.data?.contactPhone || "").trim();
+          const phoneSuffix = contactPhone
+            ? ` al *${contactPhone}*`
+            : " con el admin del club";
+          declinedReply =
+            `⚠️ Este turno ya está dentro de la ventana de bloqueo (${lockHours}h) y no se puede cancelar por acá.\n` +
+            `Para cancelarlo, tenés que hablar${phoneSuffix}.`;
         } else if (cancelResult?.error === "NOT_FOUND") {
           declinedReply = "No encontré un turno activo para cancelar, probablemente ya se canceló antes.";
         }
@@ -1712,6 +1721,16 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           if (cancelResult.error === "NOT_FOUND")
             replyText =
               "⚠️ No encontré ningún turno tuyo para esa fecha y hora. ¿Me podés confirmar los datos?";
+          else if (cancelResult.error === "CANCELLATION_BLOCKED_WINDOW") {
+            const lockHours = Number(cancelResult?.data?.cancellationLockHours || 0);
+            const contactPhone = String(cancelResult?.data?.contactPhone || "").trim();
+            const phoneSuffix = contactPhone
+              ? ` al *${contactPhone}*`
+              : " con el admin del club";
+            replyText =
+              `⚠️ No puedo cancelar este turno porque faltan menos de *${lockHours} horas*.\n\n` +
+              `Para cancelarlo, por favor hablá${phoneSuffix}.`;
+          }
           else if (cancelResult.error === "INVALID_TIME")
             replyText = "⚠️ Ese horario no existe en la grilla.";
           else replyText = "⚠️ Hubo un error técnico al cancelar.";
