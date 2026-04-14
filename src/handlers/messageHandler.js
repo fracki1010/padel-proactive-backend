@@ -6,6 +6,10 @@ const Booking = require("../models/booking.model");
 const User = require("../models/user.model");
 const TimeSlot = require("../models/timeSlot.model");
 const { sendAdminNotification } = require("../services/notificationService");
+const {
+  DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
+  getTrustedClientConfirmationCount,
+} = require("../services/appConfig.service");
 const { getFormattedDate } = require("../utils/getFormattedDate");
 const { getNumberByUser } = require("../utils/getNumberByUser");
 
@@ -866,8 +870,14 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           );
 
           const confirmedCount = updatedUser?.attendanceConfirmedCount || 0;
+          let trustedThreshold = DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT;
+          try {
+            trustedThreshold = await getTrustedClientConfirmationCount(companyId);
+          } catch (_error) {
+            trustedThreshold = DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT;
+          }
           const attendanceOkReply =
-            confirmedCount >= 3
+            confirmedCount >= trustedThreshold
               ? "Perfecto, gracias por confirmar ✅ Ya te marcamos como cliente cumplidor, no te vamos a pedir esta confirmación previa en próximos turnos."
               : "Perfecto, gracias por confirmar ✅ Te esperamos en el club.";
 
@@ -907,13 +917,13 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           attendanceBookingId: null,
         });
 
-        let declinedReply = "Turno cancelado correctamente. Se aplicó la penalización correspondiente.";
+        let declinedReply = "Turno cancelado correctamente.";
         if (cancelResult?.success) {
           const penalties = cancelResult.penalties || 0;
           const limit = cancelResult.penaltyLimit || 2;
-          declinedReply =
-            `Turno cancelado correctamente ❌\n` +
-            `Penalización aplicada: ${penalties}/${limit}.`;
+          declinedReply = cancelResult?.penaltyApplied
+            ? `Turno cancelado correctamente ❌\nPenalización aplicada: ${penalties}/${limit}.`
+            : "Turno cancelado correctamente ❌\nPenalizaciones desactivadas en la configuración actual.";
         } else if (cancelResult?.error === "NOT_FOUND") {
           declinedReply = "No encontré un turno activo para cancelar, probablemente ya se canceló antes.";
         }
@@ -1677,16 +1687,19 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
         if (cancelResult.success) {
           let penaltyNote = "";
-          if (cancelResult.nowSuspended) {
+          if (cancelResult.penaltyApplied && cancelResult.nowSuspended) {
             penaltyNote =
               `\n\n⚠️ *Atención:* Has acumulado ${cancelResult.penalties} cancelaciones y tu cuenta ha sido *suspendida*. ` +
               `No podrás reservar nuevos turnos. Contactá a la administración para regularizar tu situación.`;
-          } else if (cancelResult.penalties > 0) {
+          } else if (cancelResult.penaltyApplied && cancelResult.penalties > 0) {
             const remaining =
               cancelResult.penaltyLimit - cancelResult.penalties;
             penaltyNote =
               `\n\n⚠️ _Aviso: Tenés ${cancelResult.penalties}/${cancelResult.penaltyLimit} cancelaciones. ` +
               `Con ${remaining} más, tu cuenta quedará suspendida._`;
+          } else if (!cancelResult.penaltyApplied) {
+            penaltyNote =
+              "\n\nℹ️ _Penalizaciones desactivadas por configuración del club._";
           }
 
           replyText =
