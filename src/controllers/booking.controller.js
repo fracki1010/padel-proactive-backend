@@ -5,6 +5,7 @@ const User = require("../models/user.model");
 const { sendAdminNotification } = require("../services/notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const { notifyCancellationToGroup } = require("../services/whatsappCancellationGroup.service");
+const { getPenaltyLimit } = require("../services/appConfig.service");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
@@ -301,11 +302,13 @@ const updateBooking = async (req, res) => {
 
     // Limpiar campos que no deben actualizarse directamente o que darían error
     const updateData = { ...req.body };
+    const applyPenalty = req.body?.applyPenalty === true;
     delete updateData._id;
     delete updateData.id;
     delete updateData.createdAt;
     delete updateData.updatedAt;
     delete updateData.__v;
+    delete updateData.applyPenalty;
 
     const updatedBooking = await Booking.findOneAndUpdate(
       { _id: id, ...scope },
@@ -316,13 +319,58 @@ const updateBooking = async (req, res) => {
     const wasCancelledBefore = previousBooking.status === "cancelado";
     const isCancelledNow = updatedBooking.status === "cancelado";
     const shouldNotifyCancellation = !wasCancelledBefore && isCancelledNow;
+    const penaltyResult = {
+      requested: applyPenalty,
+      attempted: false,
+      applied: false,
+      userFound: false,
+      penalties: null,
+      penaltyLimit: null,
+      isSuspended: false,
+      suspendedNow: false,
+    };
 
     if (shouldNotifyCancellation) {
+      if (applyPenalty) {
+        penaltyResult.attempted = true;
+        const bookingPhone = String(updatedBooking.clientPhone || "").trim();
+        const user = await User.findOne({
+          ...scope,
+          phoneNumber: bookingPhone,
+        });
+
+        if (user) {
+          const penaltyLimit = await getPenaltyLimit(companyId);
+          const previousPenalties = Number(user.penalties || 0);
+          const wasSuspended = Boolean(user.isSuspended);
+          user.penalties = previousPenalties + 1;
+          penaltyResult.userFound = true;
+          penaltyResult.applied = true;
+          penaltyResult.penalties = user.penalties;
+          penaltyResult.penaltyLimit = penaltyLimit;
+
+          if (user.penalties >= penaltyLimit) {
+            user.isSuspended = true;
+          }
+
+          penaltyResult.isSuspended = Boolean(user.isSuspended);
+          penaltyResult.suspendedNow = !wasSuspended && Boolean(user.isSuspended);
+
+          await user.save();
+        }
+      }
+
+      const penaltyMessage = penaltyResult.attempted
+        ? penaltyResult.applied
+          ? `\nPenalización: aplicada (${penaltyResult.penalties}/${penaltyResult.penaltyLimit})`
+          : "\nPenalización: no aplicada (usuario no encontrado)"
+        : "\nPenalización: no";
+
       try {
         await sendAdminNotification(
           "booking_cancelled",
           "Turno Cancelado (Panel)",
-          `Cliente: ${updatedBooking.clientName}\nFecha: ${formatBookingDateShort(updatedBooking.date)}\nHora: ${updatedBooking?.timeSlot?.startTime || "N/D"}\nCancha: ${updatedBooking?.court?.name || "N/D"}`,
+          `Cliente: ${updatedBooking.clientName}\nFecha: ${formatBookingDateShort(updatedBooking.date)}\nHora: ${updatedBooking?.timeSlot?.startTime || "N/D"}\nCancha: ${updatedBooking?.court?.name || "N/D"}${penaltyMessage}`,
           { bookingId: updatedBooking._id, companyId },
           { companyId },
         );
@@ -347,7 +395,7 @@ const updateBooking = async (req, res) => {
       }
     }
 
-    res.status(200).json({ success: true, data: updatedBooking });
+    res.status(200).json({ success: true, data: updatedBooking, penalty: penaltyResult });
   } catch (error) {
     console.error("Error en updateBooking:", error);
     res.status(500).json({ success: false, error: error.message });
