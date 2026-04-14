@@ -5,11 +5,19 @@ const TimeSlot = require("../models/timeSlot.model");
 const { getWhatsappState } = require("../state/whatsapp.state");
 const { setWhatsappEnabled } = require("../services/whatsappControl.service");
 const {
+  DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
   DEFAULT_PENALTY_LIMIT,
+  DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
+  getAttendanceReminderLeadMinutes,
   getOneHourReminderEnabled,
   getPenaltyLimit,
+  getPenaltySystemEnabled,
+  getTrustedClientConfirmationCount,
+  setAttendanceReminderLeadMinutes,
   setPenaltyLimit,
+  setPenaltySystemEnabled,
   setOneHourReminderEnabled,
+  setTrustedClientConfirmationCount,
   getWhatsappCancellationGroupSettings,
   setWhatsappCancellationGroupSettings,
   setDailyAvailabilityDigestStatus,
@@ -53,6 +61,31 @@ const buildWhatsappConfigResponse = async (companyId) => {
     cancellationGroupName: cancellationGroup.groupName,
     dailyAvailabilityDigestEnabled:
       cancellationGroup.dailyAvailabilityDigestEnabled,
+  };
+};
+
+const buildBotAutomationConfigResponse = async (companyId) => {
+  const [
+    oneHourReminderEnabled,
+    attendanceReminderLeadMinutes,
+    trustedClientConfirmationCount,
+    penaltyLimit,
+    penaltySystemEnabled,
+  ] = await Promise.all([
+    getOneHourReminderEnabled(companyId),
+    getAttendanceReminderLeadMinutes(companyId),
+    getTrustedClientConfirmationCount(companyId),
+    getPenaltyLimit(companyId),
+    getPenaltySystemEnabled(companyId),
+  ]);
+
+  return {
+    oneHourReminderEnabled,
+    attendanceReminderLeadMinutes,
+    trustedClientConfirmationCount,
+    penaltyEnabled: penaltySystemEnabled,
+    penaltySystemEnabled,
+    penaltyLimit,
   };
 };
 
@@ -496,6 +529,119 @@ router.get("/settings", async (req, res) => {
 router.put("/settings", updateOneHourReminderConfig);
 router.patch("/settings", updateOneHourReminderConfig);
 
+// GET /api/config/bot-automation
+router.get("/bot-automation", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    return res.status(200).json({
+      success: true,
+      data: await buildBotAutomationConfigResponse(companyId),
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PUT/PATCH /api/config/bot-automation
+const updateBotAutomationConfig = async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const body = req.body || {};
+    const oneHourReminderEnabledCandidate = firstBoolean([
+      body.oneHourReminderEnabled,
+      body.oneHourBeforeEnabled,
+      body.bookingReminderOneHourEnabled,
+      body.notifyOneHourBeforeMatch,
+      body.notifyOneHourBeforeBooking,
+    ]);
+    const attendanceReminderLeadMinutesRaw = body.attendanceReminderLeadMinutes;
+    const trustedClientConfirmationCountRaw = body.trustedClientConfirmationCount;
+    const penaltyLimitRaw = body.penaltyLimit;
+    const penaltyEnabledCandidate = firstBoolean([
+      body.penaltyEnabled,
+      body.penaltySystemEnabled,
+      body.penaltiesEnabled,
+    ]);
+
+    const hasOneHourReminderUpdate =
+      typeof oneHourReminderEnabledCandidate === "boolean";
+    const hasAttendanceLeadMinutesUpdate =
+      attendanceReminderLeadMinutesRaw !== undefined;
+    const hasTrustedConfirmationUpdate =
+      trustedClientConfirmationCountRaw !== undefined;
+    const hasPenaltyEnabledUpdate = typeof penaltyEnabledCandidate === "boolean";
+    const hasPenaltyLimitUpdate = penaltyLimitRaw !== undefined;
+
+    if (
+      !hasOneHourReminderUpdate &&
+      !hasAttendanceLeadMinutesUpdate &&
+      !hasTrustedConfirmationUpdate &&
+      !hasPenaltyEnabledUpdate &&
+      !hasPenaltyLimitUpdate
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Debés enviar al menos una configuración válida (oneHourReminderEnabled, attendanceReminderLeadMinutes, trustedClientConfirmationCount, penaltyEnabled, penaltyLimit).",
+      });
+    }
+
+    if (hasOneHourReminderUpdate) {
+      await setOneHourReminderEnabled(oneHourReminderEnabledCandidate, companyId);
+    }
+
+    if (hasAttendanceLeadMinutesUpdate) {
+      const parsedLead = Number(attendanceReminderLeadMinutesRaw);
+      if (!Number.isInteger(parsedLead) || parsedLead < 5 || parsedLead > 240) {
+        return res.status(400).json({
+          success: false,
+          error:
+            `El campo 'attendanceReminderLeadMinutes' debe ser un entero entre 5 y 240. Valor recomendado por defecto: ${DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES}.`,
+        });
+      }
+      await setAttendanceReminderLeadMinutes(parsedLead, companyId);
+    }
+
+    if (hasTrustedConfirmationUpdate) {
+      const parsedTrusted = Number(trustedClientConfirmationCountRaw);
+      if (!Number.isInteger(parsedTrusted) || parsedTrusted < 1 || parsedTrusted > 20) {
+        return res.status(400).json({
+          success: false,
+          error:
+            `El campo 'trustedClientConfirmationCount' debe ser un entero entre 1 y 20. Valor recomendado por defecto: ${DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT}.`,
+        });
+      }
+      await setTrustedClientConfirmationCount(parsedTrusted, companyId);
+    }
+
+    if (hasPenaltyEnabledUpdate) {
+      await setPenaltySystemEnabled(penaltyEnabledCandidate, companyId);
+    }
+
+    if (hasPenaltyLimitUpdate) {
+      const parsedPenalty = Number(penaltyLimitRaw);
+      if (!Number.isInteger(parsedPenalty) || parsedPenalty < 1) {
+        return res.status(400).json({
+          success: false,
+          error:
+            `El campo 'penaltyLimit' debe ser un entero mayor o igual a 1. Valor recomendado por defecto: ${DEFAULT_PENALTY_LIMIT}.`,
+        });
+      }
+      await setPenaltyLimit(parsedPenalty, companyId);
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: await buildBotAutomationConfigResponse(companyId),
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+router.put("/bot-automation", updateBotAutomationConfig);
+router.patch("/bot-automation", updateBotAutomationConfig);
+
 // GET /api/config/whatsapp/groups
 router.get("/whatsapp/groups", async (req, res) => {
   try {
@@ -524,10 +670,17 @@ router.get("/whatsapp/groups", async (req, res) => {
 router.get("/penalties", async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
-    const penaltyLimit = await getPenaltyLimit(companyId);
+    const [penaltyLimit, penaltySystemEnabled] = await Promise.all([
+      getPenaltyLimit(companyId),
+      getPenaltySystemEnabled(companyId),
+    ]);
     return res.status(200).json({
       success: true,
-      data: { penaltyLimit },
+      data: {
+        penaltyLimit,
+        penaltyEnabled: penaltySystemEnabled,
+        penaltySystemEnabled,
+      },
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });

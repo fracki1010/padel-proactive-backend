@@ -5,7 +5,10 @@ const TimeSlot = require("../models/timeSlot.model");
 const User = require("../models/user.model");
 const { sendAdminNotification } = require("./notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
-const { getPenaltyLimit } = require("./appConfig.service");
+const {
+  getPenaltyLimit,
+  getPenaltySystemEnabled,
+} = require("./appConfig.service");
 const { notifyCancellationToGroup } = require("./whatsappCancellationGroup.service");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
@@ -499,17 +502,26 @@ const cancelBooking = async ({
     await booking.save();
 
     // 4. Penalizar al usuario
-    const PENALTY_LIMIT = await getPenaltyLimit(companyId);
+    const [PENALTY_LIMIT, PENALTY_SYSTEM_ENABLED] = await Promise.all([
+      getPenaltyLimit(companyId),
+      getPenaltySystemEnabled(companyId),
+    ]);
     const user = await User.findOne({ ...scope, phoneNumber: clientPhone });
     let newPenalties = 0;
     let nowSuspended = false;
+    let penaltyApplied = false;
 
     if (user) {
-      user.penalties = (user.penalties || 0) + 1;
-      newPenalties = user.penalties;
-      if (user.penalties >= PENALTY_LIMIT) {
-        user.isSuspended = true;
-        nowSuspended = true;
+      if (PENALTY_SYSTEM_ENABLED) {
+        user.penalties = (user.penalties || 0) + 1;
+        newPenalties = user.penalties;
+        if (user.penalties >= PENALTY_LIMIT) {
+          user.isSuspended = true;
+          nowSuspended = true;
+        }
+        penaltyApplied = true;
+      } else {
+        newPenalties = user.penalties || 0;
       }
       await user.save();
     }
@@ -519,7 +531,7 @@ const cancelBooking = async ({
     await sendAdminNotification(
       "booking_cancelled",
       `Turno Cancelado${suspendedNote}`,
-      `Cliente: ${booking.clientName}\nTeléfono: ${clientPhone}\nFecha: ${formatBookingDateShort(booking.date)}\nHora: ${slot.startTime}\nPenalizaciones: ${newPenalties}/${PENALTY_LIMIT}`,
+      `Cliente: ${booking.clientName}\nTeléfono: ${clientPhone}\nFecha: ${formatBookingDateShort(booking.date)}\nHora: ${slot.startTime}\nPenalizaciones: ${PENALTY_SYSTEM_ENABLED ? `${newPenalties}/${PENALTY_LIMIT}` : "desactivadas"}`,
       { bookingId: booking._id, companyId },
       { companyId },
     );
@@ -541,6 +553,9 @@ const cancelBooking = async ({
     return {
       success: true,
       nowSuspended,
+      penaltyApplied,
+      penaltyEnabled: PENALTY_SYSTEM_ENABLED,
+      penaltySystemEnabled: PENALTY_SYSTEM_ENABLED,
       penalties: newPenalties,
       penaltyLimit: PENALTY_LIMIT,
       data: {
