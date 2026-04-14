@@ -21,10 +21,26 @@ const appConfigSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    attendanceReminderLeadMinutes: {
+      type: Number,
+      default: 60,
+      min: 5,
+      max: 240,
+    },
+    trustedClientConfirmationCount: {
+      type: Number,
+      default: 3,
+      min: 1,
+      max: 20,
+    },
     penaltyLimit: {
       type: Number,
       default: 2,
       min: 1,
+    },
+    penaltySystemEnabled: {
+      type: Boolean,
+      default: true,
     },
     cancellationGroupEnabled: {
       type: Boolean,
