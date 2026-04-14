@@ -6,14 +6,17 @@ const { getWhatsappState } = require("../state/whatsapp.state");
 const { setWhatsappEnabled } = require("../services/whatsappControl.service");
 const {
   DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
+  DEFAULT_CANCELLATION_LOCK_HOURS,
   DEFAULT_PENALTY_LIMIT,
   DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
   getAttendanceReminderLeadMinutes,
+  getCancellationLockHours,
   getOneHourReminderEnabled,
   getPenaltyLimit,
   getPenaltySystemEnabled,
   getTrustedClientConfirmationCount,
   setAttendanceReminderLeadMinutes,
+  setCancellationLockHours,
   setPenaltyLimit,
   setPenaltySystemEnabled,
   setOneHourReminderEnabled,
@@ -68,12 +71,14 @@ const buildBotAutomationConfigResponse = async (companyId) => {
   const [
     oneHourReminderEnabled,
     attendanceReminderLeadMinutes,
+    cancellationLockHours,
     trustedClientConfirmationCount,
     penaltyLimit,
     penaltySystemEnabled,
   ] = await Promise.all([
     getOneHourReminderEnabled(companyId),
     getAttendanceReminderLeadMinutes(companyId),
+    getCancellationLockHours(companyId),
     getTrustedClientConfirmationCount(companyId),
     getPenaltyLimit(companyId),
     getPenaltySystemEnabled(companyId),
@@ -82,6 +87,7 @@ const buildBotAutomationConfigResponse = async (companyId) => {
   return {
     oneHourReminderEnabled,
     attendanceReminderLeadMinutes,
+    cancellationLockHours,
     trustedClientConfirmationCount,
     penaltyEnabled: penaltySystemEnabled,
     penaltySystemEnabled,
@@ -555,6 +561,11 @@ const updateBotAutomationConfig = async (req, res) => {
       body.notifyOneHourBeforeBooking,
     ]);
     const attendanceReminderLeadMinutesRaw = body.attendanceReminderLeadMinutes;
+    const cancellationLockHoursRaw = [
+      body.cancellationLockHours,
+      body.cancellationWindowHours,
+      body.minHoursBeforeCancellation,
+    ].find((value) => value !== undefined);
     const trustedClientConfirmationCountRaw = body.trustedClientConfirmationCount;
     const penaltyLimitRaw = body.penaltyLimit;
     const penaltyEnabledCandidate = firstBoolean([
@@ -567,6 +578,7 @@ const updateBotAutomationConfig = async (req, res) => {
       typeof oneHourReminderEnabledCandidate === "boolean";
     const hasAttendanceLeadMinutesUpdate =
       attendanceReminderLeadMinutesRaw !== undefined;
+    const hasCancellationLockHoursUpdate = cancellationLockHoursRaw !== undefined;
     const hasTrustedConfirmationUpdate =
       trustedClientConfirmationCountRaw !== undefined;
     const hasPenaltyEnabledUpdate = typeof penaltyEnabledCandidate === "boolean";
@@ -575,6 +587,7 @@ const updateBotAutomationConfig = async (req, res) => {
     if (
       !hasOneHourReminderUpdate &&
       !hasAttendanceLeadMinutesUpdate &&
+      !hasCancellationLockHoursUpdate &&
       !hasTrustedConfirmationUpdate &&
       !hasPenaltyEnabledUpdate &&
       !hasPenaltyLimitUpdate
@@ -582,7 +595,7 @@ const updateBotAutomationConfig = async (req, res) => {
       return res.status(400).json({
         success: false,
         error:
-          "Debés enviar al menos una configuración válida (oneHourReminderEnabled, attendanceReminderLeadMinutes, trustedClientConfirmationCount, penaltyEnabled, penaltyLimit).",
+          "Debés enviar al menos una configuración válida (oneHourReminderEnabled, attendanceReminderLeadMinutes, cancellationLockHours, trustedClientConfirmationCount, penaltyEnabled, penaltyLimit).",
       });
     }
 
@@ -600,6 +613,18 @@ const updateBotAutomationConfig = async (req, res) => {
         });
       }
       await setAttendanceReminderLeadMinutes(parsedLead, companyId);
+    }
+
+    if (hasCancellationLockHoursUpdate) {
+      const parsedHours = Number(cancellationLockHoursRaw);
+      if (!Number.isInteger(parsedHours) || parsedHours < 0 || parsedHours > 72) {
+        return res.status(400).json({
+          success: false,
+          error:
+            `El campo 'cancellationLockHours' debe ser un entero entre 0 y 72. Valor recomendado por defecto: ${DEFAULT_CANCELLATION_LOCK_HOURS}.`,
+        });
+      }
+      await setCancellationLockHours(parsedHours, companyId);
     }
 
     if (hasTrustedConfirmationUpdate) {

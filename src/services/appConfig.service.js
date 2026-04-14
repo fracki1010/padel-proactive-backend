@@ -5,6 +5,7 @@ const DEFAULT_PENALTY_LIMIT = 2;
 const DEFAULT_PENALTY_SYSTEM_ENABLED = true;
 const DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES = 60;
 const DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT = 3;
+const DEFAULT_CANCELLATION_LOCK_HOURS = 0;
 
 const buildConfigFilter = (companyId = null) => ({
   companyId: companyId || null,
@@ -35,6 +36,14 @@ const normalizeTrustedClientConfirmationCount = (value) => {
   return parsed;
 };
 
+const normalizeCancellationLockHours = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 72) {
+    return DEFAULT_CANCELLATION_LOCK_HOURS;
+  }
+  return parsed;
+};
+
 const normalizeString = (value) =>
   typeof value === "string" ? value.trim() : String(value || "").trim();
 
@@ -54,6 +63,7 @@ const ensureAppConfig = async (companyId = null) => {
     cancellationGroupEnabled: false,
     cancellationGroupId: "",
     cancellationGroupName: "",
+    cancellationLockHours: DEFAULT_CANCELLATION_LOCK_HOURS,
     dailyAvailabilityDigestEnabled: false,
     dailyAvailabilityDigestLastSentDate: "",
   });
@@ -127,6 +137,23 @@ const setTrustedClientConfirmationCount = async (
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { trustedClientConfirmationCount: normalized } },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+};
+
+const getCancellationLockHours = async (companyId = null) => {
+  const config = await ensureAppConfig(companyId);
+  return normalizeCancellationLockHours(config.cancellationLockHours);
+};
+
+const setCancellationLockHours = async (
+  cancellationLockHours,
+  companyId = null,
+) => {
+  const normalized = normalizeCancellationLockHours(cancellationLockHours);
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $set: { cancellationLockHours: normalized } },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
 };
@@ -217,15 +244,18 @@ const setDailyAvailabilityDigestLastSentDate = async (
 
 module.exports = {
   DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
+  DEFAULT_CANCELLATION_LOCK_HOURS,
   DEFAULT_PENALTY_LIMIT,
   DEFAULT_PENALTY_SYSTEM_ENABLED,
   DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
+  getCancellationLockHours,
   ensureAppConfig,
   getAttendanceReminderLeadMinutes,
   getOneHourReminderEnabled,
   getPenaltyLimit,
   getPenaltySystemEnabled,
   getTrustedClientConfirmationCount,
+  setCancellationLockHours,
   setAttendanceReminderLeadMinutes,
   setPenaltyLimit,
   setPenaltySystemEnabled,
