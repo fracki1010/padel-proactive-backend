@@ -4,7 +4,13 @@ const Company = require("../models/company.model");
 const jwt = require("jsonwebtoken");
 
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "365d";
-const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret";
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET) {
+  throw new Error(
+    "Falta JWT_SECRET en variables de entorno. Definilo antes de iniciar el backend.",
+  );
+}
 
 const normalizeSlug = (value = "") =>
   value
