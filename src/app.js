@@ -5,6 +5,7 @@ const bookingRoutes = require("./routes/booking.routes");
 const authRoutes = require("./routes/auth.routes");
 const { protect, requireRole } = require("./middleware/auth.middleware");
 const superAdminRoutes = require("./routes/super-admin.routes");
+const { createRateLimiter } = require("./middleware/rateLimit.middleware");
 
 const app = express();
 
@@ -25,6 +26,10 @@ const allowedOrigins = (process.env.CORS_ORIGIN || "")
   .split(",")
   .map((origin) => normalizeOrigin(origin))
   .filter(Boolean);
+const chatRateLimit = createRateLimiter({
+  windowMs: Number(process.env.CHAT_RATE_LIMIT_WINDOW_MS || 60_000),
+  maxRequests: Number(process.env.CHAT_RATE_LIMIT_MAX || 30),
+});
 
 // Middlewares
 app.use(
@@ -54,7 +59,7 @@ app.use(express.json());
 
 // Rutas
 app.use("/api/auth", authRoutes);
-app.use("/api/chat", chatRoutes); // El chat puede necesitar ser público si el bot consulta algo, pero el bot usa handlers directamente.
+app.use("/api/chat", chatRateLimit, chatRoutes);
 app.use("/api/bookings", protect, bookingRoutes);
 app.use("/api/config", protect, require("./routes/config.routes"));
 app.use("/api/whatsapp", protect, require("./routes/whatsapp.routes"));

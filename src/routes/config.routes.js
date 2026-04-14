@@ -22,6 +22,8 @@ const resolveCompanyId = (req) => {
   }
   return req.user?.companyId || null;
 };
+const escapeRegex = (value = "") =>
+  String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const companyScope = (req, companyId) => {
   if (req.user?.role === "super_admin") {
@@ -84,10 +86,11 @@ router.post("/courts", async (req, res) => {
     }
 
     const normalizedName = String(name).trim();
+    const escapedCourtName = escapeRegex(normalizedName);
     const scope = companyScope(req, companyId);
     const existingCourt = await Court.findOne({
       ...scope,
-      name: { $regex: new RegExp(`^${normalizedName}$`, "i") },
+      name: { $regex: new RegExp(`^${escapedCourtName}$`, "i") },
     });
 
     if (existingCourt) {

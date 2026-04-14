@@ -1,5 +1,12 @@
 // src/middleware/auth.middleware.js
 const jwt = require("jsonwebtoken");
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET) {
+  throw new Error(
+    "Falta JWT_SECRET en variables de entorno. Definilo antes de iniciar el backend.",
+  );
+}
 
 const protect = async (req, res, next) => {
   let token;
@@ -21,10 +28,7 @@ const protect = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "fallback_secret",
-    );
+    const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
     next();
   } catch (error) {
