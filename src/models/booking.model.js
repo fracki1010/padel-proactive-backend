@@ -65,6 +65,12 @@ const bookingSchema = new mongoose.Schema(
   },
 );
 
-// La unicidad ahora se maneja 100% a nivel de aplicación (`createBooking`)
+bookingSchema.index(
+  { companyId: 1, court: 1, date: 1, timeSlot: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: { $ne: "cancelado" } },
+  },
+);
 
 module.exports = mongoose.model("Booking", bookingSchema);
