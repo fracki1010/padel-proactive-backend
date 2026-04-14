@@ -58,7 +58,7 @@ const appConfigSchema = new mongoose.Schema(
     },
     cancellationLockHours: {
       type: Number,
-      default: 0,
+      default: 2,
       min: 0,
       max: 72,
     },
