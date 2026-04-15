@@ -11,7 +11,10 @@ const {
   getPenaltyLimit,
   getPenaltySystemEnabled,
 } = require("./appConfig.service");
-const { notifyCancellationToGroup } = require("./whatsappCancellationGroup.service");
+const {
+  COMMAND_TYPES,
+  enqueueWhatsappCommand,
+} = require("./whatsappCommandQueue.service");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
@@ -611,11 +614,19 @@ const cancelBooking = async ({
     );
 
     try {
-      await notifyCancellationToGroup({
+      await enqueueWhatsappCommand({
         companyId,
-        booking,
-        time: slot.startTime,
-        cancelledBy: "cliente (WhatsApp)",
+        type: COMMAND_TYPES.NOTIFY_CANCELLATION_GROUP,
+        payload: {
+          booking: {
+            date: booking?.date || null,
+            timeSlot: {
+              startTime: slot?.startTime || null,
+            },
+          },
+          time: slot.startTime,
+          cancelledBy: "cliente (WhatsApp)",
+        },
       });
     } catch (groupError) {
       console.error(
