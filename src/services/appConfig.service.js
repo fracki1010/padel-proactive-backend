@@ -6,6 +6,12 @@ const DEFAULT_PENALTY_SYSTEM_ENABLED = true;
 const DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES = 60;
 const DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT = 3;
 const DEFAULT_CANCELLATION_LOCK_HOURS = 2;
+const DAILY_HOUR_REGEX = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR = DAILY_HOUR_REGEX.test(
+  String(process.env.DAILY_AVAILABILITY_DIGEST_TIME || "").trim(),
+)
+  ? String(process.env.DAILY_AVAILABILITY_DIGEST_TIME).trim()
+  : "09:00";
 
 const buildConfigFilter = (companyId = null) => ({
   companyId: companyId || null,
@@ -46,16 +52,32 @@ const normalizeCancellationLockHours = (value) => {
 
 const normalizeString = (value) =>
   typeof value === "string" ? value.trim() : String(value || "").trim();
+const normalizeDailyAvailabilityDigestHour = (value) => {
+  const normalized = normalizeString(value);
+  return DAILY_HOUR_REGEX.test(normalized)
+    ? normalized
+    : DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR;
+};
 
 const ensureAppConfig = async (companyId = null) => {
   const existing = await AppConfig.findOne(buildConfigFilter(companyId));
   if (existing) {
+    let shouldSave = false;
     if (
       existing.cancellationLockHours === undefined ||
       existing.cancellationLockHours === null ||
       Number.isNaN(Number(existing.cancellationLockHours))
     ) {
       existing.cancellationLockHours = DEFAULT_CANCELLATION_LOCK_HOURS;
+      shouldSave = true;
+    }
+    if (
+      !DAILY_HOUR_REGEX.test(normalizeString(existing.dailyAvailabilityDigestHour))
+    ) {
+      existing.dailyAvailabilityDigestHour = DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR;
+      shouldSave = true;
+    }
+    if (shouldSave) {
       await existing.save();
     }
     return existing;
@@ -75,6 +97,7 @@ const ensureAppConfig = async (companyId = null) => {
     cancellationGroupName: "",
     cancellationLockHours: DEFAULT_CANCELLATION_LOCK_HOURS,
     dailyAvailabilityDigestEnabled: false,
+    dailyAvailabilityDigestHour: DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
     dailyAvailabilityDigestLastSentDate: "",
   });
 };
@@ -195,6 +218,9 @@ const getWhatsappCancellationGroupSettings = async (companyId = null) => {
     groupId: normalizeString(config.cancellationGroupId),
     groupName: normalizeString(config.cancellationGroupName),
     dailyAvailabilityDigestEnabled: Boolean(config.dailyAvailabilityDigestEnabled),
+    dailyAvailabilityDigestHour: normalizeDailyAvailabilityDigestHour(
+      config.dailyAvailabilityDigestHour,
+    ),
     dailyAvailabilityDigestLastSentDate: normalizeString(
       config.dailyAvailabilityDigestLastSentDate,
     ),
@@ -222,15 +248,31 @@ const setWhatsappCancellationGroupSettings = async (
   );
 };
 
-const setDailyAvailabilityDigestStatus = async (
-  enabled,
-  companyId = null,
-) => {
+const setDailyAvailabilityDigestStatus = async (settings, companyId = null) => {
+  const config = await ensureAppConfig(companyId);
+  const hasSettingsObject =
+    settings && typeof settings === "object" && !Array.isArray(settings);
+  const nextEnabled = hasSettingsObject
+    ? Boolean(
+        typeof settings.enabled === "boolean"
+          ? settings.enabled
+          : config.dailyAvailabilityDigestEnabled,
+      )
+    : Boolean(settings);
+  const nextHour = hasSettingsObject
+    ? normalizeDailyAvailabilityDigestHour(
+        typeof settings.hour === "string"
+          ? settings.hour
+          : config.dailyAvailabilityDigestHour,
+      )
+    : normalizeDailyAvailabilityDigestHour(config.dailyAvailabilityDigestHour);
+
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     {
       $set: {
-        dailyAvailabilityDigestEnabled: Boolean(enabled),
+        dailyAvailabilityDigestEnabled: nextEnabled,
+        dailyAvailabilityDigestHour: nextHour,
       },
     },
     { upsert: true, new: true, setDefaultsOnInsert: true },
@@ -255,6 +297,7 @@ const setDailyAvailabilityDigestLastSentDate = async (
 module.exports = {
   DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
   DEFAULT_CANCELLATION_LOCK_HOURS,
+  DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
   DEFAULT_PENALTY_LIMIT,
   DEFAULT_PENALTY_SYSTEM_ENABLED,
   DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
