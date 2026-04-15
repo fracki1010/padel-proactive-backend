@@ -1,54 +1,41 @@
 # padel-proactive-backend
 
-## Frontend y backend separados
+Backend API desacoplado del worker de WhatsApp.
 
-- Frontend (Firebase): usar `../padel-proactive-frontend/.env.example` y definir `VITE_API_URL` apuntando al backend.
-- Backend: usar `.env.production.example` y definir `CORS_ORIGIN` con el dominio del frontend.
+## Arquitectura recomendada
 
-## Ejecucion desacoplada (recomendada)
+- Repo 1: `padel-proactive-backend` (API)
+- Repo 2: `padel-proactive-whatsapp-worker` (sesiones WhatsApp)
+- Comunicación principal: Redis + BullMQ
 
-- API HTTP: `npm start` (dev: `npm run dev`)
-- Worker WhatsApp: `npm run start:worker` (dev: `npm run dev:worker`)
+## Variables importantes
 
-Modo legacy (todo en un proceso):
+- `WHATSAPP_QUEUE_DRIVER=redis`
+- `WHATSAPP_QUEUE_NAME=whatsapp:commands`
+- `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
 
-- `npm run start:combined`
+## Ejecución
 
-## Docker Compose (API + Worker separados)
+API:
 
-Servicios:
+```bash
+npm start
+```
 
-- `padel-proactive-api` (`apiServer.js`)
-- `padel-proactive-wa-worker` (`waWorker.js`)
+El worker ya no tiene que correr en este repo cuando usás arquitectura separada.
 
-Desplegar solo API (sin reiniciar WhatsApp worker):
+## Endpoints útiles
+
+- `GET /api/config/whatsapp` (incluye estado runtime y heartbeat de worker)
+- `GET /api/whatsapp/commands`
+- `GET /api/whatsapp/commands/:id`
+- `POST /api/whatsapp/commands/:id/retry`
+
+## Deploy
+
+Deploy solo API:
 
 ```bash
 docker compose up -d --build --no-deps padel-proactive-api
 ```
 
-Desplegar solo worker (cuando hay cambios de bot):
-
-```bash
-docker compose up -d --build --no-deps padel-proactive-wa-worker
-```
-
-Desplegar ambos:
-
-```bash
-docker compose up -d --build
-```
-
-## Observabilidad de worker
-
-`GET /api/config/whatsapp` ahora incluye:
-
-- `workerOnline`
-- `workerHeartbeatAt`
-- `workerId`
-- `workerStaleAfterMs`
-
-Variables asociadas:
-
-- `WORKER_HEARTBEAT_INTERVAL_MS` (default `10000`)
-- `WORKER_HEARTBEAT_STALE_MS` (default `30000`)
