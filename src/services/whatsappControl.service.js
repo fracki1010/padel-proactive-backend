@@ -121,7 +121,7 @@ async function setWhatsappEnabledConfigOnly(enabled, companyId = null) {
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { whatsappEnabled: nextEnabled } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   );
 }
 

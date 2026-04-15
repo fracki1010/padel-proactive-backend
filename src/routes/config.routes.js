@@ -189,7 +189,7 @@ router.put("/courts/:id", async (req, res) => {
     const updatedCourt = await Court.findOneAndUpdate(
       { _id: req.params.id, ...companyScope(req, companyId) },
       req.body,
-      { new: true },
+      { returnDocument: "after" },
     );
     res.status(200).json({ success: true, data: updatedCourt });
   } catch (error) {
@@ -308,7 +308,7 @@ router.put("/slots/:id", async (req, res) => {
     const updatedSlot = await TimeSlot.findOneAndUpdate(
       { _id: req.params.id, ...companyScope(req, companyId) },
       req.body,
-      { new: true },
+      { returnDocument: "after" },
     );
     res.status(200).json({ success: true, data: updatedSlot });
   } catch (error) {

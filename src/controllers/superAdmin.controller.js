@@ -139,7 +139,7 @@ const updateCompany = async (req, res) => {
       });
     }
 
-    const updated = await Company.findByIdAndUpdate(id, { $set: updates }, { new: true });
+    const updated = await Company.findByIdAndUpdate(id, { $set: updates }, { returnDocument: "after" });
     return res.status(200).json({ success: true, data: updated });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
@@ -161,7 +161,7 @@ const updateCompanyStatus = async (req, res) => {
     const company = await Company.findByIdAndUpdate(
       id,
       { $set: { isActive } },
-      { new: true },
+      { returnDocument: "after" },
     );
 
     if (!company) {

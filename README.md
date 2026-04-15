@@ -11,7 +11,7 @@ Backend API desacoplado del worker de WhatsApp.
 ## Variables importantes
 
 - `WHATSAPP_QUEUE_DRIVER=redis`
-- `WHATSAPP_QUEUE_NAME=whatsapp:commands`
+- `WHATSAPP_QUEUE_NAME=whatsapp-commands`
 - `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
 
 ## Ejecución
