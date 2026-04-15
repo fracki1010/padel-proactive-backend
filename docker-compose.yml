@@ -1,20 +1,25 @@
 services:
-  padel-proactive-backend:
-    container_name: padel-proactive-backend
+  padel-proactive-api:
+    container_name: padel-proactive-api
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    command: ["node", "apiServer.js"]
     env_file:
       - .env
     environment:
       NODE_ENV: production
       TZ: America/Argentina/Buenos_Aires
+      WHATSAPP_QUEUE_DRIVER: redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      REDIS_TLS: "false"
     ports:
       - "${BIND_IP:-127.0.0.1}:${HOST_PORT:-3000}:3000"
-    volumes:
-      - whatsapp_sessions:/usr/src/app/.wwebjs_auth
-      - whatsapp_cache:/usr/src/app/.wwebjs_cache
+    depends_on:
+      - redis
     healthcheck:
       test:
         [
@@ -33,6 +38,18 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  redis:
+    image: redis:7-alpine
+    container_name: padel-proactive-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
-  whatsapp_sessions:
-  whatsapp_cache:
+  redis_data:

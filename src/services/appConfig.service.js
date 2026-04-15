@@ -112,7 +112,7 @@ const setPenaltyLimit = async (penaltyLimit, companyId = null) => {
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { penaltyLimit: normalized } },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
 
@@ -128,7 +128,7 @@ const setPenaltySystemEnabled = async (enabled, companyId = null) => {
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { penaltySystemEnabled: Boolean(enabled) } },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
 
@@ -149,7 +149,7 @@ const setAttendanceReminderLeadMinutes = async (
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { attendanceReminderLeadMinutes: normalized } },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
 
@@ -170,7 +170,7 @@ const setTrustedClientConfirmationCount = async (
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { trustedClientConfirmationCount: normalized } },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
 
@@ -187,7 +187,7 @@ const setCancellationLockHours = async (
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { cancellationLockHours: normalized } },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
 
@@ -207,7 +207,7 @@ const setOneHourReminderEnabled = async (enabled, companyId = null) => {
         oneHourReminderEnabled: Boolean(enabled),
       },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
 
@@ -244,7 +244,7 @@ const setWhatsappCancellationGroupSettings = async (
         cancellationGroupName: nextGroupName,
       },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
 
@@ -275,7 +275,7 @@ const setDailyAvailabilityDigestStatus = async (settings, companyId = null) => {
         dailyAvailabilityDigestHour: nextHour,
       },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
 
@@ -290,7 +290,7 @@ const setDailyAvailabilityDigestLastSentDate = async (
         dailyAvailabilityDigestLastSentDate: normalizeString(isoDate),
       },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
 

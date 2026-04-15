@@ -172,7 +172,7 @@ const processCompany = async (companyId = null) => {
           attendanceConfirmationSentAt: new Date(),
         },
       },
-      { new: true },
+      { returnDocument: "after" },
     );
 
     if (!locked) continue;
