@@ -4,7 +4,10 @@ const Court = require("../models/court.model");
 const User = require("../models/user.model");
 const { sendAdminNotification } = require("../services/notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
-const { notifyCancellationToGroup } = require("../services/whatsappCancellationGroup.service");
+const {
+  COMMAND_TYPES,
+  enqueueWhatsappCommand,
+} = require("../services/whatsappCommandQueue.service");
 const { getPenaltyLimit } = require("../services/appConfig.service");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
@@ -382,10 +385,24 @@ const updateBooking = async (req, res) => {
       }
 
       try {
-        await notifyCancellationToGroup({
+        await enqueueWhatsappCommand({
           companyId,
-          booking: updatedBooking,
-          cancelledBy: "administración",
+          type: COMMAND_TYPES.NOTIFY_CANCELLATION_GROUP,
+          payload: {
+            booking: {
+              date: updatedBooking?.date || null,
+              timeSlot: {
+                startTime: updatedBooking?.timeSlot?.startTime || null,
+              },
+              court: {
+                name: updatedBooking?.court?.name || null,
+              },
+            },
+            time: updatedBooking?.timeSlot?.startTime || null,
+            courtName: updatedBooking?.court?.name || null,
+            cancelledBy: "administración",
+          },
+          requestedBy: req.user?._id || null,
         });
       } catch (groupError) {
         console.error(

@@ -10,6 +10,9 @@ const {
 const {
   startDailyAvailabilityDigestMonitor,
 } = require("./src/services/dailyAvailabilityDigest.service");
+const {
+  startWhatsappCommandMonitor,
+} = require("./src/services/whatsappCommandQueue.service");
 
 const PORT = process.env.PORT || 3000;
 
@@ -26,6 +29,8 @@ connectDB()
     console.log(
       "✅ Estado de WhatsApp sincronizado desde configuración (multiempresa).",
     );
+    startWhatsappCommandMonitor();
+    console.log("✅ Monitor de comandos WhatsApp iniciado.");
     startAttendanceConfirmationMonitor();
     console.log("✅ Monitor de confirmación de asistencia iniciado.");
     startDailyAvailabilityDigestMonitor();
