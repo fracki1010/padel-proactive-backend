@@ -29,6 +29,66 @@ const companyScope = (req, companyId) => {
   return { companyId: req.user?.companyId || null };
 };
 
+const materializeFixedBookingsForDate = async (req, companyId, searchDate) => {
+  const scope = companyScope(req, companyId);
+  const dayOfWeek = searchDate.getUTCDay(); // 0-6 (Dom-Sab)
+
+  const usersWithFixedTurns = await User.find({
+    ...scope,
+    "fixedTurns.dayOfWeek": dayOfWeek,
+  })
+    .populate("fixedTurns.timeSlot")
+    .populate("fixedTurns.court");
+
+  for (const user of usersWithFixedTurns) {
+    for (const fixedTurn of user.fixedTurns || []) {
+      if (fixedTurn.dayOfWeek !== dayOfWeek) continue;
+      if (!fixedTurn?.court?._id || !fixedTurn?.timeSlot?._id) continue;
+
+      const bookingFilter = {
+        ...scope,
+        court: fixedTurn.court._id,
+        date: searchDate,
+        timeSlot: fixedTurn.timeSlot._id,
+      };
+
+      const hasActiveBooking = await Booking.exists({
+        ...bookingFilter,
+        status: { $ne: "cancelado" },
+      });
+      if (hasActiveBooking) continue;
+
+      // Si ese usuario canceló su fijo para ese día, no lo recreamos.
+      const cancelledByOwner = await Booking.exists({
+        ...bookingFilter,
+        status: "cancelado",
+        clientPhone: user.phoneNumber,
+      });
+      if (cancelledByOwner) continue;
+
+      try {
+        await Booking.create({
+          ...scope,
+          court: fixedTurn.court._id,
+          date: searchDate,
+          timeSlot: fixedTurn.timeSlot._id,
+          clientName: user.name || "Cliente",
+          clientPhone: user.phoneNumber || "",
+          clientWhatsappId: user.whatsappId || null,
+          status: "reservado",
+          paymentStatus: "pendiente",
+          isFixed: true,
+          finalPrice: Number(fixedTurn?.timeSlot?.price || 0),
+        });
+      } catch (error) {
+        if (error?.code !== 11000) {
+          throw error;
+        }
+      }
+    }
+  }
+};
+
 // 1. OBTENER RESERVAS (GET)
 const getBookings = async (req, res) => {
   try {
@@ -43,70 +103,15 @@ const getBookings = async (req, res) => {
       query.date = searchDate;
     }
 
-    // A. Obtener reservas reales
+    if (date) {
+      await materializeFixedBookingsForDate(req, companyId, searchDate);
+    }
+
+    // A. Obtener reservas
     const bookings = await Booking.find(query)
       .populate("timeSlot")
       .populate("court")
       .sort({ date: -1, createdAt: -1 });
-
-    // B. Obtener turnos fijos si se buscó por una fecha específica
-    if (date) {
-      const dayOfWeek = searchDate.getUTCDay(); // 0-6 (Dom-Sab)
-
-      const usersWithFixedTurns = await User.find({
-        ...companyScope(req, companyId),
-        "fixedTurns.dayOfWeek": dayOfWeek,
-      })
-        .populate("fixedTurns.timeSlot")
-        .populate("fixedTurns.court");
-
-      usersWithFixedTurns.forEach((user) => {
-        user.fixedTurns.forEach((ft) => {
-          if (ft.dayOfWeek === dayOfWeek) {
-            // Verificar si ya hay una reserva real para esta cancha y slot en esta fecha
-            const hasRealBooking = bookings.some((b) => {
-              const isSameSlotAndCourt =
-                b.court?._id?.toString() === ft.court?._id?.toString() &&
-                b.timeSlot?._id?.toString() === ft.timeSlot?._id?.toString();
-
-              if (!isSameSlotAndCourt) return false;
-
-              // Si hay una reserva real ACTIVA (no cancelada), la respetamos y no creamos la virtual.
-              if (b.status !== "cancelado") return true;
-
-              // Si hay una reserva CANCELADA, pero es del mismo usuario del turno fijo,
-              // significa que el usuario canceló SU turno fijo para este día.
-              // Por lo tanto, no recreamos el turno virtual.
-              if (
-                b.status === "cancelado" &&
-                b.clientPhone === user.phoneNumber
-              ) {
-                return true;
-              }
-
-              return false;
-            });
-
-            if (!hasRealBooking) {
-              // Crear reserva "virtual"
-              // Le ponemos un ID especial o simplemente no le ponemos ID de DB
-              bookings.push({
-                _id: `fixed-${user._id}-${ft.court._id}-${ft.timeSlot._id}`,
-                court: ft.court,
-                timeSlot: ft.timeSlot,
-                date: searchDate,
-                clientName: user.name,
-                clientPhone: user.phoneNumber,
-                status: "confirmado",
-                paymentStatus: "pendiente",
-                isFixed: true, // Flag para el frontend
-                finalPrice: ft.timeSlot.price || 0,
-              });
-            }
-          }
-        });
-      });
-    }
 
     // Ordenar manualmente por el campo 'order' del timeSlot
     bookings.sort((a, b) => {
