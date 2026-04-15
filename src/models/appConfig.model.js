@@ -66,6 +66,11 @@ const appConfigSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    dailyAvailabilityDigestHour: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     dailyAvailabilityDigestLastSentDate: {
       type: String,
       default: "",

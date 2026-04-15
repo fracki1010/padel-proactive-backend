@@ -16,7 +16,12 @@ const {
 const CONFIG_KEY = "main";
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 const CHECK_INTERVAL_MS = 60 * 1000;
-const SEND_TIME = String(process.env.DAILY_AVAILABILITY_DIGEST_TIME || "09:00");
+const DAILY_HOUR_REGEX = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const DEFAULT_SEND_TIME = DAILY_HOUR_REGEX.test(
+  String(process.env.DAILY_AVAILABILITY_DIGEST_TIME || "").trim(),
+)
+  ? String(process.env.DAILY_AVAILABILITY_DIGEST_TIME).trim()
+  : "09:00";
 
 let timer = null;
 let isRunning = false;
@@ -47,8 +52,6 @@ const getCurrentMinutesInTimezone = (timeZone = TIMEZONE) => {
   const minute = Number(parts.find((p) => p.type === "minute")?.value || 0);
   return hour * 60 + minute;
 };
-
-const sendTimeMinutes = parseTimeToMinutes(SEND_TIME);
 
 const buildDigestMessage = (entries = []) => {
   if (!entries.length) {
@@ -118,6 +121,10 @@ const processCompany = async (config) => {
   const companyId = config.companyId || null;
   const todayIso = getTodayIsoInTimezone(TIMEZONE);
   const nowMinutes = getCurrentMinutesInTimezone(TIMEZONE);
+  const configuredHour = String(config.dailyAvailabilityDigestHour || "").trim();
+  const sendTimeMinutes = parseTimeToMinutes(
+    DAILY_HOUR_REGEX.test(configuredHour) ? configuredHour : DEFAULT_SEND_TIME,
+  );
 
   if (nowMinutes < sendTimeMinutes) return;
   if (String(config.dailyAvailabilityDigestLastSentDate || "") === todayIso) return;
@@ -155,7 +162,9 @@ const runSweep = async () => {
       key: CONFIG_KEY,
       whatsappEnabled: true,
       dailyAvailabilityDigestEnabled: true,
-    }).select("companyId dailyAvailabilityDigestLastSentDate");
+    }).select(
+      "companyId dailyAvailabilityDigestLastSentDate dailyAvailabilityDigestHour",
+    );
 
     for (const config of configs) {
       try {
