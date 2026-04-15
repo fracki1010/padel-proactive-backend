@@ -16,8 +16,12 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node whatsappBot.js",
-    "dev": "nodemon whatsappBot.js",
+    "start": "node apiServer.js",
+    "dev": "nodemon apiServer.js",
+    "start:worker": "node waWorker.js",
+    "dev:worker": "nodemon waWorker.js",
+    "start:combined": "node whatsappBot.js",
+    "dev:combined": "nodemon whatsappBot.js",
     "seed:super-admin": "node src/seed/seedAdmin.js",
     "migrate:multi-tenant": "node scripts/migrateToMultiTenant.js"
   },

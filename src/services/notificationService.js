@@ -1,7 +1,15 @@
 const Notification = require("../models/notification.model");
 const Admin = require("../models/admin.model");
-const { getClient } = require("./whatsappTenantManager.service");
-const { getWhatsappState } = require("../state/whatsapp.state");
+const {
+  COMMAND_TYPES,
+  enqueueWhatsappCommand,
+} = require("./whatsappCommandQueue.service");
+
+const normalizePhoneToChatId = (rawPhone = "") => {
+  const digits = String(rawPhone || "").replace(/\D/g, "");
+  if (!digits) return "";
+  return `${digits}@c.us`;
+};
 
 const sendAdminNotification = async (
   type,
@@ -10,10 +18,9 @@ const sendAdminNotification = async (
   data = {},
   options = {},
 ) => {
-  console.log("comienza a enviar mensaje");
-
   try {
     const companyId = options.companyId || data.companyId || null;
+    const queuedCommandIds = [];
 
     // 1. Guardar en Base de Datos (para la App)
     await Notification.create({
@@ -38,58 +45,45 @@ const sendAdminNotification = async (
       console.warn(
         "[NotificationService] No se encontraron administradores con teléfono para notificar.",
       );
-      return;
+      return { queuedCommandIds, queuedCount: 0 };
     }
 
-    if (!getWhatsappState(companyId).enabled) {
-      console.log("[NotificationService] WhatsApp desactivado. Solo se guarda en la app.");
-      return;
-    }
-
-    const client = getClient(companyId);
-    if (!client || !client.isReady) {
-      console.warn(
-        "[NotificationService] El cliente de WhatsApp no está listo para enviar mensajes.",
-      );
-      return;
-    }
-
-    // Lista de números a notificar
+    // 2. Encolar envío por WhatsApp a todos los admins
     const phones = admins.map((a) => a.phone);
-
-    console.log(phones);
-
-    // Eliminar duplicados y formatear
     const uniquePhones = [...new Set(phones)];
+    const whatsappMessage = `🔔 *NUEVA NOTIFICACIÓN*\n\n*${title}*\n${message}`;
 
     for (const phone of uniquePhones) {
-      console.log('admin',phone);
+      const chatId = normalizePhoneToChatId(phone);
+      if (!chatId) continue;
+
       try {
-        // 3. Validar y obtener el ID correcto de WhatsApp
-        const numberId = await client.getNumberId(phone);
-
-        if (!numberId) {
-          console.warn(
-            `[NotificationService] El número ${phone} no está registrado en WhatsApp.`,
-          );
-          continue;
+        const { command } = await enqueueWhatsappCommand({
+          companyId,
+          type: COMMAND_TYPES.SEND_MESSAGE,
+          payload: {
+            to: chatId,
+            message: whatsappMessage,
+          },
+        });
+        if (command?._id) {
+          queuedCommandIds.push(String(command._id));
         }
-
-        const whatsappMessage = `🔔 *NUEVA NOTIFICACIÓN*\n\n*${title}*\n${message}`;
-
-        console.log(
-          `[NotificationService] Enviando alerta a ${numberId._serialized}...`,
-        );
-        await client.sendMessage(numberId._serialized, whatsappMessage);
       } catch (err) {
         console.error(
-          `[NotificationService] Error al enviar a ${phone}:`,
-          err.message,
+          `[NotificationService] Error encolando alerta para ${phone}:`,
+          err?.message || err,
         );
       }
     }
+
+    return {
+      queuedCommandIds,
+      queuedCount: queuedCommandIds.length,
+    };
   } catch (error) {
     console.error("Error al enviar notificación:", error);
+    throw error;
   }
 };
 
