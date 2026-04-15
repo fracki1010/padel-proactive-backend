@@ -5,3 +5,7 @@ node_modules
 .DS_Store
 .wwebjs_auth
 .wwebjs_cache
+
+
+./wwebjs_auth/*
+./wwebjs_cache/*
