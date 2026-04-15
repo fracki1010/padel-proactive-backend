@@ -316,7 +316,7 @@ const updateBooking = async (req, res) => {
     const updatedBooking = await Booking.findOneAndUpdate(
       { _id: id, ...scope },
       { $set: updateData },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     ).populate(["court", "timeSlot"]);
 
     const wasCancelledBefore = previousBooking.status === "cancelado";

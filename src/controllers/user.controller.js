@@ -53,7 +53,7 @@ const updateUser = async (req, res) => {
     const user = await User.findOneAndUpdate(
       { _id: req.params.id, ...companyScope(req, companyId) },
       req.body,
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     );
     if (!user) {
       return res
@@ -124,7 +124,7 @@ const clearPenalties = async (req, res) => {
     const user = await User.findOneAndUpdate(
       { _id: req.params.id, ...companyScope(req, companyId) },
       { penalties: 0, isSuspended: false },
-      { new: true },
+      { returnDocument: "after" },
     );
     if (!user) {
       return res

@@ -76,7 +76,7 @@ const getRedisQueue = () => {
     maxRetriesPerRequest: null,
   });
 
-  const queueName = String(process.env.WHATSAPP_QUEUE_NAME || "whatsapp:commands").trim();
+  const queueName = String(process.env.WHATSAPP_QUEUE_NAME || "whatsapp-commands").trim();
   redisQueueInstance = new Queue(queueName, { connection: redisConnection });
   return redisQueueInstance;
 };
@@ -200,7 +200,7 @@ const claimNextQueuedCommand = async ({ workerId }) => {
     },
     {
       sort: { createdAt: 1 },
-      new: true,
+      returnDocument: "after",
     },
   );
 };

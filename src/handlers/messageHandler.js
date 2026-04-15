@@ -866,7 +866,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             {
               $inc: { attendanceConfirmedCount: 1 },
             },
-            { new: true },
+            { returnDocument: "after" },
           );
 
           const confirmedCount = updatedUser?.attendanceConfirmedCount || 0;
