@@ -24,7 +24,7 @@ const markAsRead = async (req, res) => {
     const notification = await Notification.findOneAndUpdate(
       { _id: req.params.id, ...getNotificationScope(req) },
       { isRead: true },
-      { new: true },
+      { returnDocument: "after" },
     );
     res.status(200).json({ success: true, data: notification });
   } catch (error) {
@@ -51,16 +51,23 @@ const sendTestAdminNotification = async (req, res) => {
 
   try {
     const companyId = req.user?.role === "super_admin" ? null : req.user?.companyId;
-    await sendAdminNotification(
+    const result = await sendAdminNotification(
       type || "system",
       title || "Alerta Manual",
       message || "Esta es una notificación de prueba enviada desde el API.",
       {},
       { companyId },
     );
-    res
-      .status(200)
-      .json({ success: true, message: "Notificación enviada con éxito" });
+    return res.status(202).json({
+      success: true,
+      data: {
+        message: "Notificación encolada con éxito",
+        queuedCount: Number(result?.queuedCount || 0),
+        commandIds: Array.isArray(result?.queuedCommandIds)
+          ? result.queuedCommandIds
+          : [],
+      },
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

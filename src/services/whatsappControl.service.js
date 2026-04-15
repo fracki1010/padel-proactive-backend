@@ -98,11 +98,7 @@ async function setWhatsappEnabled(enabled, companyId = null) {
     return currentState;
   }
 
-  await AppConfig.findOneAndUpdate(
-    buildConfigFilter(companyId),
-    { $set: { whatsappEnabled: nextEnabled } },
-    { upsert: true, new: true },
-  );
+  await setWhatsappEnabledConfigOnly(nextEnabled, companyId);
 
   if (nextEnabled) {
     // Iniciar de forma asíncrona para no bloquear la respuesta HTTP.
@@ -118,6 +114,15 @@ async function setWhatsappEnabled(enabled, companyId = null) {
   }
 
   return getWhatsappState(companyId);
+}
+
+async function setWhatsappEnabledConfigOnly(enabled, companyId = null) {
+  const nextEnabled = Boolean(enabled);
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $set: { whatsappEnabled: nextEnabled } },
+    { upsert: true, returnDocument: "after" },
+  );
 }
 
 async function startWhatsapp(companyId = null) {
@@ -164,4 +169,5 @@ module.exports = {
   syncWhatsappFromConfig,
   syncAllWhatsappFromConfig,
   setWhatsappEnabled,
+  setWhatsappEnabledConfigOnly,
 };

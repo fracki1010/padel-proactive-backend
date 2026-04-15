@@ -29,7 +29,7 @@ const saveOrUpdateUser = async (whatsappId, name, options = {}) => {
         phoneNumber: cleanPhone,
         lastInteraction: new Date(),
       },
-      { upsert: true, new: true }, // Upsert: Si no existe, crea. Si existe, actualiza.
+      { upsert: true, returnDocument: "after" }, // Upsert: Si no existe, crea. Si existe, actualiza.
     );
     return user;
   } catch (error) {

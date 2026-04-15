@@ -1,15 +1,41 @@
-# padel-Padexa
+# padel-proactive-backend
 
-## Frontend y backend separados
+Backend API desacoplado del worker de WhatsApp.
 
-- Frontend (Firebase): usa `../padel-proactive-frontend/.env.example` y define `VITE_API_URL` con la URL publica del backend.
-- Backend (Debian/Railway): usa `.env.production.example` y define `CORS_ORIGIN` con el dominio del frontend.
+## Arquitectura recomendada
 
-### Desarrollo local por separado
+- Repo 1: `padel-proactive-backend` (API)
+- Repo 2: `padel-proactive-whatsapp-worker` (sesiones WhatsApp)
+- Comunicación principal: Redis + BullMQ
 
-1. Backend: `npm run dev`
-2. Frontend: `cd ../padel-proactive-frontend && npm run dev`
+## Variables importantes
 
+- `WHATSAPP_QUEUE_DRIVER=redis`
+- `WHATSAPP_QUEUE_NAME=whatsapp-commands`
+- `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
 
+## Ejecución
 
-holssss
+API:
+
+```bash
+npm start
+```
+
+El worker ya no tiene que correr en este repo cuando usás arquitectura separada.
+
+## Endpoints útiles
+
+- `GET /api/config/whatsapp` (incluye estado runtime y heartbeat de worker)
+- `GET /api/whatsapp/commands`
+- `GET /api/whatsapp/commands/:id`
+- `POST /api/whatsapp/commands/:id/retry`
+
+## Deploy
+
+Deploy solo API:
+
+```bash
+docker compose up -d --build --no-deps padel-proactive-api
+```
+
