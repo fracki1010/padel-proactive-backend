@@ -24,7 +24,7 @@ const markAsRead = async (req, res) => {
     const notification = await Notification.findOneAndUpdate(
       { _id: req.params.id, ...getNotificationScope(req) },
       { isRead: true },
-      { new: true },
+      { returnDocument: "after" },
     );
     res.status(200).json({ success: true, data: notification });
   } catch (error) {

@@ -121,7 +121,7 @@ const updateProfile = async (req, res) => {
     const admin = await Admin.findByIdAndUpdate(
       req.user.id,
       { $set: payload },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     )
       .select("-password")
       .populate("companyId", "name slug address isActive");
