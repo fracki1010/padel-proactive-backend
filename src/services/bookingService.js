@@ -491,7 +491,21 @@ const getAvailableSlots = async (dateStr, options = {}) => {
     return {
       success: true,
       date: dateStr,
-      slots: availableSlots.map((s) => ({ time: s.startTime, price: s.price })),
+      slots: availableSlots.map((s) => {
+        const bookingsForThisSlot = bookings.filter(
+          (b) => b.timeSlot.toString() === s._id.toString(),
+        );
+        const availableCourts = Math.max(
+          0,
+          Number(totalCourtsCount) - bookingsForThisSlot.length,
+        );
+        return {
+          time: s.startTime,
+          price: s.price,
+          availableCourts,
+          totalCourts: Number(totalCourtsCount),
+        };
+      }),
     };
   } catch (error) {
     console.error("Error obteniendo disponibilidad:", error);

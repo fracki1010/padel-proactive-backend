@@ -701,6 +701,8 @@ const buildAvailabilityResponse = async ({
   const dayPeriod = extractDayPeriodFromMessage(userMessage);
   const periodLabel = getDayPeriodLabel(dayPeriod);
   const prefix = modePrefix ? `${modePrefix}\n` : "";
+  const requestedCourtsCount = extractRequestedCourtsCount(userMessage);
+  const needsMultipleCourts = requestedCourtsCount >= 2;
 
   if (requestedTime) {
     const slotExists = await TimeSlot.findOne({
@@ -728,6 +730,44 @@ const buildAvailabilityResponse = async ({
 
   if (requestedTime) {
     const exactMatch = availability.slots.find((s) => s.time === requestedTime);
+    const availableCourtsInExactTime = Math.max(
+      0,
+      Number(exactMatch?.availableCourts || 0),
+    );
+    const enoughCourtsForRequest = availableCourtsInExactTime >= requestedCourtsCount;
+
+    if (needsMultipleCourts) {
+      if (exactMatch && enoughCourtsForRequest) {
+        return {
+          replyText:
+            `${prefix}✅ Sí, tengo *${requestedCourtsCount} canchas* disponibles para el *${getFormattedDate(requestedDate)} a las ${requestedTime}*.` +
+            `\n💰 Precio por cancha: $${exactMatch.price}`,
+          pendingBookingOffer: null,
+        };
+      }
+
+      const alternativesForRequestedCourts = availability.slots
+        .filter((s) => Number(s.availableCourts || 0) >= requestedCourtsCount)
+        .slice(0, 5);
+      const alternativesList = alternativesForRequestedCourts
+        .map((s) => `• ${s.time} (${requestedCourtsCount} canchas, $${s.price} c/u)`)
+        .join("\n");
+
+      const shortageLine = exactMatch
+        ? `Solo tengo *${availableCourtsInExactTime}* libre${availableCourtsInExactTime === 1 ? "" : "s"} a esa hora.`
+        : "Ese horario no tiene disponibilidad.";
+
+      return {
+        replyText:
+          `${prefix}🚫 No tengo *${requestedCourtsCount} canchas* para *${requestedTime}* el ${getFormattedDate(requestedDate)}.` +
+          `\n${shortageLine}\n\n` +
+          (alternativesForRequestedCourts.length
+            ? `Te puedo ofrecer horarios con ${requestedCourtsCount} canchas:\n${alternativesList}`
+            : `No tengo otro horario con ${requestedCourtsCount} canchas libres para esa fecha.`),
+        pendingBookingOffer: null,
+      };
+    }
+
     if (exactMatch) {
       return {
         replyText:

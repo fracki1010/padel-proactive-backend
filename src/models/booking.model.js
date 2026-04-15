@@ -41,6 +41,10 @@ const bookingSchema = new mongoose.Schema(
       enum: ["pagado", "pendiente"],
       default: "pagado",
     },
+    isFixed: {
+      type: Boolean,
+      default: false,
+    },
     finalPrice: {
       // Por si hacemos un descuento manual sobre el precio del slot
       type: Number,
