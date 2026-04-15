@@ -1,6 +1,7 @@
 const GLOBAL_COMPANY_KEY = "global";
 
 const states = new Map();
+let persistService = null;
 
 const buildCompanyKey = (companyId = null) =>
   companyId ? String(companyId) : GLOBAL_COMPANY_KEY;
@@ -34,14 +35,39 @@ function ensureState(companyId = null) {
   return states.get(key);
 }
 
-function touch(state) {
+function getPersistService() {
+  if (persistService) return persistService;
+  // Lazy require to avoid loading extra modules before DB boot.
+  persistService = require("../services/whatsappRuntimeState.service");
+  return persistService;
+}
+
+function persistState(companyId = null, state = {}) {
+  try {
+    const { saveWhatsappRuntimeState } = getPersistService();
+    Promise.resolve(saveWhatsappRuntimeState(companyId, state)).catch((error) => {
+      console.error(
+        `[WhatsAppState][${buildCompanyKey(companyId)}] Error persistiendo runtime state:`,
+        error?.message || error,
+      );
+    });
+  } catch (error) {
+    console.error(
+      `[WhatsAppState][${buildCompanyKey(companyId)}] Error cargando servicio de persistencia:`,
+      error?.message || error,
+    );
+  }
+}
+
+function touch(companyId = null, state) {
   state.updatedAt = new Date().toISOString();
+  persistState(companyId, state);
 }
 
 function setEnabled(companyId = null, enabled) {
   const state = ensureState(companyId);
   state.enabled = Boolean(enabled);
-  touch(state);
+  touch(companyId, state);
 }
 
 function setDisabled(companyId = null, message = "WhatsApp desactivado") {
@@ -53,7 +79,7 @@ function setDisabled(companyId = null, message = "WhatsApp desactivado") {
   state.loadingMessage = message;
   state.authFailure = null;
   state.stoppedAt = new Date().toISOString();
-  touch(state);
+  touch(companyId, state);
 }
 
 function setInitializing(companyId = null, message = "Inicializando") {
@@ -62,7 +88,7 @@ function setInitializing(companyId = null, message = "Inicializando") {
   state.status = "initializing";
   state.loadingMessage = message;
   state.authFailure = null;
-  touch(state);
+  touch(companyId, state);
 }
 
 function setStartAttempt(
@@ -74,7 +100,7 @@ function setStartAttempt(
   state.startingAt = new Date().toISOString();
   state.loadingMessage = message;
   state.lastError = null;
-  touch(state);
+  touch(companyId, state);
 }
 
 function setQr(companyId = null, qr) {
@@ -85,7 +111,7 @@ function setQr(companyId = null, qr) {
   state.hasQr = Boolean(qr);
   state.lastQrAt = new Date().toISOString();
   state.authFailure = null;
-  touch(state);
+  touch(companyId, state);
 }
 
 function setLoading(companyId = null, percent, message) {
@@ -94,7 +120,7 @@ function setLoading(companyId = null, percent, message) {
   state.status = "loading";
   state.loadingPercent = percent;
   state.loadingMessage = message;
-  touch(state);
+  touch(companyId, state);
 }
 
 function setAuthenticated(companyId = null) {
@@ -105,7 +131,7 @@ function setAuthenticated(companyId = null) {
   state.hasQr = false;
   state.authFailure = null;
   state.authenticatedAt = new Date().toISOString();
-  touch(state);
+  touch(companyId, state);
 }
 
 function setAuthFailure(companyId = null, message) {
@@ -114,7 +140,7 @@ function setAuthFailure(companyId = null, message) {
   state.status = "auth_failure";
   state.authFailure = message || "Error de autenticación";
   state.lastError = state.authFailure;
-  touch(state);
+  touch(companyId, state);
 }
 
 function setReady(companyId = null) {
@@ -129,7 +155,7 @@ function setReady(companyId = null) {
   state.lastError = null;
   state.lastDisconnectReason = null;
   state.reconnectAttempts = 0;
-  touch(state);
+  touch(companyId, state);
 }
 
 function setLastError(companyId = null, errorMessage) {
@@ -138,7 +164,7 @@ function setLastError(companyId = null, errorMessage) {
     typeof errorMessage === "string" && errorMessage.trim()
       ? errorMessage
       : "Error desconocido";
-  touch(state);
+  touch(companyId, state);
 }
 
 function setDisconnected(companyId = null, reason) {
@@ -155,19 +181,19 @@ function setDisconnected(companyId = null, reason) {
         ? String(reason)
         : "desconocido";
   state.stoppedAt = new Date().toISOString();
-  touch(state);
+  touch(companyId, state);
 }
 
 function incrementReconnectAttempts(companyId = null) {
   const state = ensureState(companyId);
   state.reconnectAttempts = Number(state.reconnectAttempts || 0) + 1;
-  touch(state);
+  touch(companyId, state);
 }
 
 function resetReconnectAttempts(companyId = null) {
   const state = ensureState(companyId);
   state.reconnectAttempts = 0;
-  touch(state);
+  touch(companyId, state);
 }
 
 function getWhatsappState(companyId = null) {

@@ -2,8 +2,16 @@ const express = require("express");
 const router = express.Router();
 const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
-const { getWhatsappState } = require("../state/whatsapp.state");
-const { setWhatsappEnabled } = require("../services/whatsappControl.service");
+const {
+  setWhatsappEnabledConfigOnly,
+} = require("../services/whatsappControl.service");
+const {
+  getWhatsappRuntimeState,
+} = require("../services/whatsappRuntimeState.service");
+const {
+  COMMAND_TYPES,
+  enqueueWhatsappCommand,
+} = require("../services/whatsappCommandQueue.service");
 const {
   DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
   DEFAULT_CANCELLATION_LOCK_HOURS,
@@ -26,7 +34,13 @@ const {
   setWhatsappCancellationGroupSettings,
   setDailyAvailabilityDigestStatus,
 } = require("../services/appConfig.service");
-const { listWhatsappGroups } = require("../services/whatsappCancellationGroup.service");
+const {
+  getWhatsappGroupsSnapshot,
+} = require("../services/whatsappGroupsSnapshot.service");
+const {
+  DEFAULT_SERVICE_NAME,
+  getWorkerHealth,
+} = require("../services/workerHeartbeat.service");
 const DAILY_HOUR_REGEX = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 const resolveCompanyId = (req) => {
@@ -50,12 +64,20 @@ const firstString = (values = []) =>
   values.find((value) => typeof value === "string" && value.trim().length >= 0);
 
 const buildWhatsappConfigResponse = async (companyId) => {
-  const state = getWhatsappState(companyId);
-  const cancellationGroup = await getWhatsappCancellationGroupSettings(companyId);
-  const oneHourReminderEnabled = await getOneHourReminderEnabled(companyId);
+  const [state, cancellationGroup, oneHourReminderEnabled, workerHealth] =
+    await Promise.all([
+      getWhatsappRuntimeState(companyId),
+      getWhatsappCancellationGroupSettings(companyId),
+      getOneHourReminderEnabled(companyId),
+      getWorkerHealth({ serviceName: DEFAULT_SERVICE_NAME }),
+    ]);
 
   return {
     ...state,
+    workerOnline: Boolean(workerHealth.online),
+    workerHeartbeatAt: workerHealth.heartbeatAt,
+    workerId: workerHealth.workerId,
+    workerStaleAfterMs: workerHealth.staleAfterMs,
     oneHourReminderEnabled,
     oneHourBeforeEnabled: oneHourReminderEnabled,
     bookingReminderOneHourEnabled: oneHourReminderEnabled,
@@ -311,6 +333,7 @@ const updateWhatsappConfig = async (req, res) => {
   try {
     const body = req.body || {};
     const companyId = resolveCompanyId(req);
+    let whatsappCommand = null;
     const whatsappEnabledCandidate = firstBoolean([
       body.enabled,
       body.isEnabled,
@@ -378,7 +401,14 @@ const updateWhatsappConfig = async (req, res) => {
     }
 
     if (hasWhatsappEnabledUpdate) {
-      await setWhatsappEnabled(whatsappEnabledCandidate, companyId);
+      await setWhatsappEnabledConfigOnly(whatsappEnabledCandidate, companyId);
+      const { command } = await enqueueWhatsappCommand({
+        companyId,
+        type: COMMAND_TYPES.SET_ENABLED,
+        payload: { enabled: Boolean(whatsappEnabledCandidate) },
+        requestedBy: req.user?._id || null,
+      });
+      whatsappCommand = command;
     }
 
     let cancellationGroup = await getWhatsappCancellationGroupSettings(companyId);
@@ -471,7 +501,10 @@ const updateWhatsappConfig = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: await buildWhatsappConfigResponse(companyId),
+      data: {
+        ...(await buildWhatsappConfigResponse(companyId)),
+        commandId: whatsappCommand?._id || null,
+      },
     });
   } catch (error) {
     const message = String(error?.message || "");
@@ -708,22 +741,23 @@ router.patch("/bot-automation", updateBotAutomationConfig);
 router.get("/whatsapp/groups", async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
-    const groups = await listWhatsappGroups(companyId);
-    return res.status(200).json({ success: true, data: { groups } });
+    const snapshot = await getWhatsappGroupsSnapshot(companyId);
+    const { command } = await enqueueWhatsappCommand({
+      companyId,
+      type: COMMAND_TYPES.LIST_GROUPS,
+      payload: {},
+      requestedBy: req.user?._id || null,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        groups: Array.isArray(snapshot.groups) ? snapshot.groups : [],
+        commandId: command?._id ? String(command._id) : null,
+        refreshedAt: snapshot.refreshedAt || null,
+      },
+    });
   } catch (error) {
-    const message = String(error?.message || "");
-    if (
-      message.includes("no está listo") ||
-      message.includes("no está inicializado") ||
-      message.includes("No existe cliente")
-    ) {
-      return res.status(200).json({
-        success: true,
-        data: { groups: [] },
-        error:
-          "WhatsApp todavía no está listo. Activá y vinculá la sesión para poder listar grupos.",
-      });
-    }
     return res.status(500).json({ success: false, error: error.message });
   }
 });
