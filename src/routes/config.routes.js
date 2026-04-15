@@ -7,6 +7,7 @@ const { setWhatsappEnabled } = require("../services/whatsappControl.service");
 const {
   DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
   DEFAULT_CANCELLATION_LOCK_HOURS,
+  DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
   DEFAULT_PENALTY_LIMIT,
   DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
   getAttendanceReminderLeadMinutes,
@@ -26,6 +27,7 @@ const {
   setDailyAvailabilityDigestStatus,
 } = require("../services/appConfig.service");
 const { listWhatsappGroups } = require("../services/whatsappCancellationGroup.service");
+const DAILY_HOUR_REGEX = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 const resolveCompanyId = (req) => {
   if (req.user?.role === "super_admin") {
@@ -64,6 +66,9 @@ const buildWhatsappConfigResponse = async (companyId) => {
     cancellationGroupName: cancellationGroup.groupName,
     dailyAvailabilityDigestEnabled:
       cancellationGroup.dailyAvailabilityDigestEnabled,
+    dailyAvailabilityDigestHour: cancellationGroup.dailyAvailabilityDigestHour,
+    dailyGroupAvailabilityHour: cancellationGroup.dailyAvailabilityDigestHour,
+    groupDailyAvailabilityDigestHour: cancellationGroup.dailyAvailabilityDigestHour,
   };
 };
 
@@ -323,6 +328,11 @@ const updateWhatsappConfig = async (req, res) => {
       body.dailyGroupAvailabilityEnabled,
       body.groupDailyAvailabilityDigestEnabled,
     ]);
+    const dailyAvailabilityDigestHourCandidate = firstString([
+      body.dailyAvailabilityDigestHour,
+      body.dailyGroupAvailabilityHour,
+      body.groupDailyAvailabilityDigestHour,
+    ]);
     const oneHourReminderEnabledCandidate = firstBoolean([
       body.oneHourReminderEnabled,
       body.oneHourBeforeEnabled,
@@ -349,7 +359,8 @@ const updateWhatsappConfig = async (req, res) => {
       typeof cancellationGroupIdCandidate === "string" ||
       typeof cancellationGroupNameCandidate === "string";
     const hasDailyAvailabilityDigestUpdate =
-      typeof dailyAvailabilityDigestEnabledCandidate === "boolean";
+      typeof dailyAvailabilityDigestEnabledCandidate === "boolean" ||
+      typeof dailyAvailabilityDigestHourCandidate === "string";
     const hasOneHourReminderUpdate =
       typeof oneHourReminderEnabledCandidate === "boolean";
 
@@ -408,10 +419,23 @@ const updateWhatsappConfig = async (req, res) => {
         dailyAvailabilityDigestEnabled: Boolean(
           savedConfig.dailyAvailabilityDigestEnabled,
         ),
+        dailyAvailabilityDigestHour: String(
+          savedConfig.dailyAvailabilityDigestHour ||
+            DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
+        ),
       };
     }
 
     if (hasDailyAvailabilityDigestUpdate) {
+      if (
+        typeof dailyAvailabilityDigestHourCandidate === "string" &&
+        !DAILY_HOUR_REGEX.test(dailyAvailabilityDigestHourCandidate.trim())
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "La hora del resumen diario debe tener formato HH:mm.",
+        });
+      }
       if (!cancellationGroup.groupId) {
         return res.status(400).json({
           success: false,
@@ -420,11 +444,24 @@ const updateWhatsappConfig = async (req, res) => {
         });
       }
       const savedDigestConfig = await setDailyAvailabilityDigestStatus(
-        dailyAvailabilityDigestEnabledCandidate,
+        {
+          enabled:
+            typeof dailyAvailabilityDigestEnabledCandidate === "boolean"
+              ? dailyAvailabilityDigestEnabledCandidate
+              : cancellationGroup.dailyAvailabilityDigestEnabled,
+          hour:
+            typeof dailyAvailabilityDigestHourCandidate === "string"
+              ? dailyAvailabilityDigestHourCandidate.trim()
+              : cancellationGroup.dailyAvailabilityDigestHour,
+        },
         companyId,
       );
       cancellationGroup.dailyAvailabilityDigestEnabled = Boolean(
         savedDigestConfig.dailyAvailabilityDigestEnabled,
+      );
+      cancellationGroup.dailyAvailabilityDigestHour = String(
+        savedDigestConfig.dailyAvailabilityDigestHour ||
+          DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
       );
     }
 
