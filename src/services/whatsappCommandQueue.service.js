@@ -1,17 +1,12 @@
 const os = require("node:os");
 const WhatsappCommand = require("../models/whatsappCommand.model");
 const { setWhatsappEnabled } = require("./whatsappControl.service");
-const {
-  getReadyClient,
-  restartClient,
-} = require("./whatsappTenantManager.service");
+const { getReadyClient, restartClient } = require("./whatsappTenantManager.service");
 const {
   listWhatsappGroups,
   notifyCancellationToGroup,
 } = require("./whatsappCancellationGroup.service");
-const {
-  saveWhatsappGroupsSnapshot,
-} = require("./whatsappGroupsSnapshot.service");
+const { saveWhatsappGroupsSnapshot } = require("./whatsappGroupsSnapshot.service");
 
 const COMMAND_TYPES = {
   SET_ENABLED: "set_enabled",
@@ -28,6 +23,15 @@ const COMMAND_STATUSES = {
   FAILED: "failed",
 };
 
+const QUEUE_DRIVERS = {
+  MONGO: "mongo",
+  REDIS: "redis",
+};
+
+const queueDriver = String(process.env.WHATSAPP_QUEUE_DRIVER || QUEUE_DRIVERS.MONGO)
+  .trim()
+  .toLowerCase();
+
 const DEFAULT_POLL_INTERVAL_MS = Number(
   process.env.WHATSAPP_COMMAND_POLL_INTERVAL_MS || 2000,
 );
@@ -37,12 +41,76 @@ const DEFAULT_MAX_ATTEMPTS = Number(
 
 let monitorTimer = null;
 let monitorRunning = false;
+let redisQueueInstance = null;
 
 const normalizeCompanyId = (companyId = null) => companyId || null;
 
 const normalizeWorkerId = () => {
   const host = os.hostname() || "unknown-host";
   return `wa-cmd-worker:${host}:${process.pid}`;
+};
+
+const getRedisQueue = () => {
+  if (redisQueueInstance) return redisQueueInstance;
+
+  let Queue;
+  let IORedis;
+
+  try {
+    ({ Queue } = require("bullmq"));
+    IORedis = require("ioredis");
+  } catch (error) {
+    throw new Error(
+      `WHATSAPP_QUEUE_DRIVER=redis requiere instalar dependencias bullmq/ioredis: ${error?.message || error}`,
+    );
+  }
+
+  const redisConnection = new IORedis({
+    host: String(process.env.REDIS_HOST || "127.0.0.1").trim(),
+    port: Number(process.env.REDIS_PORT || 6379),
+    db: Number(process.env.REDIS_DB || 0),
+    ...(String(process.env.REDIS_PASSWORD || "").trim()
+      ? { password: String(process.env.REDIS_PASSWORD || "").trim() }
+      : {}),
+    ...(String(process.env.REDIS_TLS || "false").trim() === "true" ? { tls: {} } : {}),
+    maxRetriesPerRequest: null,
+  });
+
+  const queueName = String(process.env.WHATSAPP_QUEUE_NAME || "whatsapp:commands").trim();
+  redisQueueInstance = new Queue(queueName, { connection: redisConnection });
+  return redisQueueInstance;
+};
+
+const createCommandRecord = async ({ companyId, type, payload, requestedBy }) =>
+  WhatsappCommand.create({
+    companyId,
+    type,
+    payload,
+    status: COMMAND_STATUSES.QUEUED,
+    attempts: 0,
+    maxAttempts: DEFAULT_MAX_ATTEMPTS,
+    requestedBy,
+  });
+
+const enqueueRedisJob = async (command) => {
+  const queue = getRedisQueue();
+
+  await queue.add(
+    "whatsapp-command",
+    {
+      commandId: String(command._id),
+      companyId: command.companyId ? String(command.companyId) : null,
+      type: command.type,
+      payload: command.payload,
+    },
+    {
+      jobId: String(command._id),
+      attempts: Number(command.maxAttempts || DEFAULT_MAX_ATTEMPTS),
+      backoff: { type: "exponential", delay: 2000 },
+      removeOnComplete: true,
+      removeOnFail: false,
+    },
+  );
 };
 
 const enqueueWhatsappCommand = async ({
@@ -81,15 +149,27 @@ const enqueueWhatsappCommand = async ({
     }
   }
 
-  const command = await WhatsappCommand.create({
+  const command = await createCommandRecord({
     companyId: normalizedCompanyId,
     type: normalizedType,
     payload,
-    status: COMMAND_STATUSES.QUEUED,
-    attempts: 0,
-    maxAttempts: DEFAULT_MAX_ATTEMPTS,
     requestedBy,
   });
+
+  if (queueDriver === QUEUE_DRIVERS.REDIS) {
+    try {
+      await enqueueRedisJob(command);
+    } catch (error) {
+      await WhatsappCommand.findByIdAndUpdate(command._id, {
+        $set: {
+          status: COMMAND_STATUSES.FAILED,
+          processedAt: new Date(),
+          lastError: `No se pudo encolar en Redis: ${error?.message || error}`,
+        },
+      });
+      throw error;
+    }
+  }
 
   return { command, deduplicated: false };
 };
@@ -203,6 +283,10 @@ const processCommand = async (command) => {
 };
 
 const processNextWhatsappCommand = async () => {
+  if (queueDriver === QUEUE_DRIVERS.REDIS) {
+    return false;
+  }
+
   const workerId = normalizeWorkerId();
   const command = await claimNextQueuedCommand({ workerId });
 
@@ -228,7 +312,6 @@ const runQueueSweep = async () => {
   monitorRunning = true;
 
   try {
-    // Procesa en ráfaga hasta drenar cola para bajar latencia.
     while (true) {
       const processed = await processNextWhatsappCommand();
       if (!processed) break;
@@ -239,6 +322,11 @@ const runQueueSweep = async () => {
 };
 
 const startWhatsappCommandMonitor = () => {
+  if (queueDriver === QUEUE_DRIVERS.REDIS) {
+    console.log("[WhatsAppCommandQueue] Driver redis activo: monitor Mongo deshabilitado en API.");
+    return;
+  }
+
   if (monitorTimer) return;
 
   monitorTimer = setInterval(() => {
