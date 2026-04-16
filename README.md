@@ -27,9 +27,13 @@ El worker ya no tiene que correr en este repo cuando usás arquitectura separada
 ## Endpoints útiles
 
 - `GET /api/config/whatsapp` (incluye estado runtime y heartbeat de worker)
+- `GET /api/config/whatsapp/groups` (snapshot de grupos + `commandId` para refresco)
+- `GET /api/config/whatsapp/chats?type=group` (alias de compatibilidad; devuelve los mismos grupos en `groups` y `chats`)
 - `GET /api/whatsapp/commands`
 - `GET /api/whatsapp/commands/:id`
 - `POST /api/whatsapp/commands/:id/retry`
+- `GET /api/whatsapp/groups` (alias de compatibilidad de listado de grupos)
+- `GET /api/whatsapp/chats?type=group` (alias de compatibilidad de listado de grupos)
 
 ## Deploy
 

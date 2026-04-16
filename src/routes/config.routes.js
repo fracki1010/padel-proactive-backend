@@ -737,8 +737,7 @@ const updateBotAutomationConfig = async (req, res) => {
 router.put("/bot-automation", updateBotAutomationConfig);
 router.patch("/bot-automation", updateBotAutomationConfig);
 
-// GET /api/config/whatsapp/groups
-router.get("/whatsapp/groups", async (req, res) => {
+const getWhatsappGroupsCompatibility = async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
     const snapshot = await getWhatsappGroupsSnapshot(companyId);
@@ -749,18 +748,27 @@ router.get("/whatsapp/groups", async (req, res) => {
       requestedBy: req.user?._id || null,
     });
 
+    const groups = Array.isArray(snapshot.groups) ? snapshot.groups : [];
+    const commandId = command?._id ? String(command._id) : null;
+    const refreshedAt = snapshot.refreshedAt || null;
+    const responseType = String(req.query?.type || "").trim().toLowerCase();
+    const includeChats = !responseType || responseType === "group";
+
     return res.status(200).json({
       success: true,
-      data: {
-        groups: Array.isArray(snapshot.groups) ? snapshot.groups : [],
-        commandId: command?._id ? String(command._id) : null,
-        refreshedAt: snapshot.refreshedAt || null,
-      },
+      data: includeChats
+        ? { groups, chats: groups, commandId, refreshedAt }
+        : { groups, commandId, refreshedAt },
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
-});
+};
+
+// GET /api/config/whatsapp/groups
+router.get("/whatsapp/groups", getWhatsappGroupsCompatibility);
+// GET /api/config/whatsapp/chats?type=group
+router.get("/whatsapp/chats", getWhatsappGroupsCompatibility);
 
 // GET /api/config/penalties
 router.get("/penalties", async (req, res) => {
