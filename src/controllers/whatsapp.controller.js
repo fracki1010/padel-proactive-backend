@@ -4,6 +4,9 @@ const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
 } = require("../services/whatsappCommandQueue.service");
+const {
+  getWhatsappGroupsSnapshot,
+} = require("../services/whatsappGroupsSnapshot.service");
 
 const resolveCompanyId = (req) => {
   if (req.user?.role === "super_admin") {
@@ -307,10 +310,45 @@ const restartWhatsapp = async (req, res) => {
   }
 };
 
+const listGroupsSnapshot = async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const snapshot = await getWhatsappGroupsSnapshot(companyId);
+    const { command } = await enqueueWhatsappCommand({
+      companyId,
+      type: COMMAND_TYPES.LIST_GROUPS,
+      payload: {},
+      requestedBy: req.user?._id || null,
+    });
+
+    const groups = Array.isArray(snapshot.groups) ? snapshot.groups : [];
+    const commandId = command?._id ? String(command._id) : null;
+    const refreshedAt = snapshot.refreshedAt || null;
+    const responseType = String(req.query?.type || "").trim().toLowerCase();
+    const includeChats = !responseType || responseType === "group";
+
+    return res.status(200).json({
+      success: true,
+      data: includeChats
+        ? { groups, chats: groups, commandId, refreshedAt }
+        : { groups, commandId, refreshedAt },
+      error: null,
+    });
+  } catch (error) {
+    const message = String(error?.message || "");
+    return res.status(500).json({
+      success: false,
+      data: null,
+      error: message || "No se pudieron listar grupos de WhatsApp.",
+    });
+  }
+};
+
 module.exports = {
   listCommands,
   getCommandStatus,
   retryCommand,
   sendMessage,
   restartWhatsapp,
+  listGroupsSnapshot,
 };
