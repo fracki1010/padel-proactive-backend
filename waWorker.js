@@ -20,6 +20,10 @@ const {
 const WORKER_HEARTBEAT_INTERVAL_MS = Number(
   process.env.WORKER_HEARTBEAT_INTERVAL_MS || 10_000,
 );
+const isRedisQueueDriver =
+  String(process.env.WHATSAPP_QUEUE_DRIVER || "")
+    .trim()
+    .toLowerCase() === "redis";
 
 let heartbeatTimer = null;
 
@@ -43,8 +47,14 @@ connectDB()
     startWorkerHeartbeat();
     console.log("✅ Heartbeat del worker iniciado.");
 
-    await syncAllWhatsappFromConfig();
-    console.log("✅ Estado de WhatsApp sincronizado desde configuración.");
+    if (!isRedisQueueDriver) {
+      await syncAllWhatsappFromConfig();
+      console.log("✅ Estado de WhatsApp sincronizado desde configuración.");
+    } else {
+      console.log(
+        "ℹ️ WHATSAPP_QUEUE_DRIVER=redis: se omite inicialización local de WhatsApp en backend.",
+      );
+    }
 
     startWhatsappCommandMonitor();
     console.log("✅ Monitor de comandos WhatsApp iniciado.");
