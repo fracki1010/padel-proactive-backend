@@ -15,6 +15,10 @@ const {
 } = require("./src/services/whatsappCommandQueue.service");
 
 const PORT = process.env.PORT || 3000;
+const isRedisQueueDriver =
+  String(process.env.WHATSAPP_QUEUE_DRIVER || "")
+    .trim()
+    .toLowerCase() === "redis";
 
 // 1. Conexión a Base de Datos y Servidor Express
 connectDB()
@@ -23,12 +27,21 @@ connectDB()
       console.log(`🚀 Server corriendo en http://localhost:${PORT}`);
     });
 
+    if (isRedisQueueDriver) {
+      console.log(
+        "ℹ️ WHATSAPP_QUEUE_DRIVER=redis: se omite inicialización local de WhatsApp en backend.",
+      );
+      return null;
+    }
+
     return syncAllWhatsappFromConfig();
   })
   .then(() => {
-    console.log(
-      "✅ Estado de WhatsApp sincronizado desde configuración (multiempresa).",
-    );
+    if (!isRedisQueueDriver) {
+      console.log(
+        "✅ Estado de WhatsApp sincronizado desde configuración (multiempresa).",
+      );
+    }
     startWhatsappCommandMonitor();
     console.log("✅ Monitor de comandos WhatsApp iniciado.");
     startAttendanceConfirmationMonitor();

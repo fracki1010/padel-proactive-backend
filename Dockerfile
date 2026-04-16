@@ -24,5 +24,5 @@ RUN npm install --production
 # 4. Copiar el resto del código
 COPY . .
 
-# 5. Ejecutar
-CMD ["node", "whatsappBot.js"]
+# 5. Ejecutar solo API (worker WA vive en servicio separado)
+CMD ["node", "apiServer.js"]
