@@ -16,6 +16,13 @@ const {
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
+
+const normalizePhoneToChatId = (rawPhone = "") => {
+  const digits = String(rawPhone || "").replace(/\D/g, "");
+  if (!digits) return "";
+  return `${digits}@c.us`;
+};
+
 const toIsoDateOnly = (value) => {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value || "");
@@ -217,6 +224,38 @@ const createBooking = async (req, res) => {
         { bookingId: newBooking._id, companyId },
         { companyId },
       );
+    }
+
+    const bookingPhone = String(newBooking.clientPhone || "").trim();
+    const bookingChatId = normalizePhoneToChatId(bookingPhone);
+    const isBookableClientPhone =
+      bookingPhone &&
+      bookingPhone.toUpperCase() !== "MANTENIMIENTO" &&
+      Boolean(bookingChatId);
+
+    if (newBooking.status !== "suspendido" && isBookableClientPhone) {
+      const clientMessage =
+        `Hola ${newBooking.clientName}, tu turno ya quedó reservado.\n` +
+        `Fecha: ${formatBookingDateShort(newBooking.date)}\n` +
+        `Hora: ${newBooking.timeSlot.startTime}\n` +
+        `Cancha: ${newBooking.court.name}`;
+
+      try {
+        await enqueueWhatsappCommand({
+          companyId,
+          type: COMMAND_TYPES.SEND_MESSAGE,
+          payload: {
+            to: bookingChatId,
+            message: clientMessage,
+          },
+          requestedBy: req.user?._id || null,
+        });
+      } catch (clientNotificationError) {
+        console.error(
+          `[BookingController][${companyId || "global"}] Error notificando reserva al cliente:`,
+          clientNotificationError?.message || clientNotificationError,
+        );
+      }
     }
 
     res.status(201).json({
