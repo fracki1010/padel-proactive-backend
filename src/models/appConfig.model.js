@@ -27,6 +27,12 @@ const appConfigSchema = new mongoose.Schema(
       min: 5,
       max: 240,
     },
+    attendanceResponseTimeoutMinutes: {
+      type: Number,
+      default: 15,
+      min: 1,
+      max: 240,
+    },
     trustedClientConfirmationCount: {
       type: Number,
       default: 3,

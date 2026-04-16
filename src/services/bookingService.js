@@ -15,6 +15,9 @@ const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
 } = require("./whatsappCommandQueue.service");
+const {
+  materializeFixedBookingsForDate,
+} = require("./fixedTurnsMaterialization.service");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
@@ -163,6 +166,11 @@ const createNewBooking = async ({
     if (hasSlotStarted(dateStr, timeStr)) {
       return { success: false, error: "PAST_TIME" };
     }
+
+    await materializeFixedBookingsForDate({
+      companyId,
+      searchDate: bookingDate,
+    });
 
     // 2. Buscar el TimeSlot correspondiente (Ej: "20:00")
     const slot = await TimeSlot.findOne({ ...scope, startTime: timeStr });
@@ -460,6 +468,11 @@ const getAvailableSlots = async (dateStr, options = {}) => {
     if (isPastDate) {
       return { success: true, date: dateStr, slots: [] };
     }
+
+    await materializeFixedBookingsForDate({
+      companyId,
+      searchDate: queryDate,
+    });
 
     // 3. Traer datos maestros
     const allSlots = await TimeSlot.find({ ...scope, isActive: true }).sort({ order: 1 });
