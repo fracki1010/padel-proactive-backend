@@ -38,5 +38,3 @@ Deploy solo API:
 ```bash
 docker compose up -d --build --no-deps padel-proactive-api
 ```
-
-j
