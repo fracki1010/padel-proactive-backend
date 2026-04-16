@@ -20,11 +20,16 @@ const createBaseState = () => ({
 });
 
 const normalizeCompanyId = (companyId = null) => companyId || null;
+const toTs = (value = null) => {
+  if (typeof value !== "string" || !value.trim()) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 
 const normalizeStateDoc = (doc = null) => {
   if (!doc) return createBaseState();
 
-  return {
+  const normalized = {
     enabled: Boolean(doc.enabled),
     status: String(doc.status || "disabled"),
     qr: typeof doc.qr === "string" ? doc.qr : null,
@@ -53,6 +58,20 @@ const normalizeStateDoc = (doc = null) => {
           ? doc.updatedAt.toISOString()
           : new Date().toISOString(),
   };
+
+  const readyIsNewerThanQr =
+    toTs(normalized.readyAt) > 0 && toTs(normalized.readyAt) >= toTs(normalized.lastQrAt);
+
+  // Estado contradictorio típico por carreras de persistencia asíncrona: ready ya ocurrió,
+  // pero quedó guardado qr_pending más viejo.
+  if (normalized.enabled && readyIsNewerThanQr && normalized.status === "qr_pending") {
+    normalized.status = "ready";
+    normalized.qr = null;
+    normalized.hasQr = false;
+    normalized.loadingMessage = null;
+  }
+
+  return normalized;
 };
 
 const saveWhatsappRuntimeState = async (companyId = null, state = {}) => {
@@ -86,7 +105,14 @@ const saveWhatsappRuntimeState = async (companyId = null, state = {}) => {
   };
 
   await WhatsappRuntimeState.findOneAndUpdate(
-    { companyId: normalizedCompanyId },
+    {
+      companyId: normalizedCompanyId,
+      $or: [
+        { updatedAtIso: { $exists: false } },
+        { updatedAtIso: null },
+        { updatedAtIso: { $lte: normalizedState.updatedAtIso } },
+      ],
+    },
     { $set: { companyId: normalizedCompanyId, ...normalizedState } },
     { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
