@@ -3,6 +3,9 @@ const Booking = require("../models/booking.model");
 const {
   materializeFixedBookingsInRange,
 } = require("../services/fixedTurnsMaterialization.service");
+const {
+  getTrustedClientConfirmationCount,
+} = require("../services/appConfig.service");
 const toIsoDateOnly = (value) => {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value || "");
@@ -23,17 +26,65 @@ const companyScope = (req, companyId) => {
   return { companyId: req.user?.companyId || null };
 };
 
+const enrichUserWithReliability = (user, trustedClientConfirmationCount = 3) => {
+  const source = typeof user?.toObject === "function" ? user.toObject() : user;
+  const attendanceConfirmedCount = Number(source?.attendanceConfirmedCount || 0);
+  const trustedThreshold = Number(trustedClientConfirmationCount || 3);
+  const confirmationsToBeTrusted = Math.max(
+    0,
+    trustedThreshold - attendanceConfirmedCount,
+  );
+
+  return {
+    ...source,
+    attendanceConfirmedCount,
+    trustedClientConfirmationCount: trustedThreshold,
+    confirmationsToBeTrusted,
+    isTrustedClient: attendanceConfirmedCount >= trustedThreshold,
+  };
+};
+
 const getUsers = async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
+    const trustedClientConfirmationCount =
+      await getTrustedClientConfirmationCount(companyId);
     const users = await User.find(companyScope(req, companyId)).sort({ name: 1 });
     res.status(200).json({
       success: true,
       count: users.length,
-      data: users,
+      data: users.map((user) =>
+        enrichUserWithReliability(user, trustedClientConfirmationCount),
+      ),
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+const getUserById = async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const trustedClientConfirmationCount =
+      await getTrustedClientConfirmationCount(companyId);
+
+    const user = await User.findOne({
+      _id: req.params.id,
+      ...companyScope(req, companyId),
+    }).populate(["fixedTurns.court", "fixedTurns.timeSlot"]);
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Usuario no encontrado" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: enrichUserWithReliability(user, trustedClientConfirmationCount),
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -160,11 +211,62 @@ const clearPenalties = async (req, res) => {
   }
 };
 
+const adjustAttendanceConfirmedCount = async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const rawDelta = Number(req.body?.delta);
+
+    if (!Number.isInteger(rawDelta) || rawDelta === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "delta debe ser un entero distinto de 0.",
+      });
+    }
+
+    if (rawDelta < -50 || rawDelta > 50) {
+      return res.status(400).json({
+        success: false,
+        error: "delta fuera de rango. Permitido: -50 a 50.",
+      });
+    }
+
+    const trustedClientConfirmationCount =
+      await getTrustedClientConfirmationCount(companyId);
+
+    const user = await User.findOne({
+      _id: req.params.id,
+      ...companyScope(req, companyId),
+    });
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Usuario no encontrado" });
+    }
+
+    const currentCount = Number(user.attendanceConfirmedCount || 0);
+    user.attendanceConfirmedCount = Math.max(0, currentCount + rawDelta);
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      data: enrichUserWithReliability(user, trustedClientConfirmationCount),
+      meta: {
+        deltaApplied: rawDelta,
+      },
+    });
+  } catch (error) {
+    return res.status(400).json({ success: false, error: error.message });
+  }
+};
+
 module.exports = {
   getUsers,
+  getUserById,
   createUser,
   updateUser,
   deleteUser,
   getUserHistory,
   clearPenalties,
+  adjustAttendanceConfirmedCount,
 };
