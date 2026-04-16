@@ -34,6 +34,34 @@ El worker ya no tiene que correr en este repo cuando usás arquitectura separada
 - `POST /api/whatsapp/commands/:id/retry`
 - `GET /api/whatsapp/groups` (alias de compatibilidad de listado de grupos)
 - `GET /api/whatsapp/chats?type=group` (alias de compatibilidad de listado de grupos)
+- `POST /api/bookings/fixed-turns/rematerialize` (admin/super_admin, rematerializa turnos fijos a bookings futuros)
+
+### Rematerialización manual de turnos fijos
+
+Endpoint:
+
+```http
+POST /api/bookings/fixed-turns/rematerialize
+Authorization: Bearer <token-admin>
+Content-Type: application/json
+```
+
+Body opcional:
+
+```json
+{
+  "companyId": "6636f5d7b1f77f4b3f0f1111",
+  "fromDate": "2026-04-16",
+  "daysAhead": 90,
+  "userId": "6636f5d7b1f77f4b3f0f2222"
+}
+```
+
+Notas:
+- `fromDate` default: hoy (UTC 00:00).
+- `daysAhead` default: 90, máximo 365.
+- `userId` filtra por un cliente puntual (opcional).
+- `companyId` solo aplica para `super_admin`; si lo omitís, corre para todas las empresas.
 
 ## Deploy
 

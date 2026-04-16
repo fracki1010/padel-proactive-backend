@@ -4,6 +4,9 @@ const CONFIG_KEY = "main";
 const DEFAULT_PENALTY_LIMIT = 2;
 const DEFAULT_PENALTY_SYSTEM_ENABLED = true;
 const DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES = 60;
+const DEFAULT_ATTENDANCE_RESPONSE_TIMEOUT_MINUTES = Number(
+  process.env.ATTENDANCE_RESPONSE_TIMEOUT_MINUTES || 15,
+);
 const DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT = 3;
 const DEFAULT_CANCELLATION_LOCK_HOURS = 2;
 const DAILY_HOUR_REGEX = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -42,6 +45,14 @@ const normalizeTrustedClientConfirmationCount = (value) => {
   return parsed;
 };
 
+const normalizeAttendanceResponseTimeoutMinutes = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 240) {
+    return DEFAULT_ATTENDANCE_RESPONSE_TIMEOUT_MINUTES;
+  }
+  return parsed;
+};
+
 const normalizeCancellationLockHours = (value) => {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0 || parsed > 72) {
@@ -63,6 +74,15 @@ const ensureAppConfig = async (companyId = null) => {
   const existing = await AppConfig.findOne(buildConfigFilter(companyId));
   if (existing) {
     let shouldSave = false;
+    if (
+      existing.attendanceResponseTimeoutMinutes === undefined ||
+      existing.attendanceResponseTimeoutMinutes === null ||
+      Number.isNaN(Number(existing.attendanceResponseTimeoutMinutes))
+    ) {
+      existing.attendanceResponseTimeoutMinutes =
+        DEFAULT_ATTENDANCE_RESPONSE_TIMEOUT_MINUTES;
+      shouldSave = true;
+    }
     if (
       existing.cancellationLockHours === undefined ||
       existing.cancellationLockHours === null ||
@@ -89,6 +109,8 @@ const ensureAppConfig = async (companyId = null) => {
     whatsappEnabled: false,
     oneHourReminderEnabled: true,
     attendanceReminderLeadMinutes: DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
+    attendanceResponseTimeoutMinutes:
+      DEFAULT_ATTENDANCE_RESPONSE_TIMEOUT_MINUTES,
     trustedClientConfirmationCount: DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
     penaltyLimit: DEFAULT_PENALTY_LIMIT,
     penaltySystemEnabled: DEFAULT_PENALTY_SYSTEM_ENABLED,
@@ -149,6 +171,27 @@ const setAttendanceReminderLeadMinutes = async (
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { attendanceReminderLeadMinutes: normalized } },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+  );
+};
+
+const getAttendanceResponseTimeoutMinutes = async (companyId = null) => {
+  const config = await ensureAppConfig(companyId);
+  return normalizeAttendanceResponseTimeoutMinutes(
+    config.attendanceResponseTimeoutMinutes,
+  );
+};
+
+const setAttendanceResponseTimeoutMinutes = async (
+  attendanceResponseTimeoutMinutes,
+  companyId = null,
+) => {
+  const normalized = normalizeAttendanceResponseTimeoutMinutes(
+    attendanceResponseTimeoutMinutes,
+  );
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $set: { attendanceResponseTimeoutMinutes: normalized } },
     { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
@@ -295,6 +338,7 @@ const setDailyAvailabilityDigestLastSentDate = async (
 };
 
 module.exports = {
+  DEFAULT_ATTENDANCE_RESPONSE_TIMEOUT_MINUTES,
   DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
   DEFAULT_CANCELLATION_LOCK_HOURS,
   DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
@@ -304,12 +348,14 @@ module.exports = {
   getCancellationLockHours,
   ensureAppConfig,
   getAttendanceReminderLeadMinutes,
+  getAttendanceResponseTimeoutMinutes,
   getOneHourReminderEnabled,
   getPenaltyLimit,
   getPenaltySystemEnabled,
   getTrustedClientConfirmationCount,
   setCancellationLockHours,
   setAttendanceReminderLeadMinutes,
+  setAttendanceResponseTimeoutMinutes,
   setPenaltyLimit,
   setPenaltySystemEnabled,
   setOneHourReminderEnabled,

@@ -1,5 +1,8 @@
 const User = require("../models/user.model");
 const Booking = require("../models/booking.model");
+const {
+  materializeFixedBookingsInRange,
+} = require("../services/fixedTurnsMaterialization.service");
 const toIsoDateOnly = (value) => {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value || "");
@@ -41,6 +44,16 @@ const createUser = async (req, res) => {
       ...req.body,
       ...companyScope(req, companyId),
     });
+
+    if (Array.isArray(user.fixedTurns) && user.fixedTurns.length > 0) {
+      const targetCompanyId =
+        user.companyId !== undefined ? user.companyId : companyId;
+      await materializeFixedBookingsInRange({
+        companyId: targetCompanyId,
+        userId: user._id,
+      });
+    }
+
     res.status(201).json({ success: true, data: user });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
@@ -60,6 +73,16 @@ const updateUser = async (req, res) => {
         .status(404)
         .json({ success: false, error: "Usuario no encontrado" });
     }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, "fixedTurns")) {
+      const targetCompanyId =
+        user.companyId !== undefined ? user.companyId : companyId;
+      await materializeFixedBookingsInRange({
+        companyId: targetCompanyId,
+        userId: user._id,
+      });
+    }
+
     res.status(200).json({ success: true, data: user });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });

@@ -930,18 +930,6 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           return attendanceOkReply;
         }
 
-        const bookingIsoDate = new Date(attendanceBooking.date)
-          .toISOString()
-          .slice(0, 10);
-        const bookingTime = attendanceBooking.timeSlot?.startTime;
-        const cancelResult = await bookingService.cancelBooking({
-          companyId,
-          clientPhone: canonicalClientPhone,
-            clientWhatsappId: chatId,
-          dateStr: bookingIsoDate,
-          timeStr: bookingTime,
-        });
-
         await Booking.updateOne(
           { _id: attendanceBooking._id },
           {
@@ -957,25 +945,26 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           attendanceBookingId: null,
         });
 
-        let declinedReply = "Turno cancelado correctamente.";
-        if (cancelResult?.success) {
-          const penalties = cancelResult.penalties || 0;
-          const limit = cancelResult.penaltyLimit || 2;
-          declinedReply = cancelResult?.penaltyApplied
-            ? `Turno cancelado correctamente ❌\nPenalización aplicada: ${penalties}/${limit}.`
-            : "Turno cancelado correctamente ❌\nPenalizaciones desactivadas en la configuración actual.";
-        } else if (cancelResult?.error === "CANCELLATION_BLOCKED_WINDOW") {
-          const lockHours = Number(cancelResult?.data?.cancellationLockHours || 0);
-          const contactPhone = String(cancelResult?.data?.contactPhone || "").trim();
-          const phoneSuffix = contactPhone
-            ? ` al *${contactPhone}*`
-            : " con el admin del club";
-          declinedReply =
-            `⚠️ Este turno ya está dentro de la ventana de bloqueo (${lockHours}h) y no se puede cancelar por acá.\n` +
-            `Para cancelarlo, tenés que hablar${phoneSuffix}.`;
-        } else if (cancelResult?.error === "NOT_FOUND") {
-          declinedReply = "No encontré un turno activo para cancelar, probablemente ya se canceló antes.";
+        try {
+          await sendAdminNotification(
+            "attendance_declined",
+            "Cliente indicó que no asistirá",
+            `Cliente: ${attendanceBooking.clientName}\nTeléfono: ${canonicalClientPhone}\nFecha: ${getFormattedDate(
+              new Date(attendanceBooking.date).toISOString().slice(0, 10),
+            )}\nHora: ${attendanceBooking?.timeSlot?.startTime || "N/D"}\nReserva ID: ${attendanceBooking._id}\n\nEl turno NO fue cancelado automáticamente. Requiere gestión del administrador.`,
+            { bookingId: attendanceBooking._id, companyId },
+            { companyId },
+          );
+        } catch (attendanceDeclinedNotificationError) {
+          console.error(
+            `[AttendanceDeclined][${companyId || "global"}] Error notificando al admin:`,
+            attendanceDeclinedNotificationError?.message ||
+              attendanceDeclinedNotificationError,
+          );
         }
+        const declinedReply =
+          "Gracias por avisar. Ya notificamos al administrador para que lo resuelva o te contacte.\n" +
+          "Este turno no se cancela automáticamente por esta vía; para cancelarlo, hablá con el admin.";
 
         sessionService.addMessage(sessionId, "user", userMessage);
         sessionService.addMessage(sessionId, "assistant", declinedReply);
