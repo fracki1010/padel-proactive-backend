@@ -1,7 +1,7 @@
 const Booking = require("../models/booking.model");
 const TimeSlot = require("../models/timeSlot.model");
 const Court = require("../models/court.model");
-const User = require("../models/user.model");
+const mongoose = require("mongoose");
 const { sendAdminNotification } = require("../services/notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const {
@@ -9,6 +9,10 @@ const {
   enqueueWhatsappCommand,
 } = require("../services/whatsappCommandQueue.service");
 const { getPenaltyLimit } = require("../services/appConfig.service");
+const {
+  materializeFixedBookingsForDate,
+  materializeFixedBookingsInRange,
+} = require("../services/fixedTurnsMaterialization.service");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
@@ -32,64 +36,12 @@ const companyScope = (req, companyId) => {
   return { companyId: req.user?.companyId || null };
 };
 
-const materializeFixedBookingsForDate = async (req, companyId, searchDate) => {
-  const scope = companyScope(req, companyId);
-  const dayOfWeek = searchDate.getUTCDay(); // 0-6 (Dom-Sab)
-
-  const usersWithFixedTurns = await User.find({
-    ...scope,
-    "fixedTurns.dayOfWeek": dayOfWeek,
-  })
-    .populate("fixedTurns.timeSlot")
-    .populate("fixedTurns.court");
-
-  for (const user of usersWithFixedTurns) {
-    for (const fixedTurn of user.fixedTurns || []) {
-      if (fixedTurn.dayOfWeek !== dayOfWeek) continue;
-      if (!fixedTurn?.court?._id || !fixedTurn?.timeSlot?._id) continue;
-
-      const bookingFilter = {
-        ...scope,
-        court: fixedTurn.court._id,
-        date: searchDate,
-        timeSlot: fixedTurn.timeSlot._id,
-      };
-
-      const hasActiveBooking = await Booking.exists({
-        ...bookingFilter,
-        status: { $ne: "cancelado" },
-      });
-      if (hasActiveBooking) continue;
-
-      // Si ese usuario canceló su fijo para ese día, no lo recreamos.
-      const cancelledByOwner = await Booking.exists({
-        ...bookingFilter,
-        status: "cancelado",
-        clientPhone: user.phoneNumber,
-      });
-      if (cancelledByOwner) continue;
-
-      try {
-        await Booking.create({
-          ...scope,
-          court: fixedTurn.court._id,
-          date: searchDate,
-          timeSlot: fixedTurn.timeSlot._id,
-          clientName: user.name || "Cliente",
-          clientPhone: user.phoneNumber || "",
-          clientWhatsappId: user.whatsappId || null,
-          status: "reservado",
-          paymentStatus: "pendiente",
-          isFixed: true,
-          finalPrice: Number(fixedTurn?.timeSlot?.price || 0),
-        });
-      } catch (error) {
-        if (error?.code !== 11000) {
-          throw error;
-        }
-      }
-    }
-  }
+const parseDateToUtcMidnight = (value) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  parsed.setUTCHours(0, 0, 0, 0);
+  return parsed;
 };
 
 // 1. OBTENER RESERVAS (GET)
@@ -107,7 +59,12 @@ const getBookings = async (req, res) => {
     }
 
     if (date) {
-      await materializeFixedBookingsForDate(req, companyId, searchDate);
+      const fixedTurnsCompanyId =
+        req.user?.role === "super_admin" && !companyId ? undefined : companyId;
+      await materializeFixedBookingsForDate({
+        companyId: fixedTurnsCompanyId,
+        searchDate,
+      });
     }
 
     // A. Obtener reservas
@@ -191,6 +148,13 @@ const createBooking = async (req, res) => {
     // C. Preparar fecha exacta
     const bookingDate = new Date(date);
     bookingDate.setUTCHours(0, 0, 0, 0);
+
+    const fixedTurnsCompanyId =
+      req.user?.role === "super_admin" && !companyId ? undefined : companyId;
+    await materializeFixedBookingsForDate({
+      companyId: fixedTurnsCompanyId,
+      searchDate: bookingDate,
+    });
 
     const normalizedClientPhone = String(clientPhone || "").trim();
     const isMaintenanceBooking =
@@ -424,9 +388,76 @@ const updateBooking = async (req, res) => {
   }
 };
 
+const rematerializeFixedTurns = async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const payload = req.body || {};
+    const fromDateRaw = payload.fromDate || req.query.fromDate;
+    const daysAheadRaw = payload.daysAhead ?? req.query.daysAhead;
+    const userIdRaw = payload.userId || req.query.userId || null;
+
+    const fromDate = fromDateRaw ? parseDateToUtcMidnight(fromDateRaw) : new Date();
+    if (fromDateRaw && !fromDate) {
+      return res.status(400).json({
+        success: false,
+        error: "fromDate inválida. Usá formato YYYY-MM-DD.",
+      });
+    }
+
+    const parsedDaysAhead =
+      daysAheadRaw === undefined ? undefined : Number(daysAheadRaw);
+    if (
+      parsedDaysAhead !== undefined &&
+      (!Number.isInteger(parsedDaysAhead) ||
+        parsedDaysAhead < 0 ||
+        parsedDaysAhead > 365)
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "daysAhead inválido. Debe ser un entero entre 0 y 365.",
+      });
+    }
+
+    const userId = userIdRaw ? String(userIdRaw).trim() : null;
+    if (userId && !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        error: "userId inválido.",
+      });
+    }
+
+    const fixedTurnsCompanyId =
+      req.user?.role === "super_admin" && !companyId ? undefined : companyId;
+
+    const result = await materializeFixedBookingsInRange({
+      companyId: fixedTurnsCompanyId,
+      fromDate: fromDate || new Date(),
+      ...(parsedDaysAhead !== undefined ? { daysAhead: parsedDaysAhead } : {}),
+      ...(userId ? { userId } : {}),
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        companyId: fixedTurnsCompanyId ?? "all",
+        fromDate: toIsoDateOnly(fromDate || new Date()),
+        daysAhead: parsedDaysAhead !== undefined ? parsedDaysAhead : 90,
+        userId: userId || null,
+        createdCount: Number(result?.createdCount || 0),
+        skippedCount: Number(result?.skippedCount || 0),
+        datesProcessed: Number(result?.datesProcessed || 0),
+      },
+    });
+  } catch (error) {
+    console.error("Error en rematerializeFixedTurns:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 module.exports = {
   getBookings,
   createBooking,
   deleteBooking,
   updateBooking,
+  rematerializeFixedTurns,
 };

@@ -5,8 +5,11 @@ const sessionService = require("./sessionService");
 const { getClient } = require("./whatsappTenantManager.service");
 const { getWhatsappState } = require("../state/whatsapp.state");
 const { isMongoConnected } = require("../config/database");
+const { sendAdminNotification } = require("./notificationService");
+const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const {
   getAttendanceReminderLeadMinutes,
+  getAttendanceResponseTimeoutMinutes,
   getOneHourReminderEnabled,
   getTrustedClientConfirmationCount,
 } = require("./appConfig.service");
@@ -69,7 +72,11 @@ const getEnabledCompanyIds = async () => {
   return configs.map((cfg) => cfg.companyId || null);
 };
 
-const buildAttendancePrompt = (booking, reminderLeadMinutes) => {
+const buildAttendancePrompt = (
+  booking,
+  reminderLeadMinutes,
+  attendanceResponseTimeoutMinutes,
+) => {
   const startTime = booking.timeSlot?.startTime || "";
   const endTime = booking.timeSlot?.endTime || "";
   const courtName = booking.court?.name || "tu cancha";
@@ -85,8 +92,64 @@ const buildAttendancePrompt = (booking, reminderLeadMinutes) => {
     `Confirmá asistencia respondiendo SOLO una opción:\n` +
     `1) SI ASISTO\n` +
     `2) NO ASISTO\n\n` +
-    `Si respondés *NO ASISTO*, se cancela el turno y aplica penalización.`
+    `Si respondés *NO ASISTO*, avisamos al administrador para que gestione la situación.\n` +
+    `Si no respondés en ${attendanceResponseTimeoutMinutes} minutos, también se notifica al administrador.`
   );
+};
+
+const notifyAdminForNoResponse = async (
+  companyId = null,
+  attendanceResponseTimeoutMinutes = 15,
+) => {
+  if (!Number.isFinite(attendanceResponseTimeoutMinutes)) return;
+  if (attendanceResponseTimeoutMinutes <= 0) return;
+
+  const cutoffDate = new Date(
+    Date.now() - attendanceResponseTimeoutMinutes * 60 * 1000,
+  );
+
+  const pendingBookings = await Booking.find({
+    companyId: companyId || null,
+    status: { $in: ["confirmado", "reservado"] },
+    attendanceConfirmationStatus: "pending",
+    attendanceConfirmationSentAt: { $ne: null, $lte: cutoffDate },
+    attendanceConfirmationRespondedAt: null,
+    attendanceNoResponseNotifiedAt: null,
+  })
+    .populate("timeSlot")
+    .populate("court")
+    .lean();
+
+  for (const booking of pendingBookings) {
+    try {
+      await sendAdminNotification(
+        "attendance_no_response",
+        "Cliente sin respuesta de asistencia",
+        `Cliente: ${booking.clientName}\nTeléfono: ${booking.clientPhone}\nFecha: ${formatBookingDateShort(
+          booking.date,
+        )}\nHora: ${booking?.timeSlot?.startTime || "N/D"}\nCancha: ${booking?.court?.name || "N/D"}\n\nNo respondió la confirmación de asistencia dentro de ${attendanceResponseTimeoutMinutes} minutos.`,
+        { bookingId: booking._id, companyId },
+        { companyId },
+      );
+
+      await Booking.updateOne(
+        {
+          _id: booking._id,
+          attendanceNoResponseNotifiedAt: null,
+        },
+        {
+          $set: {
+            attendanceNoResponseNotifiedAt: new Date(),
+          },
+        },
+      );
+    } catch (error) {
+      console.error(
+        `[AttendanceConfirmation][${companyId || "global"}] Error notificando falta de respuesta al admin:`,
+        error?.message || error,
+      );
+    }
+  }
 };
 
 const processCompany = async (companyId = null) => {
@@ -102,6 +165,10 @@ const processCompany = async (companyId = null) => {
     await getTrustedClientConfirmationCount(companyId);
   const attendanceReminderLeadMinutes =
     await getAttendanceReminderLeadMinutes(companyId);
+  const attendanceResponseTimeoutMinutes =
+    await getAttendanceResponseTimeoutMinutes(companyId);
+
+  await notifyAdminForNoResponse(companyId, attendanceResponseTimeoutMinutes);
 
   const todayIso = getTodayIsoArgentina();
   const tomorrowIso = addDaysIso(todayIso, 1);
@@ -180,7 +247,11 @@ const processCompany = async (companyId = null) => {
     try {
       await client.sendMessage(
         user.whatsappId,
-        buildAttendancePrompt(booking, attendanceReminderLeadMinutes),
+        buildAttendancePrompt(
+          booking,
+          attendanceReminderLeadMinutes,
+          attendanceResponseTimeoutMinutes,
+        ),
       );
 
       const sessionId = buildSessionId(companyId, user.whatsappId);

@@ -14,17 +14,20 @@ const {
 } = require("../services/whatsappCommandQueue.service");
 const {
   DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
+  DEFAULT_ATTENDANCE_RESPONSE_TIMEOUT_MINUTES,
   DEFAULT_CANCELLATION_LOCK_HOURS,
   DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
   DEFAULT_PENALTY_LIMIT,
   DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
   getAttendanceReminderLeadMinutes,
+  getAttendanceResponseTimeoutMinutes,
   getCancellationLockHours,
   getOneHourReminderEnabled,
   getPenaltyLimit,
   getPenaltySystemEnabled,
   getTrustedClientConfirmationCount,
   setAttendanceReminderLeadMinutes,
+  setAttendanceResponseTimeoutMinutes,
   setCancellationLockHours,
   setPenaltyLimit,
   setPenaltySystemEnabled,
@@ -98,6 +101,7 @@ const buildBotAutomationConfigResponse = async (companyId) => {
   const [
     oneHourReminderEnabled,
     attendanceReminderLeadMinutes,
+    attendanceResponseTimeoutMinutes,
     cancellationLockHours,
     trustedClientConfirmationCount,
     penaltyLimit,
@@ -105,6 +109,7 @@ const buildBotAutomationConfigResponse = async (companyId) => {
   ] = await Promise.all([
     getOneHourReminderEnabled(companyId),
     getAttendanceReminderLeadMinutes(companyId),
+    getAttendanceResponseTimeoutMinutes(companyId),
     getCancellationLockHours(companyId),
     getTrustedClientConfirmationCount(companyId),
     getPenaltyLimit(companyId),
@@ -114,6 +119,7 @@ const buildBotAutomationConfigResponse = async (companyId) => {
   return {
     oneHourReminderEnabled,
     attendanceReminderLeadMinutes,
+    attendanceResponseTimeoutMinutes,
     cancellationLockHours,
     trustedClientConfirmationCount,
     penaltyEnabled: penaltySystemEnabled,
@@ -631,6 +637,8 @@ const updateBotAutomationConfig = async (req, res) => {
       body.notifyOneHourBeforeBooking,
     ]);
     const attendanceReminderLeadMinutesRaw = body.attendanceReminderLeadMinutes;
+    const attendanceResponseTimeoutMinutesRaw =
+      body.attendanceResponseTimeoutMinutes;
     const cancellationLockHoursRaw = [
       body.cancellationLockHours,
       body.cancellationWindowHours,
@@ -648,6 +656,8 @@ const updateBotAutomationConfig = async (req, res) => {
       typeof oneHourReminderEnabledCandidate === "boolean";
     const hasAttendanceLeadMinutesUpdate =
       attendanceReminderLeadMinutesRaw !== undefined;
+    const hasAttendanceResponseTimeoutUpdate =
+      attendanceResponseTimeoutMinutesRaw !== undefined;
     const hasCancellationLockHoursUpdate = cancellationLockHoursRaw !== undefined;
     const hasTrustedConfirmationUpdate =
       trustedClientConfirmationCountRaw !== undefined;
@@ -657,6 +667,7 @@ const updateBotAutomationConfig = async (req, res) => {
     if (
       !hasOneHourReminderUpdate &&
       !hasAttendanceLeadMinutesUpdate &&
+      !hasAttendanceResponseTimeoutUpdate &&
       !hasCancellationLockHoursUpdate &&
       !hasTrustedConfirmationUpdate &&
       !hasPenaltyEnabledUpdate &&
@@ -665,7 +676,7 @@ const updateBotAutomationConfig = async (req, res) => {
       return res.status(400).json({
         success: false,
         error:
-          "Debés enviar al menos una configuración válida (oneHourReminderEnabled, attendanceReminderLeadMinutes, cancellationLockHours, trustedClientConfirmationCount, penaltyEnabled, penaltyLimit).",
+          "Debés enviar al menos una configuración válida (oneHourReminderEnabled, attendanceReminderLeadMinutes, attendanceResponseTimeoutMinutes, cancellationLockHours, trustedClientConfirmationCount, penaltyEnabled, penaltyLimit).",
       });
     }
 
@@ -683,6 +694,22 @@ const updateBotAutomationConfig = async (req, res) => {
         });
       }
       await setAttendanceReminderLeadMinutes(parsedLead, companyId);
+    }
+
+    if (hasAttendanceResponseTimeoutUpdate) {
+      const parsedTimeout = Number(attendanceResponseTimeoutMinutesRaw);
+      if (
+        !Number.isInteger(parsedTimeout) ||
+        parsedTimeout < 1 ||
+        parsedTimeout > 240
+      ) {
+        return res.status(400).json({
+          success: false,
+          error:
+            `El campo 'attendanceResponseTimeoutMinutes' debe ser un entero entre 1 y 240. Valor recomendado por defecto: ${DEFAULT_ATTENDANCE_RESPONSE_TIMEOUT_MINUTES}.`,
+        });
+      }
+      await setAttendanceResponseTimeoutMinutes(parsedTimeout, companyId);
     }
 
     if (hasCancellationLockHoursUpdate) {
