@@ -27,12 +27,14 @@ const {
   getOneHourReminderEnabled,
   getPenaltyLimit,
   getPenaltySystemEnabled,
+  getStrictQuestionFlowEnabled,
   getTrustedClientConfirmationCount,
   setAttendanceReminderLeadMinutes,
   setAttendanceResponseTimeoutMinutes,
   setCancellationLockHours,
   setPenaltyLimit,
   setPenaltySystemEnabled,
+  setStrictQuestionFlowEnabled,
   setOneHourReminderEnabled,
   setTrustedClientConfirmationCount,
   getWhatsappCancellationGroupSettings,
@@ -106,6 +108,7 @@ const buildBotAutomationConfigResponse = async (companyId) => {
     attendanceResponseTimeoutMinutes,
     cancellationLockHours,
     trustedClientConfirmationCount,
+    strictQuestionFlowEnabled,
     penaltyLimit,
     penaltySystemEnabled,
   ] = await Promise.all([
@@ -114,6 +117,7 @@ const buildBotAutomationConfigResponse = async (companyId) => {
     getAttendanceResponseTimeoutMinutes(companyId),
     getCancellationLockHours(companyId),
     getTrustedClientConfirmationCount(companyId),
+    getStrictQuestionFlowEnabled(companyId),
     getPenaltyLimit(companyId),
     getPenaltySystemEnabled(companyId),
   ]);
@@ -124,6 +128,7 @@ const buildBotAutomationConfigResponse = async (companyId) => {
     attendanceResponseTimeoutMinutes,
     cancellationLockHours,
     trustedClientConfirmationCount,
+    strictQuestionFlowEnabled,
     penaltyEnabled: penaltySystemEnabled,
     penaltySystemEnabled,
     penaltyLimit,
@@ -725,6 +730,13 @@ const updateBotAutomationConfig = async (req, res) => {
       body.minHoursBeforeCancellation,
     ].find((value) => value !== undefined);
     const trustedClientConfirmationCountRaw = body.trustedClientConfirmationCount;
+    const strictQuestionFlowEnabledCandidate = firstBoolean([
+      body.strictQuestionFlowEnabled,
+      body.strictQuestionFlow,
+      body.singleQuestionMode,
+      body.singleQuestionPerTurn,
+      body.sequentialQuestionFlow,
+    ]);
     const penaltyLimitRaw = body.penaltyLimit;
     const penaltyEnabledCandidate = firstBoolean([
       body.penaltyEnabled,
@@ -741,6 +753,8 @@ const updateBotAutomationConfig = async (req, res) => {
     const hasCancellationLockHoursUpdate = cancellationLockHoursRaw !== undefined;
     const hasTrustedConfirmationUpdate =
       trustedClientConfirmationCountRaw !== undefined;
+    const hasStrictQuestionFlowUpdate =
+      typeof strictQuestionFlowEnabledCandidate === "boolean";
     const hasPenaltyEnabledUpdate = typeof penaltyEnabledCandidate === "boolean";
     const hasPenaltyLimitUpdate = penaltyLimitRaw !== undefined;
 
@@ -750,13 +764,14 @@ const updateBotAutomationConfig = async (req, res) => {
       !hasAttendanceResponseTimeoutUpdate &&
       !hasCancellationLockHoursUpdate &&
       !hasTrustedConfirmationUpdate &&
+      !hasStrictQuestionFlowUpdate &&
       !hasPenaltyEnabledUpdate &&
       !hasPenaltyLimitUpdate
     ) {
       return res.status(400).json({
         success: false,
         error:
-          "Debés enviar al menos una configuración válida (oneHourReminderEnabled, attendanceReminderLeadMinutes, attendanceResponseTimeoutMinutes, cancellationLockHours, trustedClientConfirmationCount, penaltyEnabled, penaltyLimit).",
+          "Debés enviar al menos una configuración válida (oneHourReminderEnabled, attendanceReminderLeadMinutes, attendanceResponseTimeoutMinutes, cancellationLockHours, trustedClientConfirmationCount, strictQuestionFlowEnabled, penaltyEnabled, penaltyLimit).",
       });
     }
 
@@ -814,6 +829,13 @@ const updateBotAutomationConfig = async (req, res) => {
         });
       }
       await setTrustedClientConfirmationCount(parsedTrusted, companyId);
+    }
+
+    if (hasStrictQuestionFlowUpdate) {
+      await setStrictQuestionFlowEnabled(
+        strictQuestionFlowEnabledCandidate,
+        companyId,
+      );
     }
 
     if (hasPenaltyEnabledUpdate) {

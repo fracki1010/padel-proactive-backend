@@ -8,6 +8,7 @@ const TimeSlot = require("../models/timeSlot.model");
 const { sendAdminNotification } = require("../services/notificationService");
 const {
   DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
+  getStrictQuestionFlowEnabled,
   getTrustedClientConfirmationCount,
 } = require("../services/appConfig.service");
 const { getFormattedDate } = require("../utils/getFormattedDate");
@@ -838,12 +839,36 @@ const parseAttendanceAnswer = (value = "") => {
 const buildAttendanceOptionsOnlyReply = () =>
   "Para este turno solo puedo recibir una opción:\n1) SI ASISTO\n2) NO ASISTO";
 
+const enforceStrictQuestionFlowReply = (rawReply = "") => {
+  const reply = String(rawReply || "").trim();
+  if (!reply) return reply;
+
+  const normalized = normalizeSpanishText(reply);
+  if (
+    /nombre[^.?!\n]*(fecha|hora)|(?:fecha|hora)[^.?!\n]*nombre/.test(normalized)
+  ) {
+    return "Antes de continuar, pasame tu *nombre completo* (ej: *Juan Pérez*).";
+  }
+  if (/fecha[^.?!\n]*hora|hora[^.?!\n]*fecha/.test(normalized)) {
+    return "Antes de continuar, decime solo la *fecha* del turno (ej: *hoy*, *mañana* o *2026-04-07*).";
+  }
+
+  const questionMarks = (reply.match(/\?/g) || []).length;
+  if (questionMarks <= 1) return reply;
+
+  const firstQuestionMatch = reply.match(/[\s\S]*?\?/);
+  const firstQuestion = firstQuestionMatch?.[0]?.trim();
+  if (!firstQuestion) return reply;
+  return `${firstQuestion}\n\nRespondé eso y avanzamos paso a paso.`;
+};
+
 const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
   try {
     const companyId = options.companyId || null;
     const client = options.client || null;
     const sessionId = companyId ? `${companyId}:${chatId}` : chatId;
     const sessionMeta = sessionService.getMeta(sessionId);
+    const strictQuestionFlowEnabled = await getStrictQuestionFlowEnabled(companyId);
 
     // 1. Identificar Usuario
     const registeredUser = await userService.getUserByWhatsappId(chatId, {
@@ -1339,8 +1364,14 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     }
 
     // Si estábamos esperando nombre completo para una reserva pendiente, lo resolvemos antes de llamar a IA.
-    if (!knownName && sessionMeta.awaitingFullNameForBooking) {
-      const fullName = extractFullNameFromMessage(userMessage);
+    if (sessionMeta.awaitingFullNameForBooking) {
+      let fullName = "";
+      if (knownName && isValidClientName(knownName)) {
+        fullName = normalizeNameText(knownName);
+      } else {
+        fullName = extractFullNameFromMessage(userMessage);
+      }
+
       if (!fullName || !isValidClientName(fullName)) {
         const retryNamePrompt =
           "Antes de continuar con tu turno, pasame tu *nombre completo* para registrarte (ej: *Juan Pérez*). Es para dejar el turno a tu nombre.";
@@ -1349,11 +1380,15 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         return retryNamePrompt;
       }
 
-      const savedUser = await userService.saveOrUpdateUser(chatId, fullName, {
-        companyId,
-        client,
-      });
-      knownName = savedUser?.name || fullName;
+      if (!knownName || !isValidClientName(knownName)) {
+        const savedUser = await userService.saveOrUpdateUser(chatId, fullName, {
+          companyId,
+          client,
+        });
+        knownName = savedUser?.name || fullName;
+      } else {
+        knownName = fullName;
+      }
 
       const pendingBooking = sessionMeta.pendingBooking || null;
       const pendingBookingDrafts = Array.isArray(sessionMeta.pendingBookingDrafts)
@@ -1427,6 +1462,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     // 3. IA
     const aiResponseRaw = await groqService.getChatResponse(history, knownName, {
       companyId,
+      strictQuestionFlowEnabled,
     });
     console.log("🤖 Respuesta RAW de IA:", aiResponseRaw); // Para depuración
 
@@ -1917,6 +1953,9 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     }
 
     // 5. Enviar y Guardar
+    if (strictQuestionFlowEnabled) {
+      replyText = enforceStrictQuestionFlowReply(replyText);
+    }
     sessionService.addMessage(sessionId, "assistant", replyText);
     return replyText;
   } catch (error) {

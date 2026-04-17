@@ -89,6 +89,7 @@ const getChatResponse = async (
 ) => {
   try {
     const companyId = options.companyId || null;
+    const strictQuestionFlowEnabled = Boolean(options.strictQuestionFlowEnabled);
     const clubInfoFromDb = await getClubInfoByCompanyId(companyId);
     const defaultClubName = process.env.DEFAULT_CLUB_NAME || "Club de Pádel";
     const clubName = clubInfoFromDb?.name || defaultClubName;
@@ -197,6 +198,12 @@ const getChatResponse = async (
     - Nunca inventes precios, horarios o disponibilidad.
     - Nunca inventes la dirección del club.
     - Si no conoces un dato, pide aclaración o responde que no está disponible ese dato.
+    ${strictQuestionFlowEnabled ? `
+    [FLUJO ESTRICTO - OBLIGATORIO]
+    - Haz una sola pregunta por mensaje.
+    - Si faltan varios datos, pide solo uno por turno.
+    - Orden obligatorio cuando faltan datos para reservar: 1) nombre completo, 2) fecha, 3) hora.
+    - Nunca pidas dos datos a la vez.` : ""}
     
     [AMBIGUEDADES - REGLAS OBLIGATORIAS]
     - Frases como "¿tenés algo para hoy a las 17?" o "algo para las 17" significan CONSULTA DE DISPONIBILIDAD, no reserva confirmada.
