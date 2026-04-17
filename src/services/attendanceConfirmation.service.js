@@ -2,8 +2,10 @@ const AppConfig = require("../models/appConfig.model");
 const Booking = require("../models/booking.model");
 const User = require("../models/user.model");
 const sessionService = require("./sessionService");
-const { getClient } = require("./whatsappTenantManager.service");
-const { getWhatsappState } = require("../state/whatsapp.state");
+const {
+  COMMAND_TYPES,
+  enqueueWhatsappCommand,
+} = require("./whatsappCommandQueue.service");
 const { isMongoConnected } = require("../config/database");
 const { sendAdminNotification } = require("./notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
@@ -153,14 +155,9 @@ const notifyAdminForNoResponse = async (
 };
 
 const processCompany = async (companyId = null) => {
-  const waState = getWhatsappState(companyId);
-  if (!waState.enabled) return;
-
   const oneHourReminderEnabled = await getOneHourReminderEnabled(companyId);
   if (!oneHourReminderEnabled) return;
 
-  const client = getClient(companyId);
-  if (!client || !client.isReady) return;
   const trustedClientConfirmationCount =
     await getTrustedClientConfirmationCount(companyId);
   const attendanceReminderLeadMinutes =
@@ -245,14 +242,18 @@ const processCompany = async (companyId = null) => {
     if (!locked) continue;
 
     try {
-      await client.sendMessage(
-        user.whatsappId,
-        buildAttendancePrompt(
-          booking,
-          attendanceReminderLeadMinutes,
-          attendanceResponseTimeoutMinutes,
-        ),
-      );
+      await enqueueWhatsappCommand({
+        companyId,
+        type: COMMAND_TYPES.SEND_MESSAGE,
+        payload: {
+          to: user.whatsappId,
+          message: buildAttendancePrompt(
+            booking,
+            attendanceReminderLeadMinutes,
+            attendanceResponseTimeoutMinutes,
+          ),
+        },
+      });
 
       const sessionId = buildSessionId(companyId, user.whatsappId);
       sessionService.updateMeta(sessionId, {
@@ -260,6 +261,19 @@ const processCompany = async (companyId = null) => {
         attendanceBookingId: String(booking._id),
       });
     } catch (error) {
+      await Booking.updateOne(
+        {
+          _id: booking._id,
+          attendanceConfirmationStatus: "pending",
+          attendanceConfirmationRespondedAt: null,
+        },
+        {
+          $set: {
+            attendanceConfirmationStatus: null,
+            attendanceConfirmationSentAt: null,
+          },
+        },
+      );
       console.error(
         `[AttendanceConfirmation] Error enviando prompt a ${user.whatsappId}:`,
         error?.message || error,
