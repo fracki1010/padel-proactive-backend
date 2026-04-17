@@ -8,6 +8,7 @@ const DEFAULT_ATTENDANCE_RESPONSE_TIMEOUT_MINUTES = Number(
   process.env.ATTENDANCE_RESPONSE_TIMEOUT_MINUTES || 15,
 );
 const DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT = 3;
+const DEFAULT_STRICT_QUESTION_FLOW_ENABLED = false;
 const DEFAULT_CANCELLATION_LOCK_HOURS = 2;
 const DAILY_HOUR_REGEX = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR = DAILY_HOUR_REGEX.test(
@@ -97,6 +98,10 @@ const ensureAppConfig = async (companyId = null) => {
       existing.dailyAvailabilityDigestHour = DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR;
       shouldSave = true;
     }
+    if (typeof existing.strictQuestionFlowEnabled !== "boolean") {
+      existing.strictQuestionFlowEnabled = DEFAULT_STRICT_QUESTION_FLOW_ENABLED;
+      shouldSave = true;
+    }
     if (shouldSave) {
       await existing.save();
     }
@@ -112,6 +117,7 @@ const ensureAppConfig = async (companyId = null) => {
     attendanceResponseTimeoutMinutes:
       DEFAULT_ATTENDANCE_RESPONSE_TIMEOUT_MINUTES,
     trustedClientConfirmationCount: DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
+    strictQuestionFlowEnabled: DEFAULT_STRICT_QUESTION_FLOW_ENABLED,
     penaltyLimit: DEFAULT_PENALTY_LIMIT,
     penaltySystemEnabled: DEFAULT_PENALTY_SYSTEM_ENABLED,
     cancellationGroupEnabled: false,
@@ -213,6 +219,22 @@ const setTrustedClientConfirmationCount = async (
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
     { $set: { trustedClientConfirmationCount: normalized } },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+  );
+};
+
+const getStrictQuestionFlowEnabled = async (companyId = null) => {
+  const config = await ensureAppConfig(companyId);
+  if (typeof config.strictQuestionFlowEnabled === "boolean") {
+    return config.strictQuestionFlowEnabled;
+  }
+  return DEFAULT_STRICT_QUESTION_FLOW_ENABLED;
+};
+
+const setStrictQuestionFlowEnabled = async (enabled, companyId = null) => {
+  return AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $set: { strictQuestionFlowEnabled: Boolean(enabled) } },
     { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
@@ -344,6 +366,7 @@ module.exports = {
   DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
   DEFAULT_PENALTY_LIMIT,
   DEFAULT_PENALTY_SYSTEM_ENABLED,
+  DEFAULT_STRICT_QUESTION_FLOW_ENABLED,
   DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT,
   getCancellationLockHours,
   ensureAppConfig,
@@ -352,12 +375,14 @@ module.exports = {
   getOneHourReminderEnabled,
   getPenaltyLimit,
   getPenaltySystemEnabled,
+  getStrictQuestionFlowEnabled,
   getTrustedClientConfirmationCount,
   setCancellationLockHours,
   setAttendanceReminderLeadMinutes,
   setAttendanceResponseTimeoutMinutes,
   setPenaltyLimit,
   setPenaltySystemEnabled,
+  setStrictQuestionFlowEnabled,
   setOneHourReminderEnabled,
   setTrustedClientConfirmationCount,
   getWhatsappCancellationGroupSettings,

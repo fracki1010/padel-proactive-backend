@@ -39,6 +39,10 @@ const appConfigSchema = new mongoose.Schema(
       min: 1,
       max: 20,
     },
+    strictQuestionFlowEnabled: {
+      type: Boolean,
+      default: false,
+    },
     penaltyLimit: {
       type: Number,
       default: 2,
