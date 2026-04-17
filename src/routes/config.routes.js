@@ -1,7 +1,9 @@
 const express = require("express");
 const router = express.Router();
+const Booking = require("../models/booking.model");
 const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
+const User = require("../models/user.model");
 const {
   setWhatsappEnabledConfigOnly,
 } = require("../services/whatsappControl.service");
@@ -192,14 +194,92 @@ router.post("/courts", async (req, res) => {
 router.put("/courts/:id", async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
+    const scope = companyScope(req, companyId);
+    const payload = { ...req.body };
+
+    if (Object.prototype.hasOwnProperty.call(payload, "name")) {
+      const normalizedName = String(payload.name || "").trim();
+      if (!normalizedName) {
+        return res.status(400).json({
+          success: false,
+          error: "El nombre de la cancha es obligatorio.",
+        });
+      }
+
+      const escapedCourtName = escapeRegex(normalizedName);
+      const duplicatedCourt = await Court.findOne({
+        ...scope,
+        _id: { $ne: req.params.id },
+        name: { $regex: new RegExp(`^${escapedCourtName}$`, "i") },
+      });
+
+      if (duplicatedCourt) {
+        return res.status(400).json({
+          success: false,
+          error: "Ya existe una cancha con ese nombre.",
+        });
+      }
+
+      payload.name = normalizedName;
+    }
+
     const updatedCourt = await Court.findOneAndUpdate(
-      { _id: req.params.id, ...companyScope(req, companyId) },
-      req.body,
+      { _id: req.params.id, ...scope },
+      payload,
       { returnDocument: "after" },
     );
+
+    if (!updatedCourt) {
+      return res.status(404).json({
+        success: false,
+        error: "Cancha no encontrada.",
+      });
+    }
+
     res.status(200).json({ success: true, data: updatedCourt });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /api/config/courts/:id
+router.delete("/courts/:id", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const scope = companyScope(req, companyId);
+    const courtId = req.params.id;
+
+    const court = await Court.findOne({ _id: courtId, ...scope });
+    if (!court) {
+      return res.status(404).json({
+        success: false,
+        error: "Cancha no encontrada.",
+      });
+    }
+
+    const [bookingsCount, fixedTurnsCount] = await Promise.all([
+      Booking.countDocuments({
+        ...scope,
+        court: courtId,
+      }),
+      User.countDocuments({
+        ...scope,
+        "fixedTurns.court": courtId,
+      }),
+    ]);
+
+    if (bookingsCount > 0 || fixedTurnsCount > 0) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "No podés eliminar esta cancha porque tiene reservas o turnos fijos asociados. Podés desactivarla.",
+      });
+    }
+
+    await court.deleteOne();
+    return res.status(200).json({ success: true, data: { _id: courtId } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
