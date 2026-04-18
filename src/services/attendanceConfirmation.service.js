@@ -21,9 +21,18 @@ const CHECK_INTERVAL_MS = 60 * 1000;
 const ARG_TZ_OFFSET = "-03:00";
 const ASK_WINDOW_BEFORE_MINUTES = 2;
 const ASK_WINDOW_AFTER_MINUTES = 10;
+const ATTENDANCE_DEBUG =
+  String(process.env.ATTENDANCE_DEBUG || "")
+    .trim()
+    .toLowerCase() === "true";
 
 let timer = null;
 let isRunning = false;
+
+const debugLog = (...args) => {
+  if (!ATTENDANCE_DEBUG) return;
+  console.log("[AttendanceConfirmation][debug]", ...args);
+};
 
 const toUtcMidnightFromIso = (isoDate) => {
   const [year, month, day] = String(isoDate).split("-").map(Number);
@@ -156,7 +165,10 @@ const notifyAdminForNoResponse = async (
 
 const processCompany = async (companyId = null) => {
   const oneHourReminderEnabled = await getOneHourReminderEnabled(companyId);
-  if (!oneHourReminderEnabled) return;
+  if (!oneHourReminderEnabled) {
+    debugLog(`company=${companyId || "global"} skip: reminder disabled`);
+    return;
+  }
 
   const trustedClientConfirmationCount =
     await getTrustedClientConfirmationCount(companyId);
@@ -185,16 +197,39 @@ const processCompany = async (companyId = null) => {
     .populate("court")
     .lean();
 
+  const stats = {
+    totalCandidates: bookings.length,
+    skippedMissingStartOrPhone: 0,
+    skippedUserNotFound: 0,
+    markedTrustedNoPrompt: 0,
+    skippedMissingWhatsappId: 0,
+    skippedOutsideWindow: 0,
+    skippedLockRace: 0,
+    enqueuedPrompt: 0,
+    enqueueErrors: 0,
+  };
+
   const now = new Date();
+  debugLog(
+    `company=${companyId || "global"} candidates=${bookings.length} leadMin=${attendanceReminderLeadMinutes} timeoutMin=${attendanceResponseTimeoutMinutes}`,
+  );
 
   for (const booking of bookings) {
     const startTime = booking.timeSlot?.startTime;
-    if (!startTime || !booking.clientPhone) continue;
+    if (!startTime || !booking.clientPhone) {
+      stats.skippedMissingStartOrPhone += 1;
+      continue;
+    }
 
     const user = await User.findOne({
       companyId: companyId || null,
       phoneNumber: booking.clientPhone,
     }).lean();
+
+    if (!user) {
+      stats.skippedUserNotFound += 1;
+      continue;
+    }
 
     // Cliente cumplidor: no volvemos a preguntar.
     if (
@@ -209,10 +244,14 @@ const processCompany = async (companyId = null) => {
           },
         },
       );
+      stats.markedTrustedNoPrompt += 1;
       continue;
     }
 
-    if (!user?.whatsappId) continue;
+    if (!user?.whatsappId) {
+      stats.skippedMissingWhatsappId += 1;
+      continue;
+    }
 
     const startDate = buildBookingStartDate(booking.date, startTime);
     const minutesLeft = (startDate.getTime() - now.getTime()) / 60000;
@@ -220,6 +259,7 @@ const processCompany = async (companyId = null) => {
       minutesLeft > attendanceReminderLeadMinutes + ASK_WINDOW_BEFORE_MINUTES ||
       minutesLeft < attendanceReminderLeadMinutes - ASK_WINDOW_AFTER_MINUTES
     ) {
+      stats.skippedOutsideWindow += 1;
       continue;
     }
 
@@ -239,7 +279,10 @@ const processCompany = async (companyId = null) => {
       { returnDocument: "after" },
     );
 
-    if (!locked) continue;
+    if (!locked) {
+      stats.skippedLockRace += 1;
+      continue;
+    }
 
     try {
       await enqueueWhatsappCommand({
@@ -260,6 +303,10 @@ const processCompany = async (companyId = null) => {
         awaitingAttendanceConfirmation: true,
         attendanceBookingId: String(booking._id),
       });
+      stats.enqueuedPrompt += 1;
+      debugLog(
+        `company=${companyId || "global"} queued booking=${booking._id} to=${user.whatsappId}`,
+      );
     } catch (error) {
       await Booking.updateOne(
         {
@@ -278,8 +325,13 @@ const processCompany = async (companyId = null) => {
         `[AttendanceConfirmation] Error enviando prompt a ${user.whatsappId}:`,
         error?.message || error,
       );
+      stats.enqueueErrors += 1;
     }
   }
+
+  debugLog(
+    `company=${companyId || "global"} summary=${JSON.stringify(stats)}`,
+  );
 };
 
 const runAttendanceSweep = async () => {
@@ -291,9 +343,11 @@ const runAttendanceSweep = async () => {
     return;
   }
   isRunning = true;
+  debugLog("sweep:start");
 
   try {
     const companyIds = await getEnabledCompanyIds();
+    debugLog(`sweep:enabledCompanies=${companyIds.length}`);
     for (const companyId of companyIds) {
       await processCompany(companyId);
     }
@@ -304,6 +358,7 @@ const runAttendanceSweep = async () => {
     );
   } finally {
     isRunning = false;
+    debugLog("sweep:end");
   }
 };
 
