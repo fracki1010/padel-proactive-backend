@@ -13,6 +13,7 @@ const notificationSchema = new mongoose.Schema(
         "new_booking",
         "payment_updated",
         "booking_cancelled",
+        "attendance_no_response",
         "fixed_turn_request",
         "system",
       ],
