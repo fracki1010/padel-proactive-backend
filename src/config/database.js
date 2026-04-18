@@ -29,6 +29,7 @@ const getConnectionOptions = () => ({
 });
 
 let listenersAttached = false;
+let suppressNextDisconnectedLog = false;
 const attachConnectionListeners = () => {
   if (listenersAttached) return;
   listenersAttached = true;
@@ -38,6 +39,10 @@ const attachConnectionListeners = () => {
   });
 
   mongoose.connection.on("disconnected", () => {
+    if (suppressNextDisconnectedLog) {
+      suppressNextDisconnectedLog = false;
+      return;
+    }
     console.warn(`⚠️ MongoDB estado: ${stateLabel(mongoose.connection.readyState)}`);
   });
 
@@ -79,7 +84,13 @@ const connectDB = async () => {
 };
 
 const isMongoConnected = () => mongoose.connection.readyState === 1;
+const closeDB = async () => {
+  if (mongoose.connection.readyState === 0) return;
+  suppressNextDisconnectedLog = true;
+  await mongoose.connection.close();
+};
 
 module.exports = connectDB;
 module.exports.connectDB = connectDB;
 module.exports.isMongoConnected = isMongoConnected;
+module.exports.closeDB = closeDB;
