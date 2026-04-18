@@ -3,8 +3,8 @@ require("dotenv").config();
 
 const fs = require("fs");
 const path = require("path");
-const mongoose = require("mongoose");
 const connectDB = require("../config/database");
+const { closeDB } = require("../config/database");
 const sessionService = require("../services/sessionService");
 const { handleIncomingMessage } = require("../handlers/messageHandler");
 
@@ -210,9 +210,7 @@ const run = async () => {
       sessionService.clearHistory(sessionId);
     }
   } finally {
-    if (mongoose?.connection?.close) {
-      await mongoose.connection.close();
-    }
+    await closeDB();
   }
 
   console.log("\n=== RESUMEN ===");

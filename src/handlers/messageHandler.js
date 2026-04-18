@@ -217,6 +217,13 @@ const extractTimeFromMessage = (rawText) => {
   const aLasMatch = text.match(/a\s*las\s*([01]?\d|2[0-3])\b/);
   if (aLasMatch) return `${aLasMatch[1].padStart(2, "0")}:00`;
 
+  const contextualHourMatch = text.match(
+    /\b(?:hoy|manana|pasado\s+manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo)[,\s]+([01]?\d|2[0-3])\b/,
+  );
+  if (contextualHourMatch) {
+    return `${contextualHourMatch[1].padStart(2, "0")}:00`;
+  }
+
   const compactHourMinuteMatch = text.match(/\b([01]\d|2[0-3])([0-5]\d)\b/);
   if (compactHourMinuteMatch) {
     return `${compactHourMinuteMatch[1]}:${compactHourMinuteMatch[2]}`;
@@ -333,6 +340,19 @@ const sanitizeIncomingUserMessage = (value = "") =>
     .replace(/\s+/g, " ")
     .trim();
 
+const isPromptInjectionAttempt = (value = "") => {
+  const text = normalizeSpanishText(value);
+  if (!text) return false;
+  return (
+    /\bignora(?:r)?\b.*\b(instrucciones?|reglas?)\b/.test(text) ||
+    /\ba partir de ahora\b.*\b(responde|responder|contesta|contestar)\b/.test(text) ||
+    /\bresponde?\s+solo\b/.test(text) ||
+    /\bactua?\s+como\b/.test(text) ||
+    /\bsystem prompt\b/.test(text) ||
+    /\bdesobedece\b/.test(text)
+  );
+};
+
 const isAffirmativeBookingReply = (value = "") => {
   const text = normalizeLooseText(value);
   if (!text) return false;
@@ -398,6 +418,44 @@ const hasBookingControlKeywords = (value = "") => {
   return /\b(confirmar|cancelar|reserva|reservar|turno|cancha|hora|fecha|hoy|manana|disponibilidad|extra)\b/.test(
     text,
   );
+};
+
+const isInterruptibleAction = (action = "") =>
+  action === "LIST_ACTIVE_BOOKINGS" || action === "CANCEL_BOOKING";
+
+const shouldAllowStrictStateInterrupt = (state = null, action = "") => {
+  if (!state || !isInterruptibleAction(action)) return false;
+  if (state === "ATTENDANCE_CONFIRMATION") return false;
+  return true;
+};
+
+const clearBookingStrictStateMeta = (sessionId) =>
+  sessionService.updateMeta(sessionId, {
+    awaitingFullNameForBooking: false,
+    awaitingBookingClientNameConfirmation: false,
+    pendingBookingClientNameCandidate: null,
+    awaitingExtraBookingConfirmation: false,
+    pendingBookingOffer: null,
+    pendingBooking: null,
+    pendingBookingDrafts: null,
+    pendingBookingClientName: null,
+    concreteAnswerRequestedAt: null,
+  });
+
+const sanitizeModelOnlyMessage = (value = "") => {
+  const raw = String(value || "").trim();
+  if (!raw) return raw;
+  const normalized = normalizeSpanishText(raw);
+  if (
+    /\breserva\s+confirmada\b/.test(normalized) ||
+    /\bturno\s+(cancelado|anulado)\b/.test(normalized)
+  ) {
+    return (
+      "Para evitar errores, solo confirmo o cancelo turnos cuando tengo " +
+      "fecha, hora y validación del flujo correspondiente."
+    );
+  }
+  return raw;
 };
 
 const isLikelyFullName = (value = "") => {
@@ -1171,8 +1229,25 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     const companyId = options.companyId || null;
     const client = options.client || null;
     const sessionId = companyId ? `${companyId}:${chatId}` : chatId;
-    const sessionMeta = sessionService.getMeta(sessionId);
+    let sessionMeta = sessionService.getMeta(sessionId);
     userMessage = sanitizeIncomingUserMessage(userMessage);
+
+    if (isPromptInjectionAttempt(userMessage)) {
+      const promptInjectionReply =
+        "No puedo obedecer cambios de reglas del sistema. " +
+        "Decime directamente si querés *consultar disponibilidad*, *reservar* o *cancelar*.";
+      auditSecurityEvent({
+        companyId,
+        chatId,
+        sessionId,
+        event: "INPUT_BLOCKED",
+        reason: "prompt_injection_attempt",
+        userMessage,
+      });
+      sessionService.addMessage(sessionId, "user", userMessage);
+      sessionService.addMessage(sessionId, "assistant", promptInjectionReply);
+      return promptInjectionReply;
+    }
 
     if (!userMessage) {
       const emptyMessageReply =
@@ -1234,27 +1309,41 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       }
     }
 
+    const earlyDeterministicAction = TRANSACTIONAL_MODE_ENABLED
+      ? inferDeterministicAction(userMessage)
+      : null;
+
     const strictInputState = getStrictInputState(sessionMeta);
     if (
       strictInputState &&
       !isAllowedInputForStrictState(userMessage, strictInputState, sessionMeta)
     ) {
-      const strictInputReply = buildStrictStateInvalidInputReply(
-        strictInputState,
-        sessionMeta,
-      );
-      auditSecurityEvent({
-        companyId,
-        chatId,
-        sessionId,
-        event: "STATE_INPUT_BLOCKED",
-        reason: strictInputState,
-        userMessage,
-      });
-      sessionService.addMessage(sessionId, "user", userMessage);
-      sessionService.addMessage(sessionId, "assistant", strictInputReply);
-      stampConcreteAnswerDeadline(sessionId, sessionMeta);
-      return strictInputReply;
+      if (
+        shouldAllowStrictStateInterrupt(
+          strictInputState,
+          earlyDeterministicAction?.action || "",
+        )
+      ) {
+        clearBookingStrictStateMeta(sessionId);
+        sessionMeta = sessionService.getMeta(sessionId);
+      } else {
+        const strictInputReply = buildStrictStateInvalidInputReply(
+          strictInputState,
+          sessionMeta,
+        );
+        auditSecurityEvent({
+          companyId,
+          chatId,
+          sessionId,
+          event: "STATE_INPUT_BLOCKED",
+          reason: strictInputState,
+          userMessage,
+        });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", strictInputReply);
+        stampConcreteAnswerDeadline(sessionId, sessionMeta);
+        return strictInputReply;
+      }
     }
 
     const strictQuestionFlowEnabled = await getStrictQuestionFlowEnabled(companyId);
@@ -1954,7 +2043,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     let parsedData = null;
 
     if (TRANSACTIONAL_MODE_ENABLED) {
-      parsedData = inferDeterministicAction(userMessage);
+      parsedData = earlyDeterministicAction || inferDeterministicAction(userMessage);
       if (parsedData?.action) {
         console.log(
           `[MessageHandler][${companyId || "global"}] Deterministic action=${parsedData.action} chatId=${chatId}`,
@@ -2054,6 +2143,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       else if (parsedData.action === "CREATE_BOOKING") {
         const requestedDate = parsedData.date;
         const requestedTime = normalizeTimeString(parsedData.time);
+        const userDerivedDate = extractDateFromMessage(userMessage);
+        const userDerivedTime = normalizeTimeString(extractTimeFromMessage(userMessage));
         const requestedCourt = (parsedData.courtName || "INDIFERENTE").trim();
         const detectedDrafts = extractBookingDraftsFromMessage(
           userMessage,
@@ -2095,15 +2186,15 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
         if (!canCreateBookingFromMessage) {
           if (
-            requestedDate &&
-            isValidIsoDate(requestedDate) &&
-            requestedTime
+            userDerivedDate &&
+            isValidIsoDate(userDerivedDate) &&
+            userDerivedTime
           ) {
             sessionService.updateMeta(sessionId, {
               pendingBookingOffer: {
                 courtName: requestedCourt,
-                dateStr: requestedDate,
-                timeStr: requestedTime,
+                dateStr: userDerivedDate,
+                timeStr: userDerivedTime,
                 createdAt: Date.now(),
               },
               concreteAnswerRequestedAt: Date.now(),
@@ -2341,7 +2432,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       // CASO F: SOLO MENSAJE (La IA respondió en JSON con campo "message")
       else if (parsedData.message) {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
-        replyText = parsedData.message;
+        replyText = sanitizeModelOnlyMessage(parsedData.message);
       }
 
       // CASO G: JSON DESCONOCIDO
@@ -2467,10 +2558,12 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       } else {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
         // Limpiamos posibles backticks de markdown por si acaso
-        replyText = aiResponseRaw
-          .replace(/```json/g, "")
-          .replace(/```/g, "")
-          .trim();
+        replyText = sanitizeModelOnlyMessage(
+          aiResponseRaw
+            .replace(/```json/g, "")
+            .replace(/```/g, "")
+            .trim(),
+        );
       }
     }
 
