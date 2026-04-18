@@ -366,9 +366,21 @@ const isNonNameReply = (value = "") => {
     "hace la reserva",
     "quiero reservar",
     "quiero una cancha",
+    "cancelar",
+    "confirmar",
+    "confirmar reserva",
+    "confirmar turno",
+    "confirmar todo",
+    "confirmar extra",
   ];
 
   if (blockedPhrases.includes(normalized)) return true;
+  if (
+    /^confirmar(?:\s+(?:reserva|turno|todo|extra|[a-z]))?$/.test(normalized) ||
+    /^(cancelar|cancelo|cancelado)$/.test(normalized)
+  ) {
+    return true;
+  }
 
   return /^(si|dale|ok|listo|confirmo)\b/.test(normalized);
 };
