@@ -14,6 +14,13 @@ connectDB()
     });
     startAttendanceConfirmationMonitor();
     console.log("✅ Monitor de confirmación de asistencia iniciado.");
+    if (
+      String(process.env.ATTENDANCE_DEBUG || "")
+        .trim()
+        .toLowerCase() === "true"
+    ) {
+      console.log("🧪 ATTENDANCE_DEBUG=true (logs detallados habilitados)");
+    }
   })
   .catch((err) => {
     console.error("❌ Error al conectar MongoDB:", err);
