@@ -23,6 +23,7 @@
     "start:combined": "node whatsappBot.js",
     "dev:combined": "nodemon whatsappBot.js",
     "seed:super-admin": "node src/seed/seedAdmin.js",
+    "test:wa:defensive": "node src/scripts/replayWhatsappDefensiveTests.js",
     "migrate:multi-tenant": "node scripts/migrateToMultiTenant.js",
     "requeue:wa-queued": "node scripts/requeueQueuedWhatsappCommands.js"
   },
