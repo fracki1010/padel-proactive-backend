@@ -6,7 +6,6 @@ const whatsappRuntimeStateSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Company",
       default: null,
-      index: true,
     },
     enabled: {
       type: Boolean,
