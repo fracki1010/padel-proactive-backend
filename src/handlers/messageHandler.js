@@ -46,6 +46,21 @@ const getTodayIsoArgentina = () => {
   return `${year}-${month}-${day}`;
 };
 
+const TRANSACTIONAL_MODE_ENABLED =
+  String(process.env.WHATSAPP_TRANSACTIONAL_MODE || "true")
+    .trim()
+    .toLowerCase() !== "false";
+const INCOMING_RATE_WINDOW_MS = Number(
+  process.env.WHATSAPP_BOT_RATE_WINDOW_MS || 60 * 1000,
+);
+const INCOMING_RATE_MAX_MESSAGES = Number(
+  process.env.WHATSAPP_BOT_RATE_MAX_MESSAGES || 14,
+);
+const INCOMING_RATE_MAX_CONTROL_MESSAGES = Number(
+  process.env.WHATSAPP_BOT_RATE_MAX_CONTROL_MESSAGES || 8,
+);
+const incomingRateState = new Map();
+
 const normalizeTimeString = (rawTime) => {
   if (!rawTime && rawTime !== 0) return null;
   const text = String(rawTime).trim();
@@ -247,6 +262,60 @@ const inferFallbackAction = (rawText) => {
   return null;
 };
 
+const inferDeterministicAction = (rawText = "") => {
+  const text = normalizeLooseText(rawText);
+  if (!text) return null;
+
+  const requestedDate = extractDateFromMessage(rawText);
+  const requestedTime = normalizeTimeString(extractTimeFromMessage(rawText));
+
+  const hasCancelIntent =
+    /\b(cancelar|cancelame|cancela|anular|anula|dar de baja)\b/.test(text) &&
+    /\b(turno|reserva|cancha|hora|fecha|hoy|manana|\d{1,2}[:.]?\d{0,2})\b/.test(text);
+  if (hasCancelIntent) {
+    return {
+      action: "CANCEL_BOOKING",
+      date: requestedDate,
+      time: requestedTime,
+      source: "deterministic",
+    };
+  }
+
+  if (hasDirectBookingIntent(rawText)) {
+    return {
+      action: "CREATE_BOOKING",
+      date: requestedDate,
+      time: requestedTime,
+      courtName: "INDIFERENTE",
+      source: "deterministic",
+    };
+  }
+
+  const fallback = inferFallbackAction(rawText);
+  if (!fallback) return null;
+  if (fallback.action === "CHECK_AVAILABILITY") {
+    return {
+      action: "CHECK_AVAILABILITY",
+      date: fallback.date,
+      time: normalizeTimeString(fallback.time),
+      source: "deterministic",
+    };
+  }
+  if (fallback.action === "LIST_ACTIVE_BOOKINGS") {
+    return { action: "LIST_ACTIVE_BOOKINGS", source: "deterministic" };
+  }
+  if (fallback.action === "FIXED_TURN_REQUEST") {
+    return {
+      action: "FIXED_TURN_REQUEST",
+      date: fallback.date,
+      time: normalizeTimeString(fallback.time),
+      message: rawText,
+      source: "deterministic",
+    };
+  }
+  return null;
+};
+
 const normalizeNameText = (value = "") =>
   String(value)
     .trim()
@@ -255,6 +324,12 @@ const normalizeNameText = (value = "") =>
 const normalizeLooseText = (value = "") =>
   normalizeSpanishText(value)
     .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const sanitizeIncomingUserMessage = (value = "") =>
+  String(value || "")
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -313,6 +388,14 @@ const hasDirectBookingIntent = (value = "") => {
   if (referencesPastBooking) return false;
 
   return /(reservar|reservalo|reservalo|quiero reservar|anotame|agendame|confirma.*turno|haceme la reserva|hace la reserva)/.test(
+    text,
+  );
+};
+
+const hasBookingControlKeywords = (value = "") => {
+  const text = normalizeLooseText(value);
+  if (!text) return false;
+  return /\b(confirmar|cancelar|reserva|reservar|turno|cancha|hora|fecha|hoy|manana|disponibilidad|extra)\b/.test(
     text,
   );
 };
@@ -385,41 +468,25 @@ const isNonNameReply = (value = "") => {
   return /^(si|dale|ok|listo|confirmo)\b/.test(normalized);
 };
 
-const extractFullNameFromMessage = (rawMessage, aiCandidate = "") => {
+const extractFullNameFromMessage = (rawMessage, _aiCandidate = "") => {
   const raw = String(rawMessage || "").trim();
   if (isNonNameReply(raw)) return null;
 
   const explicitPatterns = [
-    /(?:mi\s+nombre\s+es|soy)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,})/i,
-    /^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,})$/,
+    /(?:mi\s+nombre\s+es|soy)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}){1,3})\s*$/i,
+    /^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}){1,3})$/,
   ];
 
   for (const pattern of explicitPatterns) {
     const match = raw.match(pattern);
     if (!match?.[1]) continue;
     const candidate = normalizeNameText(match[1]);
-    if (isLikelyFullName(candidate) && !isPlaceholderName(candidate)) {
+    if (
+      isLikelyFullName(candidate) &&
+      !isPlaceholderName(candidate) &&
+      !hasBookingControlKeywords(candidate)
+    ) {
       return candidate;
-    }
-  }
-
-  const candidateFromAi = normalizeNameText(aiCandidate);
-  if (
-    candidateFromAi &&
-    isLikelyFullName(candidateFromAi) &&
-    !isPlaceholderName(candidateFromAi) &&
-    !isNonNameReply(candidateFromAi)
-  ) {
-    const normalizedMessage = normalizeSpanishText(raw)
-      .replace(/[^a-z\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    const normalizedCandidate = normalizeSpanishText(candidateFromAi)
-      .replace(/[^a-z\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (normalizedMessage.includes(normalizedCandidate)) {
-      return candidateFromAi;
     }
   }
 
@@ -865,6 +932,103 @@ const parseStrictYesNoAnswer = (value = "") => {
   return null;
 };
 
+const parseStrictCancel = (value = "") => {
+  const text = normalizeLooseText(value);
+  if (!text) return false;
+  return text === "cancelar";
+};
+
+const parseStrictOfferConfirmation = (value = "") => {
+  const text = normalizeLooseText(value);
+  if (!text) return false;
+  return text === "confirmar reserva" || text === "confirmar turno";
+};
+
+const getStrictInputState = (meta = {}) => {
+  if (meta.awaitingAttendanceConfirmation && meta.attendanceBookingId) {
+    return "ATTENDANCE_CONFIRMATION";
+  }
+  if (meta.awaitingBookingClientNameConfirmation) {
+    return "NAME_CONFIRMATION";
+  }
+  if (meta.awaitingFullNameForBooking) {
+    return "FULL_NAME_CAPTURE";
+  }
+  if (
+    meta.awaitingExtraBookingConfirmation &&
+    meta.pendingBooking?.dateStr &&
+    meta.pendingBooking?.timeStr
+  ) {
+    return "EXTRA_CONFIRMATION";
+  }
+  if (Array.isArray(meta.pendingBookingDrafts) && meta.pendingBookingDrafts.length > 0) {
+    return "DRAFT_CONFIRMATION";
+  }
+  if (meta.pendingBookingOffer?.dateStr && meta.pendingBookingOffer?.timeStr) {
+    return "OFFER_CONFIRMATION";
+  }
+  return null;
+};
+
+const isAllowedInputForStrictState = (value = "", state = null, meta = {}) => {
+  if (!state) return true;
+  const text = normalizeLooseText(value);
+  if (!text) return false;
+
+  if (state === "ATTENDANCE_CONFIRMATION") {
+    return Boolean(parseAttendanceAnswer(value));
+  }
+  if (state === "NAME_CONFIRMATION") {
+    return Boolean(parseStrictYesNoAnswer(value));
+  }
+  if (state === "FULL_NAME_CAPTURE") {
+    return parseStrictCancel(value) || Boolean(extractFullNameFromMessage(value));
+  }
+  if (state === "EXTRA_CONFIRMATION") {
+    return parseStrictCancel(value) || text === "confirmar extra";
+  }
+  if (state === "DRAFT_CONFIRMATION") {
+    const draftCount = Array.isArray(meta.pendingBookingDrafts)
+      ? meta.pendingBookingDrafts.length
+      : 0;
+    return parseStrictCancel(value) || Boolean(parseStrictDraftConfirmation(value, draftCount));
+  }
+  if (state === "OFFER_CONFIRMATION") {
+    return parseStrictCancel(value) || parseStrictOfferConfirmation(value);
+  }
+  return true;
+};
+
+const buildStrictStateInvalidInputReply = (state = null, meta = {}) => {
+  if (state === "ATTENDANCE_CONFIRMATION") {
+    return buildAttendanceOptionsOnlyReply();
+  }
+  if (state === "NAME_CONFIRMATION") {
+    return "Para continuar, respondé únicamente *SI* o *NO*.";
+  }
+  if (state === "FULL_NAME_CAPTURE") {
+    return (
+      "Para continuar con tu reserva, enviame solo tu *nombre completo* (ej: *Juan Pérez*) " +
+      "o escribí *CANCELAR*."
+    );
+  }
+  if (state === "EXTRA_CONFIRMATION") {
+    return "Para continuar, respondé exactamente *CONFIRMAR EXTRA* o *CANCELAR*.";
+  }
+  if (state === "DRAFT_CONFIRMATION") {
+    const draftCount = Array.isArray(meta.pendingBookingDrafts)
+      ? meta.pendingBookingDrafts.length
+      : 0;
+    return draftCount > 1
+      ? "Para continuar, respondé *CONFIRMAR TODO*, *CONFIRMAR A*/*B*... o *CANCELAR*."
+      : "Para continuar, respondé exactamente *CONFIRMAR RESERVA* o *CANCELAR*.";
+  }
+  if (state === "OFFER_CONFIRMATION") {
+    return "Para continuar, respondé exactamente *CONFIRMAR RESERVA* o *CANCELAR*.";
+  }
+  return "No pude procesar ese mensaje. Probá de nuevo con una instrucción concreta.";
+};
+
 const isAwaitingConcreteAnswer = (meta = {}) =>
   Boolean(
     meta.awaitingAttendanceConfirmation ||
@@ -888,6 +1052,96 @@ const clearConcreteAnswerDeadline = (sessionId, extraMeta = {}) =>
     ...extraMeta,
     concreteAnswerRequestedAt: null,
   });
+
+const auditSecurityEvent = ({
+  companyId = null,
+  chatId = "",
+  sessionId = "",
+  event = "UNKNOWN",
+  reason = "",
+  userMessage = "",
+  meta = {},
+}) => {
+  const payload = {
+    ts: new Date().toISOString(),
+    event,
+    reason,
+    companyId: companyId || "global",
+    chatId: String(chatId || ""),
+    sessionId: String(sessionId || ""),
+    messagePreview: String(userMessage || "").slice(0, 180),
+    ...meta,
+  };
+  console.warn(`[BotSecurity][${companyId || "global"}] ${JSON.stringify(payload)}`);
+};
+
+const enforceIncomingRateLimit = ({
+  sessionId = "",
+  companyId = null,
+  chatId = "",
+  userMessage = "",
+  isControlMessage = false,
+}) => {
+  const now = Date.now();
+  const safeWindowMs = Number.isFinite(INCOMING_RATE_WINDOW_MS)
+    ? Math.max(10 * 1000, INCOMING_RATE_WINDOW_MS)
+    : 60 * 1000;
+  const safeMaxMessages = Number.isFinite(INCOMING_RATE_MAX_MESSAGES)
+    ? Math.max(4, INCOMING_RATE_MAX_MESSAGES)
+    : 14;
+  const safeMaxControlMessages = Number.isFinite(INCOMING_RATE_MAX_CONTROL_MESSAGES)
+    ? Math.max(2, INCOMING_RATE_MAX_CONTROL_MESSAGES)
+    : 8;
+
+  const previous = incomingRateState.get(sessionId);
+  const bucket =
+    previous && now - previous.windowStart < safeWindowMs
+      ? previous
+      : { windowStart: now, totalCount: 0, controlCount: 0 };
+
+  bucket.totalCount += 1;
+  if (isControlMessage) bucket.controlCount += 1;
+
+  incomingRateState.set(sessionId, bucket);
+  if (incomingRateState.size > 5000) {
+    for (const [key, value] of incomingRateState.entries()) {
+      if (now - Number(value.windowStart || 0) > safeWindowMs * 3) {
+        incomingRateState.delete(key);
+      }
+    }
+  }
+
+  if (bucket.totalCount > safeMaxMessages || bucket.controlCount > safeMaxControlMessages) {
+    const waitSeconds = Math.max(
+      1,
+      Math.ceil((safeWindowMs - (now - bucket.windowStart)) / 1000),
+    );
+    auditSecurityEvent({
+      companyId,
+      chatId,
+      sessionId,
+      event: "RATE_LIMIT_BLOCKED",
+      reason:
+        bucket.controlCount > safeMaxControlMessages
+          ? "too_many_control_messages"
+          : "too_many_messages",
+      userMessage,
+      meta: {
+        waitSeconds,
+        totalCount: bucket.totalCount,
+        controlCount: bucket.controlCount,
+      },
+    });
+    return {
+      blocked: true,
+      reply:
+        `⚠️ Estoy recibiendo demasiados mensajes seguidos para procesar sin errores.\n` +
+        `Esperá *${waitSeconds}s* y enviá un solo mensaje concreto (ej: *hoy 20:00* o *CONFIRMAR RESERVA*).`,
+    };
+  }
+
+  return { blocked: false, reply: null };
+};
 
 const enforceStrictQuestionFlowReply = (rawReply = "") => {
   const reply = String(rawReply || "").trim();
@@ -918,6 +1172,53 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     const client = options.client || null;
     const sessionId = companyId ? `${companyId}:${chatId}` : chatId;
     const sessionMeta = sessionService.getMeta(sessionId);
+    userMessage = sanitizeIncomingUserMessage(userMessage);
+
+    if (!userMessage) {
+      const emptyMessageReply =
+        "No pude leer tu mensaje. Escribime de nuevo en una sola línea.";
+      auditSecurityEvent({
+        companyId,
+        chatId,
+        sessionId,
+        event: "INPUT_BLOCKED",
+        reason: "empty_message",
+      });
+      sessionService.addMessage(sessionId, "assistant", emptyMessageReply);
+      return emptyMessageReply;
+    }
+
+    if (userMessage.length > 280) {
+      const tooLongMessageReply =
+        "Para evitar errores, mandame un mensaje más corto (máximo 280 caracteres) con una sola solicitud.";
+      auditSecurityEvent({
+        companyId,
+        chatId,
+        sessionId,
+        event: "INPUT_BLOCKED",
+        reason: "message_too_long",
+        userMessage,
+        meta: { length: userMessage.length },
+      });
+      sessionService.addMessage(sessionId, "user", userMessage);
+      sessionService.addMessage(sessionId, "assistant", tooLongMessageReply);
+      return tooLongMessageReply;
+    }
+
+    const incomingRateResult = enforceIncomingRateLimit({
+      sessionId,
+      companyId,
+      chatId,
+      userMessage,
+      isControlMessage:
+        hasBookingControlKeywords(userMessage) || isAwaitingConcreteAnswer(sessionMeta),
+    });
+    if (incomingRateResult.blocked) {
+      sessionService.addMessage(sessionId, "user", userMessage);
+      sessionService.addMessage(sessionId, "assistant", incomingRateResult.reply);
+      return incomingRateResult.reply;
+    }
+
     if (isAwaitingConcreteAnswer(sessionMeta)) {
       const startedAt = Number(sessionMeta.concreteAnswerRequestedAt || 0);
       if (startedAt && Date.now() - startedAt > CONCRETE_RESPONSE_TIMEOUT_MS) {
@@ -932,6 +1233,30 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         stampConcreteAnswerDeadline(sessionId, sessionMeta);
       }
     }
+
+    const strictInputState = getStrictInputState(sessionMeta);
+    if (
+      strictInputState &&
+      !isAllowedInputForStrictState(userMessage, strictInputState, sessionMeta)
+    ) {
+      const strictInputReply = buildStrictStateInvalidInputReply(
+        strictInputState,
+        sessionMeta,
+      );
+      auditSecurityEvent({
+        companyId,
+        chatId,
+        sessionId,
+        event: "STATE_INPUT_BLOCKED",
+        reason: strictInputState,
+        userMessage,
+      });
+      sessionService.addMessage(sessionId, "user", userMessage);
+      sessionService.addMessage(sessionId, "assistant", strictInputReply);
+      stampConcreteAnswerDeadline(sessionId, sessionMeta);
+      return strictInputReply;
+    }
+
     const strictQuestionFlowEnabled = await getStrictQuestionFlowEnabled(companyId);
 
     // 1. Identificar Usuario
@@ -1078,7 +1403,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         pendingDrafts.length,
       );
 
-      if (isNegativeBookingReply(userMessage)) {
+      if (parseStrictCancel(userMessage)) {
         sessionService.updateMeta(sessionId, {
           pendingBookingDrafts: null,
           pendingBookingClientName: null,
@@ -1317,7 +1642,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         return bookingReply;
       }
 
-      if (isNegativeBookingReply(userMessage)) {
+      if (parseStrictCancel(userMessage)) {
         sessionService.updateMeta(sessionId, {
           awaitingExtraBookingConfirmation: false,
           pendingBooking: null,
@@ -1351,7 +1676,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
       if (isExpired) {
         clearConcreteAnswerDeadline(sessionId, { pendingBookingOffer: null });
-      } else if (isNegativeBookingReply(userMessage)) {
+      } else if (parseStrictCancel(userMessage)) {
         clearConcreteAnswerDeadline(sessionId, { pendingBookingOffer: null });
         const cancelledOfferReply = "Perfecto, no reservo ese turno.";
         sessionService.addMessage(sessionId, "user", userMessage);
@@ -1623,19 +1948,29 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
     // 2. Historial
     sessionService.addMessage(sessionId, "user", userMessage);
-    const history = sessionService.getHistory(sessionId);
-
-    // 3. IA
-    const aiResponseRaw = await groqService.getChatResponse(history, knownName, {
-      companyId,
-      strictQuestionFlowEnabled,
-    });
-    console.log("🤖 Respuesta RAW de IA:", aiResponseRaw); // Para depuración
 
     let replyText = "";
+    let aiResponseRaw = "";
+    let parsedData = null;
 
-    // 4. INTENTO DE PARSEO ROBUSTO
-    const parsedData = extractJSON(aiResponseRaw);
+    if (TRANSACTIONAL_MODE_ENABLED) {
+      parsedData = inferDeterministicAction(userMessage);
+      if (parsedData?.action) {
+        console.log(
+          `[MessageHandler][${companyId || "global"}] Deterministic action=${parsedData.action} chatId=${chatId}`,
+        );
+      }
+    }
+
+    if (!parsedData) {
+      const history = sessionService.getHistory(sessionId);
+      aiResponseRaw = await groqService.getChatResponse(history, knownName, {
+        companyId,
+        strictQuestionFlowEnabled,
+      });
+      console.log("🤖 Respuesta RAW de IA:", aiResponseRaw); // Para depuración
+      parsedData = extractJSON(aiResponseRaw);
+    }
 
     if (parsedData) {
       // ==========================================
