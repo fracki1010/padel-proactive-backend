@@ -11,6 +11,8 @@ Backend API desacoplado del worker de WhatsApp.
 
 ## Variables importantes
 
+- `GROQ_API_KEYS` (opcional, recomendado): múltiples API keys separadas por coma para fallback automático por límite/cuota.
+- `GROQ_API_KEY` (fallback): se usa si no definís `GROQ_API_KEYS`.
 - `WHATSAPP_QUEUE_DRIVER=redis`
 - `WHATSAPP_QUEUE_NAME=whatsapp-commands`
 - `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
