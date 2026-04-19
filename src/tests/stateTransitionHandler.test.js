@@ -1,9 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const {
-  resolveStrictStateTransition,
-} = require("../utils/stateTransitionHandler");
+const { resolveStrictStateTransition } = require("../utils/stateTransitionHandler");
 
 test("FULL_NAME_CAPTURE permite cambio global a disponibilidad con reset controlado", () => {
   const result = resolveStrictStateTransition({
@@ -16,14 +14,14 @@ test("FULL_NAME_CAPTURE permite cambio global a disponibilidad con reset control
   assert.equal(result.action, "CHECK_AVAILABILITY");
 });
 
-test("FULL_NAME_CAPTURE exige nombre cuando no hay intent global válido", () => {
+test("FULL_NAME_CAPTURE interpreta input no estricto sin bloquear", () => {
   const result = resolveStrictStateTransition({
     state: "FULL_NAME_CAPTURE",
     isAllowedInput: false,
-    globalIntentAction: "CREATE_BOOKING",
+    globalIntentAction: "",
   });
 
-  assert.equal(result.decision, "REQUIRE_STATE_INPUT");
+  assert.equal(result.decision, "ALLOW_INTERPRET");
 });
 
 test("OFFER_CONFIRMATION permite CANCELAR con reset controlado", () => {
