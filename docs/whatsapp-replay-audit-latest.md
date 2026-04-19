@@ -1,5 +1,5 @@
 # WhatsApp Defensive Replay Report
-- GeneratedAt: 2026-04-19T22:15:21.841Z
+- GeneratedAt: 2026-04-19T22:59:34.116Z
 - File: docs/whatsapp-defensive-test-messages.txt
 - Sections: 178
 - Violations: 0
@@ -170,7 +170,7 @@
 ## [29] Acentos y ñ
 - Sent: 4
 - Errors: 0
-- Markers: OK:4
+- Markers: OK:3, ASK_FULL_NAME:1
 - Violations: none
 
 ## [30] Emojis y símbolos
@@ -218,19 +218,19 @@
 ## [37] Repetición compulsiva misma orden
 - Sent: 4
 - Errors: 0
-- Markers: ASK_FULL_NAME:1, OK:3
+- Markers: ASK_FULL_NAME:4
 - Violations: none
 
 ## [38] Flood control messages 1
 - Sent: 10
 - Errors: 0
-- Markers: OK:10
+- Markers: OK:8, RATE_LIMIT_BLOCKED:2
 - Violations: none
 
 ## [39] Flood control messages 2
 - Sent: 9
 - Errors: 0
-- Markers: OK:9
+- Markers: OK:8, RATE_LIMIT_BLOCKED:1
 - Violations: none
 
 ## [40] Flood mixed intent
@@ -314,7 +314,7 @@
 ## [53] Horas compactas
 - Sent: 3
 - Errors: 0
-- Markers: ASK_FULL_NAME:1, OK:2
+- Markers: ASK_FULL_NAME:3
 - Violations: none
 
 ## [54] Fechas ambiguas
@@ -410,7 +410,7 @@
 ## [69] Reanudación tras rate limit
 - Sent: 10
 - Errors: 0
-- Markers: OK:10
+- Markers: OK:9, RATE_LIMIT_BLOCKED:1
 - Violations: none
 
 ## [70] Mensajes aleatorios 1
@@ -440,7 +440,7 @@
 ## [74] Conversación larga 2
 - Sent: 9
 - Errors: 0
-- Markers: OK:8, ASK_FULL_NAME:1
+- Markers: OK:6, ASK_FULL_NAME:1, BOOKING_CONFIRMED:1, BOOKING_CANCELLED:1
 - Violations: none
 
 ## [75] Cancelar fuera de estado
@@ -602,25 +602,25 @@
 ## [101] Extra - mismo texto repetido 20x
 - Sent: 20
 - Errors: 0
-- Markers: ASK_FULL_NAME:1, OK:7, RATE_LIMIT_BLOCKED:12
+- Markers: ASK_FULL_NAME:8, RATE_LIMIT_BLOCKED:12
 - Violations: none
 
 ## [102] Extra - confirm spam 30x
 - Sent: 30
 - Errors: 0
-- Markers: OK:30
+- Markers: OK:8, RATE_LIMIT_BLOCKED:22
 - Violations: none
 
 ## [103] Extra - cancel spam 30x
 - Sent: 30
 - Errors: 0
-- Markers: OK:30
+- Markers: OK:8, RATE_LIMIT_BLOCKED:22
 - Violations: none
 
 ## [104] Extra - numeric fuzz set A
 - Sent: 20
 - Errors: 0
-- Markers: OK:13, RATE_LIMIT_BLOCKED:7
+- Markers: OK:14, RATE_LIMIT_BLOCKED:6
 - Violations: none
 
 ## [105] Extra - numeric fuzz set B
