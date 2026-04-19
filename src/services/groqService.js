@@ -7,13 +7,43 @@ const Company = require("../models/company.model");
 // 1. IMPORTAMOS EL NUEVO SERVICIO
 const courtService = require("./courtService");
 
-// Verificamos API Key
-if (!process.env.GROQ_API_KEY) {
-  console.error("ERROR: No se encontró la GROQ_API_KEY en el archivo .env");
+const parseGroqApiKeys = () => {
+  const multiKeys = String(process.env.GROQ_API_KEYS || "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
+
+  if (multiKeys.length > 0) return multiKeys;
+
+  const singleKey = String(process.env.GROQ_API_KEY || "").trim();
+  return singleKey ? [singleKey] : [];
+};
+
+const maskApiKey = (apiKey = "") => {
+  if (!apiKey) return "unknown";
+  const trimmed = String(apiKey).trim();
+  if (trimmed.length <= 8) return "****";
+  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+};
+
+const groqApiKeys = parseGroqApiKeys();
+
+if (!groqApiKeys.length) {
+  console.error(
+    "ERROR: No se encontró GROQ_API_KEY ni GROQ_API_KEYS en el archivo .env",
+  );
   process.exit(1);
 }
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const groqClients = groqApiKeys.map((apiKey, index) => ({
+  id: index + 1,
+  apiKey,
+  maskedKey: maskApiKey(apiKey),
+  blockedUntilMs: 0,
+  client: new Groq({ apiKey }),
+}));
+let groqRoundRobinCursor = 0;
+
 const PRIMARY_MODEL = process.env.GROQ_MODEL_PRIMARY || "llama-3.3-70b-versatile";
 const FALLBACK_MODEL = process.env.GROQ_MODEL_FALLBACK || "llama-3.1-8b-instant";
 const PRIMARY_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 220);
@@ -35,6 +65,30 @@ const parseRetryAfterSeconds = (retryAfterHeader) => {
   return null;
 };
 
+const getErrorHeader = (error, headerName) => {
+  if (!error || !headerName) return null;
+  const normalized = String(headerName).toLowerCase();
+  return (
+    error?.headers?.[normalized] ||
+    error?.response?.headers?.[normalized] ||
+    error?.error?.headers?.[normalized] ||
+    null
+  );
+};
+
+const nextUtcMidnightMs = () => {
+  const now = new Date();
+  return Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + 1,
+    0,
+    0,
+    0,
+    0,
+  );
+};
+
 const formatRetryWindow = (seconds) => {
   if (!seconds || seconds <= 0) return "unos minutos";
   const mins = Math.floor(seconds / 60);
@@ -44,7 +98,7 @@ const formatRetryWindow = (seconds) => {
 };
 
 const isDailyTokenRateLimit = (error) => {
-  const status = error?.status;
+  const status = error?.status || error?.response?.status;
   const code = error?.error?.error?.code || error?.error?.code;
   const message = String(error?.error?.error?.message || error?.message || "").toLowerCase();
   return (
@@ -54,16 +108,154 @@ const isDailyTokenRateLimit = (error) => {
   );
 };
 
+const isGroqRateLimit = (error) => {
+  const status = error?.status || error?.response?.status;
+  const code = error?.error?.error?.code || error?.error?.code;
+  return status === 429 || code === "rate_limit_exceeded";
+};
+
+const markGroqClientBlocked = (groqClient, error) => {
+  if (!groqClient) return;
+  const retryAfterHeader = getErrorHeader(error, "retry-after");
+  const retryInSeconds = parseRetryAfterSeconds(retryAfterHeader);
+  const shouldBlockUntilTomorrow = isDailyTokenRateLimit(error) || !retryInSeconds;
+  const nowMs = Date.now();
+  const nextBlockMs = shouldBlockUntilTomorrow
+    ? nextUtcMidnightMs()
+    : nowMs + retryInSeconds * 1000;
+
+  groqClient.blockedUntilMs = Math.max(groqClient.blockedUntilMs, nextBlockMs);
+
+  console.warn("Groq key temporalmente bloqueada por rate limit", {
+    key: groqClient.maskedKey,
+    blockedFor: shouldBlockUntilTomorrow
+      ? "hasta próximo día UTC"
+      : `${retryInSeconds}s`,
+  });
+};
+
+const pickNextGroqClient = (excludedClientIds = new Set()) => {
+  if (!groqClients.length) return null;
+
+  const nowMs = Date.now();
+  for (let offset = 0; offset < groqClients.length; offset += 1) {
+    const index = (groqRoundRobinCursor + offset) % groqClients.length;
+    const candidate = groqClients[index];
+    if (excludedClientIds.has(candidate.id)) continue;
+    if (candidate.blockedUntilMs > nowMs) continue;
+    groqRoundRobinCursor = (index + 1) % groqClients.length;
+    return candidate;
+  }
+
+  return null;
+};
+
+const getSoonestRetryAfterSeconds = () => {
+  const nowMs = Date.now();
+  const waits = groqClients
+    .map((client) => client.blockedUntilMs - nowMs)
+    .filter((waitMs) => waitMs > 0);
+  if (!waits.length) return null;
+  return Math.max(1, Math.ceil(Math.min(...waits) / 1000));
+};
+
 const requestChatCompletion = async ({ conversation, model, maxTokens }) => {
-  const completion = await groq.chat.completions.create({
-    messages: conversation,
-    model,
-    temperature: 0.1,
-    max_tokens: maxTokens,
-    response_format: { type: "json_object" },
+  const triedClientIds = new Set();
+  let lastRateLimitError = null;
+
+  for (let attempts = 0; attempts < groqClients.length; attempts += 1) {
+    const groqClient = pickNextGroqClient(triedClientIds);
+    if (!groqClient) break;
+    triedClientIds.add(groqClient.id);
+
+    try {
+      const completion = await groqClient.client.chat.completions.create({
+        messages: conversation,
+        model,
+        temperature: 0.1,
+        max_tokens: maxTokens,
+        response_format: { type: "json_object" },
+      });
+
+      return completion.choices[0]?.message?.content || "";
+    } catch (error) {
+      if (!isGroqRateLimit(error)) {
+        throw error;
+      }
+
+      markGroqClientBlocked(groqClient, error);
+      lastRateLimitError = error;
+    }
+  }
+
+  if (lastRateLimitError) {
+    throw lastRateLimitError;
+  }
+
+  const noAvailableKeyError = new Error("No hay GROQ_API_KEYS disponibles en este momento");
+  noAvailableKeyError.status = 429;
+  noAvailableKeyError.retryAfterSeconds = getSoonestRetryAfterSeconds();
+  throw noAvailableKeyError;
+};
+
+const buildServiceDegradedResponse = (primaryError, fallbackError = null) => {
+  const retryAfterHeader =
+    getErrorHeader(fallbackError, "retry-after") ||
+    getErrorHeader(primaryError, "retry-after");
+  const retryInSecondsFromHeader = parseRetryAfterSeconds(retryAfterHeader);
+  const retryInSeconds =
+    retryInSecondsFromHeader ||
+    fallbackError?.retryAfterSeconds ||
+    primaryError?.retryAfterSeconds ||
+    getSoonestRetryAfterSeconds();
+  const retryWindow = formatRetryWindow(retryInSeconds);
+
+  console.error("Groq rate limit (todas las keys limitadas):", {
+    primaryStatus: primaryError?.status || primaryError?.response?.status || null,
+    fallbackStatus: fallbackError?.status || fallbackError?.response?.status || null,
+    retryAfter: retryAfterHeader || null,
+    retryAfterSeconds: retryInSeconds || null,
   });
 
-  return completion.choices[0]?.message?.content || "";
+  return JSON.stringify({
+    action: "SERVICE_DEGRADED",
+    retryAfterSeconds: retryInSeconds || null,
+    retryAfterText: retryWindow,
+    message:
+      `⚠️ Estamos al límite diario de consultas IA. ` +
+      `Volvé a intentar en ${retryWindow}. Mientras tanto, podés escribir fecha y hora y te ayudo desde el modo básico.`,
+  });
+};
+
+const requestChatCompletionWithPrimaryAndFallback = async ({
+  conversation,
+  reducedConversation,
+}) => {
+  try {
+    return await requestChatCompletion({
+      conversation,
+      model: PRIMARY_MODEL,
+      maxTokens: PRIMARY_MAX_TOKENS,
+    });
+  } catch (primaryError) {
+    if (!isGroqRateLimit(primaryError)) {
+      throw primaryError;
+    }
+
+    try {
+      return await requestChatCompletion({
+        conversation: reducedConversation,
+        model: FALLBACK_MODEL,
+        maxTokens: FALLBACK_MAX_TOKENS,
+      });
+    } catch (fallbackError) {
+      if (!isGroqRateLimit(fallbackError)) {
+        throw fallbackError;
+      }
+
+      return buildServiceDegradedResponse(primaryError, fallbackError);
+    }
+  }
 };
 
 const getClubInfoByCompanyId = async (companyId = null) => {
@@ -266,50 +458,15 @@ const getChatResponse = async (
       ...limitedHistory,
     ];
 
-    try {
-      return await requestChatCompletion({
-        conversation,
-        model: PRIMARY_MODEL,
-        maxTokens: PRIMARY_MAX_TOKENS,
-      });
-    } catch (primaryError) {
-      if (isDailyTokenRateLimit(primaryError)) {
-        try {
-          const reducedConversation = [
-            { role: "system", content: systemPrompt },
-            ...limitedHistory.slice(-4),
-          ];
-          return await requestChatCompletion({
-            conversation: reducedConversation,
-            model: FALLBACK_MODEL,
-            maxTokens: FALLBACK_MAX_TOKENS,
-          });
-        } catch (fallbackError) {
-          const retryAfterHeader =
-            fallbackError?.headers?.["retry-after"] ||
-            primaryError?.headers?.["retry-after"];
-          const retryInSeconds = parseRetryAfterSeconds(retryAfterHeader);
-          const retryWindow = formatRetryWindow(retryInSeconds);
+    const reducedConversation = [
+      { role: "system", content: systemPrompt },
+      ...limitedHistory.slice(-4),
+    ];
 
-          console.error("Groq rate limit (fallback también falló):", {
-            primaryStatus: primaryError?.status,
-            fallbackStatus: fallbackError?.status,
-            retryAfter: retryAfterHeader || null,
-          });
-
-          return JSON.stringify({
-            action: "SERVICE_DEGRADED",
-            retryAfterSeconds: retryInSeconds || null,
-            retryAfterText: retryWindow,
-            message:
-              `⚠️ Estamos al límite diario de consultas IA. ` +
-              `Volvé a intentar en ${retryWindow}. Mientras tanto, podés escribir fecha y hora y te ayudo desde el modo básico.`,
-          });
-        }
-      }
-
-      throw primaryError;
-    }
+    return await requestChatCompletionWithPrimaryAndFallback({
+      conversation,
+      reducedConversation,
+    });
   } catch (error) {
     console.error("Error Groq:", error);
     return JSON.stringify({

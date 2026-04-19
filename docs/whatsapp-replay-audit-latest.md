@@ -1,5 +1,5 @@
 # WhatsApp Defensive Replay Report
-- GeneratedAt: 2026-04-19T19:59:50.593Z
+- GeneratedAt: 2026-04-19T22:15:21.841Z
 - File: docs/whatsapp-defensive-test-messages.txt
 - Sections: 178
 - Violations: 0
@@ -26,13 +26,13 @@
 ## [04] Reserva simple con fecha DMY
 - Sent: 4
 - Errors: 0
-- Markers: OK:1, STRICT_PROMPT:3
+- Markers: OK:4
 - Violations: none
 
 ## [05] Disponibilidad simple
 - Sent: 5
 - Errors: 0
-- Markers: OK:2, STRICT_PROMPT:3
+- Markers: OK:5
 - Violations: none
 
 ## [06] Consulta reservas vigentes
@@ -68,19 +68,19 @@
 ## [11] Confirmación oferta estricta - ruido
 - Sent: 6
 - Errors: 0
-- Markers: OK:3, STRICT_PROMPT:3
+- Markers: OK:6
 - Violations: none
 
 ## [12] Confirmación extra estricta - ruido
 - Sent: 9
 - Errors: 0
-- Markers: ASK_FULL_NAME:1, OK:6, STRICT_PROMPT:2
+- Markers: ASK_FULL_NAME:1, OK:8
 - Violations: none
 
 ## [13] Drafteo múltiple 2 horarios
 - Sent: 5
 - Errors: 0
-- Markers: OK:2, STRICT_PROMPT:3
+- Markers: OK:5
 - Violations: none
 
 ## [14] Drafteo múltiple cancelación
@@ -98,7 +98,7 @@
 ## [16] FULL_NAME_CAPTURE - mensajes mezclados
 - Sent: 6
 - Errors: 0
-- Markers: ASK_FULL_NAME:1, OK:4, STRICT_PROMPT:1
+- Markers: ASK_FULL_NAME:1, OK:5
 - Violations: none
 
 ## [17] Cancelación determinística normal
@@ -134,7 +134,7 @@
 ## [22] Horas formato válido
 - Sent: 7
 - Errors: 0
-- Markers: OK:6, STRICT_PROMPT:1
+- Markers: OK:7
 - Violations: none
 
 ## [23] Horas formato inválido
@@ -170,7 +170,7 @@
 ## [29] Acentos y ñ
 - Sent: 4
 - Errors: 0
-- Markers: OK:1, STRICT_PROMPT:3
+- Markers: OK:4
 - Violations: none
 
 ## [30] Emojis y símbolos
@@ -188,7 +188,7 @@
 ## [32] JSON-like payload
 - Sent: 2
 - Errors: 0
-- Markers: STRICT_PROMPT:2
+- Markers: OK:2
 - Violations: none
 
 ## [33] SQL injection style strings
@@ -224,13 +224,13 @@
 ## [38] Flood control messages 1
 - Sent: 10
 - Errors: 0
-- Markers: OK:8, RATE_LIMIT_BLOCKED:2
+- Markers: OK:10
 - Violations: none
 
 ## [39] Flood control messages 2
 - Sent: 9
 - Errors: 0
-- Markers: OK:8, RATE_LIMIT_BLOCKED:1
+- Markers: OK:9
 - Violations: none
 
 ## [40] Flood mixed intent
@@ -410,7 +410,7 @@
 ## [69] Reanudación tras rate limit
 - Sent: 10
 - Errors: 0
-- Markers: OK:9, RATE_LIMIT_BLOCKED:1
+- Markers: OK:10
 - Violations: none
 
 ## [70] Mensajes aleatorios 1
@@ -440,7 +440,7 @@
 ## [74] Conversación larga 2
 - Sent: 9
 - Errors: 0
-- Markers: OK:7, ASK_FULL_NAME:1, STRICT_PROMPT:1
+- Markers: OK:8, ASK_FULL_NAME:1
 - Violations: none
 
 ## [75] Cancelar fuera de estado
@@ -530,7 +530,7 @@
 ## [89] Duplicate same minute booking attempts
 - Sent: 6
 - Errors: 0
-- Markers: ASK_FULL_NAME:1, OK:4, STRICT_PROMPT:1
+- Markers: ASK_FULL_NAME:1, OK:5
 - Violations: none
 
 ## [90] Booking with explicit court mention
@@ -608,19 +608,19 @@
 ## [102] Extra - confirm spam 30x
 - Sent: 30
 - Errors: 0
-- Markers: OK:8, RATE_LIMIT_BLOCKED:22
+- Markers: OK:30
 - Violations: none
 
 ## [103] Extra - cancel spam 30x
 - Sent: 30
 - Errors: 0
-- Markers: OK:8, RATE_LIMIT_BLOCKED:22
+- Markers: OK:30
 - Violations: none
 
 ## [104] Extra - numeric fuzz set A
 - Sent: 20
 - Errors: 0
-- Markers: OK:14, RATE_LIMIT_BLOCKED:6
+- Markers: OK:13, RATE_LIMIT_BLOCKED:7
 - Violations: none
 
 ## [105] Extra - numeric fuzz set B
