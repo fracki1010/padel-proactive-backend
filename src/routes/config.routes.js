@@ -5,9 +5,6 @@ const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
 const User = require("../models/user.model");
 const {
-  setWhatsappEnabledConfigOnly,
-} = require("../services/whatsappControl.service");
-const {
   getWhatsappRuntimeState,
 } = require("../services/whatsappRuntimeState.service");
 const {
@@ -38,6 +35,7 @@ const {
   setOneHourReminderEnabled,
   setTrustedClientConfirmationCount,
   getWhatsappCancellationGroupSettings,
+  setWhatsappEnabledConfigOnly,
   setWhatsappCancellationGroupSettings,
   setDailyAvailabilityDigestStatus,
 } = require("../services/appConfig.service");

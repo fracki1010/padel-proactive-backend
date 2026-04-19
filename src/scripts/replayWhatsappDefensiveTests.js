@@ -27,6 +27,11 @@ const parseArgs = () => {
     chatBase: process.env.WA_TEST_CHAT_BASE || "qa-defensive",
     sameSession: false,
     section: null,
+    strictAssertions:
+      String(process.env.WA_TEST_STRICT_ASSERTIONS || "false")
+        .trim()
+        .toLowerCase() === "true",
+    reportFile: process.env.WA_TEST_REPORT_FILE || "",
   };
 
   for (let i = 0; i < args.length; i += 1) {
@@ -60,6 +65,15 @@ const parseArgs = () => {
       options.sameSession = true;
       continue;
     }
+    if (arg === "--strict-assertions") {
+      options.strictAssertions = true;
+      continue;
+    }
+    if (arg === "--report-file" && args[i + 1]) {
+      options.reportFile = args[i + 1];
+      i += 1;
+      continue;
+    }
   }
 
   if (!Number.isFinite(options.delayMs) || options.delayMs < 0) {
@@ -67,6 +81,118 @@ const parseArgs = () => {
   }
 
   return options;
+};
+
+const hasBookingIntent = (text = "") =>
+  /(quiero reservar|reservame|resérvame|anotame|agendame|haceme la reserva|hace la reserva)/i.test(
+    String(text || ""),
+  );
+
+const hasConfirmationPrompt = (text = "") =>
+  /(confirmar reserva|te lo reservo|_¿te lo reservo\?_)/i.test(
+    String(text || ""),
+  );
+
+const hasNoAvailabilityReply = (text = "") =>
+  /(no tengo disponibilidad|no tengo \*\d+\s+canchas\*|ese horario no tiene disponibilidad)/i.test(
+    String(text || ""),
+  );
+
+const hasBookingConfirmedReply = (text = "") =>
+  /(reserva confirmada|✅ \*¡reserva confirmada!\*|✅\s*\*reserva confirmada\*)/i.test(
+    String(text || ""),
+  );
+
+const extractTimeFromText = (text = "") => {
+  const match = String(text || "").match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (!match) return "";
+  return `${String(match[1]).padStart(2, "0")}:${match[2]}`;
+};
+
+const extractDateTokenFromText = (text = "") => {
+  const raw = String(text || "");
+  const iso = raw.match(/\b\d{4}-\d{2}-\d{2}\b/);
+  if (iso) return iso[0];
+  const dmy = raw.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/);
+  if (dmy) return dmy[0];
+  return "";
+};
+
+const buildSlotToken = ({ dateToken = "", time = "" }) =>
+  `${String(dateToken || "").trim()}|${String(time || "").trim()}`;
+
+const createSectionAudit = () => ({
+  confirmed: false,
+  confirmedAt: -1,
+  bookingIntentAfterConfirmation: false,
+  blockedSlots: [],
+  lastUserRequestedTime: "",
+  violations: [],
+});
+
+const auditUserTurn = (audit, userMessage = "") => {
+  const text = String(userMessage || "");
+  const msgTime = extractTimeFromText(text);
+  if (msgTime) audit.lastUserRequestedTime = msgTime;
+  if (audit.confirmed && hasBookingIntent(text)) {
+    audit.bookingIntentAfterConfirmation = true;
+  }
+};
+
+const auditBotTurn = (audit, replyText = "", context = {}) => {
+  const text = String(replyText || "");
+  const botTime = extractTimeFromText(text);
+  const botDateToken = extractDateTokenFromText(text);
+  const messageIndex = Number(context.messageIndex || 0);
+  const sectionId = String(context.sectionId || "");
+
+  if (hasNoAvailabilityReply(text)) {
+    const token = buildSlotToken({
+      dateToken: botDateToken,
+      time: botTime || audit.lastUserRequestedTime || "",
+    });
+    if (token !== "|") {
+      audit.blockedSlots.push({
+        token,
+        sectionId,
+        messageIndex,
+        raw: text,
+      });
+    }
+  }
+
+  if (hasBookingConfirmedReply(text)) {
+    const confirmedToken = buildSlotToken({
+      dateToken: botDateToken,
+      time: botTime || audit.lastUserRequestedTime || "",
+    });
+    const conflictingBlocked = audit.blockedSlots.find(
+      (item) => item.token === confirmedToken && item.token !== "|",
+    );
+    if (conflictingBlocked) {
+      audit.violations.push({
+        type: "BOOKING_CONFIRMED_ON_PREVIOUSLY_REJECTED_SLOT",
+        sectionId,
+        messageIndex,
+        slot: confirmedToken,
+      });
+    }
+    audit.confirmed = true;
+    audit.confirmedAt = messageIndex;
+    audit.bookingIntentAfterConfirmation = false;
+  }
+
+  if (
+    audit.confirmed &&
+    !audit.bookingIntentAfterConfirmation &&
+    hasConfirmationPrompt(text)
+  ) {
+    audit.violations.push({
+      type: "PROMPTED_CONFIRM_RESERVA_AFTER_ALREADY_CONFIRMED",
+      sectionId,
+      messageIndex,
+    });
+  }
 };
 
 const parseSectionsFromFile = (rawText) => {
@@ -158,6 +284,7 @@ const run = async () => {
   await connectDB();
 
   const summary = [];
+  const allViolations = [];
   const staticChatId = `${options.chatBase}:${Date.now()}`;
 
   try {
@@ -177,13 +304,16 @@ const run = async () => {
         sent: 0,
         errors: 0,
         markers: {},
+        violations: [],
       };
+      const sectionAudit = createSectionAudit();
 
       for (let i = 0; i < section.messages.length; i += 1) {
         const userMessage = String(section.messages[i] || "");
         if (!userMessage.trim()) continue;
 
         sectionResult.sent += 1;
+        auditUserTurn(sectionAudit, userMessage);
         process.stdout.write(`➡️  [${section.id}.${i + 1}] USER: ${userMessage}\n`);
 
         let replyText = "";
@@ -199,12 +329,19 @@ const run = async () => {
 
         const marker = summarizeReply(replyText);
         sectionResult.markers[marker] = (sectionResult.markers[marker] || 0) + 1;
+        auditBotTurn(sectionAudit, replyText, {
+          sectionId: section.id,
+          messageIndex: i + 1,
+        });
         process.stdout.write(`⬅️  [${section.id}.${i + 1}] BOT: ${replyText}\n`);
 
         if (options.delayMs > 0) {
           await sleep(options.delayMs);
         }
       }
+
+      sectionResult.violations = sectionAudit.violations.slice();
+      allViolations.push(...sectionResult.violations);
 
       summary.push(sectionResult);
       sessionService.clearHistory(sessionId);
@@ -221,6 +358,66 @@ const run = async () => {
     console.log(
       `[${item.id}] ${item.title} | mensajes=${item.sent} | errores=${item.errors} | ${markersText}`,
     );
+    if (item.violations.length) {
+      for (const violation of item.violations) {
+        console.log(
+          `  ⚠️ [${item.id}.${violation.messageIndex || "?"}] ${violation.type}${
+            violation.slot ? ` slot=${violation.slot}` : ""
+          }`,
+        );
+      }
+    }
+  }
+
+  const totalErrors = summary.reduce((acc, item) => acc + Number(item.errors || 0), 0);
+  console.log(
+    `\n=== AUDITORIA ===\nviolations=${allViolations.length} | sectionWithViolations=${
+      summary.filter((item) => item.violations.length > 0).length
+    } | totalErrors=${totalErrors}`,
+  );
+
+  if (options.reportFile) {
+    const reportPath = path.resolve(options.reportFile);
+    const lines = [];
+    lines.push("# WhatsApp Defensive Replay Report");
+    lines.push(`- GeneratedAt: ${new Date().toISOString()}`);
+    lines.push(`- File: ${options.file}`);
+    lines.push(`- Sections: ${summary.length}`);
+    lines.push(`- Violations: ${allViolations.length}`);
+    lines.push(`- TotalErrors: ${totalErrors}`);
+    lines.push("");
+    for (const item of summary) {
+      lines.push(`## [${item.id}] ${item.title}`);
+      lines.push(`- Sent: ${item.sent}`);
+      lines.push(`- Errors: ${item.errors}`);
+      lines.push(
+        `- Markers: ${Object.entries(item.markers)
+          .map(([k, v]) => `${k}:${v}`)
+          .join(", ") || "none"}`,
+      );
+      if (!item.violations.length) {
+        lines.push("- Violations: none");
+      } else {
+        lines.push("- Violations:");
+        for (const violation of item.violations) {
+          lines.push(
+            `  - ${violation.type} @${item.id}.${violation.messageIndex || "?"}${
+              violation.slot ? ` slot=${violation.slot}` : ""
+            }`,
+          );
+        }
+      }
+      lines.push("");
+    }
+    fs.writeFileSync(reportPath, `${lines.join("\n")}\n`, "utf8");
+    console.log(`📝 Reporte guardado en: ${reportPath}`);
+  }
+
+  if (options.strictAssertions && (allViolations.length > 0 || totalErrors > 0)) {
+    console.error(
+      "❌ Replay finalizó con violaciones/errores y --strict-assertions está activo.",
+    );
+    process.exit(2);
   }
 };
 

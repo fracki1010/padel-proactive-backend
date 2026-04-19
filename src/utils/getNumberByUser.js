@@ -1,4 +1,6 @@
-const extractDigits = (value = "") => String(value || "").replace(/\D/g, "");
+const {
+  normalizeCanonicalClientPhone,
+} = require("./identityNormalization");
 
 async function getNumberByUser(whatsappId, client) {
   const chatId = String(whatsappId || "").trim();
@@ -7,16 +9,14 @@ async function getNumberByUser(whatsappId, client) {
   // En arquitectura desacoplada no hay cliente WA en backend;
   // usamos el chatId (ej: 54911xxxxxxx@c.us) como fuente canónica.
   if (!client) {
-    const localPart = chatId.split("@")[0];
-    return extractDigits(localPart);
+    return normalizeCanonicalClientPhone(chatId);
   }
 
   const contact = await client.getContactById(chatId);
-  const fromContact = extractDigits(contact?.number || "");
+  const fromContact = normalizeCanonicalClientPhone(contact?.number || "");
   if (fromContact) return fromContact;
 
-  const localPart = chatId.split("@")[0];
-  return extractDigits(localPart);
+  return normalizeCanonicalClientPhone(chatId);
 }
 
 module.exports = { getNumberByUser };

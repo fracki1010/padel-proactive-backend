@@ -1,12 +1,4 @@
-const os = require("node:os");
 const WhatsappCommand = require("../models/whatsappCommand.model");
-const { setWhatsappEnabled } = require("./whatsappControl.service");
-const { getReadyClient, restartClient } = require("./whatsappTenantManager.service");
-const {
-  listWhatsappGroups,
-  notifyCancellationToGroup,
-} = require("./whatsappCancellationGroup.service");
-const { saveWhatsappGroupsSnapshot } = require("./whatsappGroupsSnapshot.service");
 
 const COMMAND_TYPES = {
   SET_ENABLED: "set_enabled",
@@ -28,27 +20,21 @@ const QUEUE_DRIVERS = {
   REDIS: "redis",
 };
 
-const queueDriver = String(process.env.WHATSAPP_QUEUE_DRIVER || QUEUE_DRIVERS.MONGO)
+const queueDriver = String(process.env.WHATSAPP_QUEUE_DRIVER || QUEUE_DRIVERS.REDIS)
   .trim()
   .toLowerCase();
+const allowMongoFallback =
+  String(process.env.WHATSAPP_ALLOW_MONGO_FALLBACK || "false")
+    .trim()
+    .toLowerCase() === "true";
 
-const DEFAULT_POLL_INTERVAL_MS = Number(
-  process.env.WHATSAPP_COMMAND_POLL_INTERVAL_MS || 2000,
-);
 const DEFAULT_MAX_ATTEMPTS = Number(
   process.env.WHATSAPP_COMMAND_MAX_ATTEMPTS || 3,
 );
 
-let monitorTimer = null;
-let monitorRunning = false;
 let redisQueueInstance = null;
 
 const normalizeCompanyId = (companyId = null) => companyId || null;
-
-const normalizeWorkerId = () => {
-  const host = os.hostname() || "unknown-host";
-  return `wa-cmd-worker:${host}:${process.pid}`;
-};
 
 const getRedisQueue = () => {
   if (redisQueueInstance) return redisQueueInstance;
@@ -169,186 +155,47 @@ const enqueueWhatsappCommand = async ({
       });
       throw error;
     }
+    return { command, deduplicated: false };
   }
 
-  return { command, deduplicated: false };
-};
-
-const claimNextQueuedCommand = async ({ workerId }) => {
-  const now = new Date();
-  const staleLockLimit = new Date(now.getTime() - 5 * 60 * 1000);
-
-  return WhatsappCommand.findOneAndUpdate(
-    {
-      $or: [
-        { status: COMMAND_STATUSES.QUEUED },
-        {
-          status: COMMAND_STATUSES.PROCESSING,
-          lockedAt: { $lte: staleLockLimit },
-        },
-      ],
-    },
-    {
-      $set: {
-        status: COMMAND_STATUSES.PROCESSING,
-        lockedAt: now,
-        lockedBy: workerId,
-        processedAt: null,
-        lastError: null,
-      },
-      $inc: { attempts: 1 },
-    },
-    {
-      sort: { createdAt: 1 },
-      returnDocument: "after",
-    },
-  );
-};
-
-const markCommandDone = async (commandId) => {
-  await WhatsappCommand.findByIdAndUpdate(commandId, {
-    $set: {
-      status: COMMAND_STATUSES.DONE,
-      processedAt: new Date(),
-      lockedAt: null,
-      lockedBy: null,
-      lastError: null,
-    },
-  });
-};
-
-const markCommandFailed = async (command, errorMessage) => {
-  const attempts = Number(command?.attempts || 0);
-  const maxAttempts = Number(command?.maxAttempts || DEFAULT_MAX_ATTEMPTS);
-  const shouldRetry = attempts < maxAttempts;
+  if (allowMongoFallback) {
+    console.warn(
+      "[WhatsAppCommandQueue] Fallback Mongo activo (solo desarrollo). El worker Redis/BullMQ no está en uso.",
+    );
+    return { command, deduplicated: false };
+  }
 
   await WhatsappCommand.findByIdAndUpdate(command._id, {
     $set: {
-      status: shouldRetry ? COMMAND_STATUSES.QUEUED : COMMAND_STATUSES.FAILED,
-      processedAt: shouldRetry ? null : new Date(),
-      lockedAt: null,
-      lockedBy: null,
+      status: COMMAND_STATUSES.FAILED,
+      processedAt: new Date(),
       lastError:
-        typeof errorMessage === "string" && errorMessage.trim()
-          ? errorMessage
-          : "Error desconocido",
+        "Flujo inválido: backend API configurado sin Redis/BullMQ. Definí WHATSAPP_QUEUE_DRIVER=redis o habilitá WHATSAPP_ALLOW_MONGO_FALLBACK=true para desarrollo.",
     },
   });
-};
 
-const processCommand = async (command) => {
-  const companyId = normalizeCompanyId(command.companyId || null);
-
-  if (command.type === COMMAND_TYPES.SET_ENABLED) {
-    const enabled = Boolean(command?.payload?.enabled);
-    await setWhatsappEnabled(enabled, companyId);
-    return;
-  }
-
-  if (command.type === COMMAND_TYPES.SEND_MESSAGE) {
-    const to = String(command?.payload?.to || "").trim();
-    const message = String(command?.payload?.message || "");
-    if (!to || !message.trim()) {
-      throw new Error("Payload inválido para SEND_MESSAGE.");
-    }
-
-    const client = getReadyClient(companyId);
-    await client.sendMessage(to, message);
-    return;
-  }
-
-  if (command.type === COMMAND_TYPES.RESTART_CLIENT) {
-    await restartClient(companyId);
-    return;
-  }
-
-  if (command.type === COMMAND_TYPES.LIST_GROUPS) {
-    const groups = await listWhatsappGroups(companyId);
-    await saveWhatsappGroupsSnapshot(companyId, groups, new Date());
-    return;
-  }
-
-  if (command.type === COMMAND_TYPES.NOTIFY_CANCELLATION_GROUP) {
-    await notifyCancellationToGroup({
-      companyId,
-      booking: command?.payload?.booking || null,
-      time: command?.payload?.time,
-      courtName: command?.payload?.courtName,
-      cancelledBy: command?.payload?.cancelledBy,
-    });
-    return;
-  }
-
-  throw new Error(`Tipo de comando no soportado: ${command.type}`);
-};
-
-const processNextWhatsappCommand = async () => {
-  if (queueDriver === QUEUE_DRIVERS.REDIS) {
-    return false;
-  }
-
-  const workerId = normalizeWorkerId();
-  const command = await claimNextQueuedCommand({ workerId });
-
-  if (!command) return false;
-
-  try {
-    await processCommand(command);
-    await markCommandDone(command._id);
-    return true;
-  } catch (error) {
-    const message = String(error?.message || error || "Error desconocido");
-    await markCommandFailed(command, message);
-    console.error(
-      `[WhatsAppCommandQueue][${workerId}] Error procesando comando ${command._id}:`,
-      message,
-    );
-    return true;
-  }
-};
-
-const runQueueSweep = async () => {
-  if (monitorRunning) return;
-  monitorRunning = true;
-
-  try {
-    while (true) {
-      const processed = await processNextWhatsappCommand();
-      if (!processed) break;
-    }
-  } finally {
-    monitorRunning = false;
-  }
+  throw new Error(
+    "Backend API sin Redis/BullMQ: WHATSAPP_QUEUE_DRIVER debe ser 'redis' en producción.",
+  );
 };
 
 const startWhatsappCommandMonitor = () => {
   if (queueDriver === QUEUE_DRIVERS.REDIS) {
-    console.log("[WhatsAppCommandQueue] Driver redis activo: monitor Mongo deshabilitado en API.");
     return;
   }
-
-  if (monitorTimer) return;
-
-  monitorTimer = setInterval(() => {
-    runQueueSweep().catch((error) => {
-      console.error(
-        "[WhatsAppCommandQueue] Error en barrido de comandos:",
-        error?.message || error,
-      );
-    });
-  }, DEFAULT_POLL_INTERVAL_MS);
-
-  runQueueSweep().catch((error) => {
-    console.error(
-      "[WhatsAppCommandQueue] Error en barrido inicial:",
-      error?.message || error,
+  if (!allowMongoFallback) {
+    console.warn(
+      "[WhatsAppCommandQueue] Monitor local deshabilitado. Usá whatsapp-worker con Redis/BullMQ.",
     );
-  });
+  }
 };
+
+const processNextWhatsappCommand = async () => false;
 
 module.exports = {
   COMMAND_TYPES,
   COMMAND_STATUSES,
+  QUEUE_DRIVERS,
   enqueueWhatsappCommand,
   startWhatsappCommandMonitor,
   processNextWhatsappCommand,
