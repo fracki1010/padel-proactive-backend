@@ -29,6 +29,10 @@ test("detecta intents globales para salir de estados rígidos", () => {
     parseGlobalInterruptIntent("que horarios disponibles hay?")?.action,
     "CHECK_AVAILABILITY",
   );
+  assert.equal(
+    parseGlobalInterruptIntent("ver disponibilidad")?.action,
+    "CHECK_AVAILABILITY",
+  );
 });
 
 test("bloquea interrupciones en attendance confirmation", () => {
