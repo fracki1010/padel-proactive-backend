@@ -57,7 +57,7 @@ const parseGlobalInterruptIntent = (value = "") => {
   }
 
   if (
-    /(disponibilidad|hay lugar|tenes lugar|tenes algo|horarios disponibles|que horarios hay)/.test(
+    /(ver disponibilidad|disponibilidad|hay lugar|tenes lugar|tenes algo|horarios disponibles|que horarios hay)/.test(
       text,
     )
   ) {

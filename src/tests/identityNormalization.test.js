@@ -2,12 +2,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  normalizeClientIdentity,
   normalizePhone,
   normalizeWhatsappIdValue,
   normalizeWhatsappIdKey,
   normalizeCanonicalClientPhone,
-  buildClientIdentity,
-  matchClientIdentity,
+  matchBookingsByClient,
 } = require("../utils/identityNormalization");
 
 test("normalizePhone unifica phone/chatId/qa-prefix", () => {
@@ -40,47 +40,38 @@ test("normalizeWhatsappIdKey colapsa @c.us y @lid al mismo identificador canóni
   assert.equal(fromCus, fromQa);
 });
 
-test("buildClientIdentity prioriza teléfono canónico consistente", () => {
-  const identity = buildClientIdentity({
+test("normalizeClientIdentity produce canonicalPhone E.164 y whatsappKeys", () => {
+  const identity = normalizeClientIdentity({
     canonicalClientPhone: "",
     phone: "",
     chatId: "qa-defensive-server:5492611234567@c.us",
   });
 
-  assert.equal(identity.canonicalPhone, "5492611234567");
-  assert.equal(identity.whatsappKey, "num:5492611234567");
+  assert.equal(identity.canonicalPhone, "+5492611234567");
+  assert.equal(identity.canonicalPhoneDigits, "5492611234567");
+  assert.ok(identity.whatsappKeys.includes("phone:5492611234567"));
 });
 
-test("matchClientIdentity audita match por whatsapp y por teléfono", () => {
-  const request = buildClientIdentity({
-    chatId: "5492611234567@c.us",
-    canonicalClientPhone: "5492611234567",
+test("matchBookingsByClient audita mismatch con valores comparados", () => {
+  const result = matchBookingsByClient({
+    client: {
+      chatId: "5492611234567@c.us",
+      canonicalClientPhone: "5492611234567",
+    },
+    bookings: [
+      {
+        _id: "b1",
+        clientPhone: "5492619999999",
+        clientWhatsappId: "qa-defensive-server:5492618888888@lid",
+      },
+    ],
   });
 
-  const bookingByWhatsapp = buildClientIdentity({
-    whatsappId: "5492611234567@lid",
-    canonicalClientPhone: "",
-  });
-  const matchByWhatsapp = matchClientIdentity(bookingByWhatsapp, request);
-  assert.equal(matchByWhatsapp.matched, true);
-  assert.equal(matchByWhatsapp.byWhatsapp, true);
-  assert.equal(matchByWhatsapp.reason, "match.whatsappId");
-
-  const bookingByPhone = buildClientIdentity({
-    whatsappId: "otro-id@lid",
-    canonicalClientPhone: "5492611234567",
-  });
-  const matchByPhone = matchClientIdentity(bookingByPhone, request);
-  assert.equal(matchByPhone.matched, true);
-  assert.equal(matchByPhone.byPhone, true);
-  assert.equal(matchByPhone.reason, "match.canonicalPhone");
-
-  const noMatch = matchClientIdentity(
-    buildClientIdentity({ whatsappId: "111111@c.us", canonicalClientPhone: "111111" }),
-    request,
-  );
-  assert.equal(noMatch.matched, false);
-  assert.equal(noMatch.reason, "no_match.identity_mismatch");
+  assert.equal(result.matchedBookings.length, 0);
+  assert.equal(result.strategy, "no_match");
+  assert.equal(result.audits[0].reason, "whatsapp_mismatch+phone_mismatch");
+  assert.ok(Array.isArray(result.audits[0].compared.requestWhatsappKeys));
+  assert.ok(Array.isArray(result.audits[0].compared.bookingWhatsappKeys));
 });
 
 test("normalizeCanonicalClientPhone resuelve el primer valor usable", () => {

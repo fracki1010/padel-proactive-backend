@@ -20,8 +20,14 @@ const {
   isEquivalentConfirmation,
   parseGlobalInterruptIntent,
   shouldBlockRejectedSlotReattempt,
-  shouldAllowStrictStateInterrupt,
 } = require("../utils/conversationGuardrails");
+const {
+  resolveStrictStateTransition,
+} = require("../utils/stateTransitionHandler");
+const {
+  hasInvalidTimeInput,
+  parseTime,
+} = require("../utils/timeParser");
 
 // --- FUNCIÓN HELPER PARA EXTRAER JSON ---
 // Busca cualquier cosa que parezca un objeto JSON {...} dentro del texto
@@ -71,19 +77,7 @@ const INCOMING_RATE_MAX_CONTROL_MESSAGES = Number(
 const incomingRateState = new Map();
 
 const normalizeTimeString = (rawTime) => {
-  if (!rawTime && rawTime !== 0) return null;
-  const text = String(rawTime).trim();
-  const fullMatch = text.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
-  if (fullMatch) {
-    return `${fullMatch[1].padStart(2, "0")}:${fullMatch[2]}`;
-  }
-
-  const hourOnlyMatch = text.match(/^([01]?\d|2[0-3])$/);
-  if (hourOnlyMatch) {
-    return `${hourOnlyMatch[1].padStart(2, "0")}:00`;
-  }
-
-  return null;
+  return parseTime(rawTime);
 };
 
 const isValidIsoDate = (value) => {
@@ -261,6 +255,14 @@ const inferFallbackAction = (rawText) => {
     /tenes|tenes|hay|queda|quedan|disponible|libre|algo\s+para/.test(text);
   const date = extractDateFromMessage(text);
   const time = extractTimeFromMessage(text);
+  const invalidTimeInMessage = hasInvalidTimeInput(rawText);
+
+  if (invalidTimeInMessage) {
+    return {
+      action: "INVALID_TIME_INPUT",
+      date: date || getTodayIsoArgentina(),
+    };
+  }
 
   if (hasAvailabilityIntent && (date || time)) {
     return {
@@ -1017,7 +1019,8 @@ const parseStrictCancel = (value = "") => {
 const parseStrictOfferConfirmation = (value = "") => {
   const text = normalizeLooseText(value);
   if (!text) return false;
-  return text === "confirmar reserva" || text === "confirmar turno";
+  if (text === "confirmar reserva" || text === "confirmar turno") return true;
+  return isEquivalentConfirmation(text);
 };
 
 const getStrictInputState = (meta = {}) => {
@@ -1097,10 +1100,10 @@ const buildStrictStateInvalidInputReply = (state = null, meta = {}) => {
       : 0;
     return draftCount > 1
       ? "Para continuar, respondé *CONFIRMAR TODO*, *CONFIRMAR A*/*B*... o *CANCELAR*."
-      : "Para continuar, respondé exactamente *CONFIRMAR RESERVA* o *CANCELAR*.";
+      : "Para continuar, confirmá con *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*; o cancelá con *CANCELAR*.";
   }
   if (state === "OFFER_CONFIRMATION") {
-    return "Para continuar, respondé exactamente *CONFIRMAR RESERVA* o *CANCELAR*.";
+    return "Para continuar, confirmá con *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*; o cancelá con *CANCELAR*.";
   }
   return "No pude procesar ese mensaje. Probá de nuevo con una instrucción concreta.";
 };
@@ -1331,13 +1334,22 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       ? inferDeterministicAction(userMessage)
       : null;
     const globalInterruptIntent = parseGlobalInterruptIntent(userMessage);
+    let forcedActionFromState = null;
 
     const strictInputState = getStrictInputState(sessionMeta);
-    if (
-      strictInputState &&
-      !isAllowedInputForStrictState(userMessage, strictInputState, sessionMeta)
-    ) {
-      if (globalInterruptIntent?.action === "RESET_FLOW") {
+    if (strictInputState) {
+      const isAllowedStrictInput = isAllowedInputForStrictState(
+        userMessage,
+        strictInputState,
+        sessionMeta,
+      );
+      const transition = resolveStrictStateTransition({
+        state: strictInputState,
+        isAllowedInput: isAllowedStrictInput,
+        globalIntentAction: globalInterruptIntent?.action || "",
+      });
+
+      if (transition.decision === "RESET_FLOW") {
         sessionService.clearHistory(sessionId);
         const resetReply =
           "Reinicié la conversación.\n" +
@@ -1345,6 +1357,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         sessionService.addMessage(sessionId, "assistant", resetReply);
         return resetReply;
       }
+
       if (globalInterruptIntent?.action === "TALK_TO_ADMIN") {
         clearBookingStrictStateMeta(sessionId);
         sessionMeta = sessionService.getMeta(sessionId);
@@ -1354,17 +1367,26 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         sessionService.addMessage(sessionId, "assistant", adminReply);
         return adminReply;
       }
-      if (
-        shouldAllowStrictStateInterrupt(
-          strictInputState,
-          globalInterruptIntent?.action ||
-            earlyDeterministicAction?.action ||
-            "",
-        )
-      ) {
+
+      if (transition.decision === "RESET_AND_INTERRUPT") {
         clearBookingStrictStateMeta(sessionId);
         sessionMeta = sessionService.getMeta(sessionId);
-      } else {
+        if (transition.action === "CHECK_AVAILABILITY") {
+          forcedActionFromState = {
+            action: "CHECK_AVAILABILITY",
+            date: extractDateFromMessage(userMessage) || getTodayIsoArgentina(),
+            time: normalizeTimeString(extractTimeFromMessage(userMessage)),
+            source: "strict_state_interrupt",
+          };
+        } else if (transition.action === "CANCEL_BOOKING") {
+          forcedActionFromState = {
+            action: "CANCEL_BOOKING",
+            date: extractDateFromMessage(userMessage),
+            time: normalizeTimeString(extractTimeFromMessage(userMessage)),
+            source: "strict_state_interrupt",
+          };
+        }
+      } else if (transition.decision === "REQUIRE_STATE_INPUT") {
         const strictInputReply = buildStrictStateInvalidInputReply(
           strictInputState,
           sessionMeta,
@@ -1574,7 +1596,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const askSpecificConfirmationReply =
           pendingDrafts.length > 1
             ? "Para evitar errores, indicame exactamente: *CONFIRMAR TODO*, *CONFIRMAR A*, *CONFIRMAR B* o *CANCELAR*."
-            : "Para evitar errores, confirmame con *CONFIRMAR RESERVA* o *CANCELAR*.";
+            : "Para evitar errores, confirmá con *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*; o cancelá con *CANCELAR*.";
         sessionService.addMessage(sessionId, "user", userMessage);
         sessionService.addMessage(
           sessionId,
@@ -1898,14 +1920,14 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         return bookingReply;
       } else if (isAffirmativeBookingReply(userMessage)) {
         const strictConfirmReply =
-          "Para confirmar sin errores, respondé exactamente *CONFIRMAR RESERVA* o *CANCELAR*.";
+          "Para confirmar sin errores, respondé *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*; o *CANCELAR*.";
         sessionService.addMessage(sessionId, "user", userMessage);
         sessionService.addMessage(sessionId, "assistant", strictConfirmReply);
         stampConcreteAnswerDeadline(sessionId, sessionMeta);
         return strictConfirmReply;
       } else if (!hasDirectBookingIntent(userMessage)) {
         const strictConfirmReply =
-          "Todavía estoy esperando una respuesta concreta para ese turno. Respondé exactamente *CONFIRMAR RESERVA* o *CANCELAR*.";
+          "Todavía estoy esperando una respuesta concreta para ese turno. Respondé *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*; o *CANCELAR*.";
         sessionService.addMessage(sessionId, "user", userMessage);
         sessionService.addMessage(sessionId, "assistant", strictConfirmReply);
         stampConcreteAnswerDeadline(sessionId, sessionMeta);
@@ -2045,6 +2067,44 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
     // Si estábamos esperando nombre completo para una reserva pendiente, lo resolvemos antes de llamar a IA.
     if (sessionMeta.awaitingFullNameForBooking) {
+      const fullNameCaptureGlobalAction =
+        globalInterruptIntent?.action || (parseStrictCancel(userMessage) ? "CANCEL_BOOKING" : "");
+
+      if (fullNameCaptureGlobalAction === "RESET_FLOW") {
+        sessionService.clearHistory(sessionId);
+        const resetReply =
+          "Reinicié la conversación.\n" +
+          "Decime si querés *consultar disponibilidad*, *reservar* o *cancelar*.";
+        sessionService.addMessage(sessionId, "assistant", resetReply);
+        return resetReply;
+      }
+
+      if (
+        fullNameCaptureGlobalAction === "CHECK_AVAILABILITY" ||
+        fullNameCaptureGlobalAction === "CANCEL_BOOKING"
+      ) {
+        clearBookingStrictStateMeta(sessionId);
+        sessionMeta = sessionService.getMeta(sessionId);
+        if (fullNameCaptureGlobalAction === "CHECK_AVAILABILITY") {
+          forcedActionFromState = {
+            action: "CHECK_AVAILABILITY",
+            date: extractDateFromMessage(userMessage) || getTodayIsoArgentina(),
+            time: normalizeTimeString(extractTimeFromMessage(userMessage)),
+            source: "full_name_capture_interrupt",
+          };
+        } else {
+          forcedActionFromState = {
+            action: "CANCEL_BOOKING",
+            date: extractDateFromMessage(userMessage),
+            time: normalizeTimeString(extractTimeFromMessage(userMessage)),
+            source: "full_name_capture_interrupt",
+          };
+        }
+      }
+
+      if (!sessionMeta.awaitingFullNameForBooking) {
+        // Se liberó el estado estricto por intent global; continuar flujo normal.
+      } else {
       let fullName = "";
       if (knownName && isValidClientName(knownName)) {
         fullName = normalizeNameText(knownName);
@@ -2073,6 +2133,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       sessionService.addMessage(sessionId, "user", userMessage);
       sessionService.addMessage(sessionId, "assistant", confirmNameReply);
       return confirmNameReply;
+      }
     }
 
     // 2. Historial
@@ -2083,7 +2144,10 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     let parsedData = null;
 
     if (TRANSACTIONAL_MODE_ENABLED) {
-      parsedData = earlyDeterministicAction || inferDeterministicAction(userMessage);
+      parsedData =
+        forcedActionFromState ||
+        earlyDeterministicAction ||
+        inferDeterministicAction(userMessage);
       if (parsedData?.action) {
         console.log(
           `[MessageHandler][${companyId || "global"}] Deterministic action=${parsedData.action} chatId=${chatId}`,
@@ -2111,7 +2175,10 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const retryText = parsedData.retryAfterText || "unos minutos";
         const fallback = inferFallbackAction(userMessage);
 
-        if (fallback?.action === "CHECK_AVAILABILITY") {
+        if (fallback?.action === "INVALID_TIME_INPUT") {
+          replyText =
+            "⚠️ La hora no es válida. Decime una hora en formato *HH:mm* entre *00:00* y *23:59*.";
+        } else if (fallback?.action === "CHECK_AVAILABILITY") {
           const requestedDate = fallback.date || getTodayIsoArgentina();
           const requestedTime = normalizeTimeString(fallback.time);
           const availability = await bookingService.getAvailableSlots(
@@ -2181,6 +2248,11 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             parsedData.message ||
             `🟡 Modo básico activo por límite diario de IA. Volvé a intentar en ${retryText}.`;
         }
+      }
+
+      else if (parsedData.action === "INVALID_TIME_INPUT") {
+        replyText =
+          "⚠️ La hora que enviaste no es válida. Usá formato *HH:mm* entre *00:00* y *23:59*.";
       }
 
       // CASO A: RESERVAR
@@ -2262,7 +2334,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             });
           }
           replyText =
-            "Si querés que lo reserve, respondé exactamente *CONFIRMAR RESERVA*.";
+            "Si querés que lo reserve, respondé *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*.";
           sessionService.addMessage(sessionId, "assistant", replyText);
           return replyText;
         }
@@ -2349,6 +2421,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       else if (parsedData.action === "CHECK_AVAILABILITY") {
         const requestedDate = parsedData.date || getTodayIsoArgentina();
         const requestedTime = normalizeTimeString(parsedData.time);
+        const invalidTimeInMessage = hasInvalidTimeInput(userMessage);
 
         if (parsedData.date && !isValidIsoDate(parsedData.date)) {
           replyText =
@@ -2357,9 +2430,9 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           return replyText;
         }
 
-        if (parsedData.time && !requestedTime) {
+        if (invalidTimeInMessage || (parsedData.time && !requestedTime)) {
           replyText =
-            "⚠️ No pude entender la hora exacta. Decime, por ejemplo, `17:00`.";
+            "⚠️ La hora no es válida. Decime una hora en formato *HH:mm* entre *00:00* y *23:59*.";
           sessionService.addMessage(sessionId, "assistant", replyText);
           return replyText;
         }
@@ -2502,7 +2575,10 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       // CASO G: JSON DESCONOCIDO
       else {
         const fallback = inferFallbackAction(userMessage);
-        if (fallback?.action === "CHECK_AVAILABILITY") {
+        if (fallback?.action === "INVALID_TIME_INPUT") {
+          replyText =
+            "⚠️ La hora no es válida. Decime una hora en formato *HH:mm* entre *00:00* y *23:59*.";
+        } else if (fallback?.action === "CHECK_AVAILABILITY") {
           const requestedDate = fallback.date || getTodayIsoArgentina();
           const requestedTime = normalizeTimeString(fallback.time);
           const availability = await bookingService.getAvailableSlots(
@@ -2568,7 +2644,10 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       // ==========================================
       const fallback = inferFallbackAction(userMessage);
 
-      if (fallback?.action === "CHECK_AVAILABILITY") {
+      if (fallback?.action === "INVALID_TIME_INPUT") {
+        replyText =
+          "⚠️ La hora no es válida. Decime una hora en formato *HH:mm* entre *00:00* y *23:59*.";
+      } else if (fallback?.action === "CHECK_AVAILABILITY") {
         const requestedDate = fallback.date || getTodayIsoArgentina();
         const requestedTime = normalizeTimeString(fallback.time);
         const availability = await bookingService.getAvailableSlots(
