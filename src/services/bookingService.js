@@ -18,35 +18,25 @@ const {
 const {
   materializeFixedBookingsForDate,
 } = require("./fixedTurnsMaterialization.service");
+const {
+  buildClientIdentity,
+  findMatchingBookingsWithAudit,
+  normalizeCanonicalClientPhone,
+} = require("../utils/identityNormalization");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
 const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
-const normalizeWhatsappId = (value = "") => String(value || "").trim().toLowerCase();
 const escapeRegex = (value = "") =>
   String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const whatsappIdsMatch = (bookingWhatsappId = "", requestWhatsappId = "") => {
-  const booking = normalizeWhatsappId(bookingWhatsappId);
-  const request = normalizeWhatsappId(requestWhatsappId);
-  if (!booking || !request) return false;
-  return booking === request;
-};
-
-const phonesMatch = (bookingPhoneRaw = "", requestPhoneRaw = "") => {
-  // 1) Comparación literal tal cual llega/está guardado.
-  if (bookingPhoneRaw === requestPhoneRaw) return true;
-  if (String(bookingPhoneRaw) === String(requestPhoneRaw)) return true;
-
-  // 2) Comparación numérica equivalente (por si uno llega number y el otro string).
-  const bookingNumber = Number(bookingPhoneRaw);
-  const requestNumber = Number(requestPhoneRaw);
-  if (Number.isFinite(bookingNumber) && Number.isFinite(requestNumber)) {
-    return bookingNumber === requestNumber;
-  }
-
-  return false;
-};
+const buildRequestIdentity = ({ clientPhone = "", clientWhatsappId = "" }) =>
+  buildClientIdentity({
+    phone: clientPhone,
+    whatsappId: clientWhatsappId,
+    chatId: clientWhatsappId,
+    canonicalClientPhone: clientPhone,
+  });
 
 const getDatePartsInTimezone = (date, timeZone = TIMEZONE) => {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -294,8 +284,8 @@ const createNewBooking = async ({
       date: bookingDate,
       timeSlot: slot._id,
       clientName,
-      clientPhone,
-      clientWhatsappId: normalizeWhatsappId(clientWhatsappId) || null,
+      clientPhone: normalizeCanonicalClientPhone(clientPhone) || String(clientPhone || ""),
+      clientWhatsappId: buildClientIdentity({ whatsappId: clientWhatsappId }).whatsappValue || null,
       finalPrice: slot.price, // Congelamos el precio actual
       status: "confirmado",
     });
@@ -339,6 +329,7 @@ const hasActiveBookingForClient = async ({
     const scope = buildCompanyFilter(companyId);
     const todayStr = getDatePartsInTimezone(new Date());
     const todayDate = dateStringToUtcMidnight(todayStr);
+    const requestIdentity = buildRequestIdentity({ clientPhone, clientWhatsappId });
 
     const candidates = await Booking.find({
       ...scope,
@@ -349,13 +340,9 @@ const hasActiveBookingForClient = async ({
       .limit(200)
       .lean();
 
-    const existing = candidates.find(
-      (booking) =>
-        whatsappIdsMatch(booking?.clientWhatsappId, clientWhatsappId) ||
-        phonesMatch(booking?.clientPhone, clientPhone),
-    );
+    const matching = findMatchingBookingsWithAudit(candidates, requestIdentity);
 
-    return Boolean(existing);
+    return matching.matchedBookings.length > 0;
   } catch (error) {
     console.error("Error verificando reservas activas del cliente:", error);
     return false;
@@ -373,9 +360,12 @@ const getActiveBookingsForClient = async ({
     const todayStr = getDatePartsInTimezone(new Date());
     const todayDate = dateStringToUtcMidnight(todayStr);
     const debugPrefix = `[BookingsLookup][${companyId || "global"}]`;
+    const requestIdentity = buildRequestIdentity({ clientPhone, clientWhatsappId });
 
     console.log(
-      `${debugPrefix} request clientPhone=${String(clientPhone)} clientWhatsappId=${String(clientWhatsappId || "")} today=${todayStr}`,
+      `${debugPrefix} request today=${todayStr} requestIdentity=${JSON.stringify(
+        requestIdentity,
+      )}`,
     );
 
     const bookings = await Booking.find({
@@ -390,31 +380,33 @@ const getActiveBookingsForClient = async ({
 
     console.log(`${debugPrefix} candidates=${bookings.length}`);
 
-    const matchingByClient = bookings.filter(
-      (booking) =>
-        whatsappIdsMatch(booking?.clientWhatsappId, clientWhatsappId) ||
-        phonesMatch(booking?.clientPhone, clientPhone),
-    );
+    const matchingResult = findMatchingBookingsWithAudit(bookings, requestIdentity);
+    const bookingAudits = matchingResult.audits.map((item) => ({
+      bookingId: String(item?.booking?._id || ""),
+      bookingIdentity: item.bookingIdentity,
+      byWhatsapp: item.byWhatsapp,
+      byPhone: item.byPhone,
+      matched: item.matched,
+      reason: item.reason,
+      date: item?.booking?.date
+        ? new Date(item.booking.date).toISOString().slice(0, 10)
+        : "",
+      startTime: String(item?.booking?.timeSlot?.startTime || ""),
+      status: String(item?.booking?.status || ""),
+    }));
+    const matchingByClient = matchingResult.matchedBookings;
+    const matchedByWhatsapp = bookingAudits.filter((item) => item.byWhatsapp).length;
+    const matchedByPhone = bookingAudits.filter((item) => item.byPhone).length;
 
-    const sampleAudit = bookings.slice(0, 25).map((booking) => {
-      const byWhatsapp = whatsappIdsMatch(
-        booking?.clientWhatsappId,
-        clientWhatsappId,
+    console.log(
+      `${debugPrefix} audit summary candidates=${bookings.length} matched=${matchingByClient.length} strategy=${matchingResult.strategy} matchedByWhatsapp=${matchedByWhatsapp} matchedByPhone=${matchedByPhone}`,
+    );
+    if (!matchingByClient.length) {
+      console.log(
+        `${debugPrefix} no-match sample=`,
+        bookingAudits.slice(0, 25),
       );
-      const byPhone = phonesMatch(booking?.clientPhone, clientPhone);
-      return {
-        bookingId: String(booking?._id || ""),
-        bookingPhone: String(booking?.clientPhone || ""),
-        bookingWhatsappId: String(booking?.clientWhatsappId || ""),
-        byWhatsapp,
-        byPhone,
-        matched: byWhatsapp || byPhone,
-        date: booking?.date ? new Date(booking.date).toISOString().slice(0, 10) : "",
-        startTime: String(booking?.timeSlot?.startTime || ""),
-        status: String(booking?.status || ""),
-      };
-    });
-    console.log(`${debugPrefix} sampleAudit=`, sampleAudit);
+    }
     console.log(`${debugPrefix} matchedByClient=${matchingByClient.length}`);
 
     // "Reservas vigentes" = reservas activas desde hoy en adelante.
@@ -543,6 +535,7 @@ const cancelBooking = async ({
   try {
     const scope = buildCompanyFilter(companyId);
     const bookingDate = dateStringToUtcMidnight(dateStr);
+    const requestIdentity = buildRequestIdentity({ clientPhone, clientWhatsappId });
 
     // 1. Buscar el slot por hora
     const slot = await TimeSlot.findOne({ ...scope, startTime: timeStr });
@@ -558,11 +551,8 @@ const cancelBooking = async ({
       status: { $ne: "cancelado" },
     });
 
-    const booking = bookingsInSlot.find(
-      (item) =>
-        whatsappIdsMatch(item?.clientWhatsappId, clientWhatsappId) ||
-        phonesMatch(item?.clientPhone, clientPhone),
-    );
+    const matching = findMatchingBookingsWithAudit(bookingsInSlot, requestIdentity);
+    const booking = matching.matchedBookings[0] || null;
 
     if (!booking) {
       return { success: false, error: "NOT_FOUND" };

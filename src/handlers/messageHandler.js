@@ -13,6 +13,15 @@ const {
 } = require("../services/appConfig.service");
 const { getFormattedDate } = require("../utils/getFormattedDate");
 const { getNumberByUser } = require("../utils/getNumberByUser");
+const {
+  normalizeCanonicalClientPhone,
+} = require("../utils/identityNormalization");
+const {
+  isEquivalentConfirmation,
+  parseGlobalInterruptIntent,
+  shouldBlockRejectedSlotReattempt,
+  shouldAllowStrictStateInterrupt,
+} = require("../utils/conversationGuardrails");
 
 // --- FUNCIÓN HELPER PARA EXTRAER JSON ---
 // Busca cualquier cosa que parezca un objeto JSON {...} dentro del texto
@@ -75,11 +84,6 @@ const normalizeTimeString = (rawTime) => {
   }
 
   return null;
-};
-
-const isLikelyPhoneNumber = (value = "") => {
-  const digits = String(value || "").replace(/\D/g, "");
-  return digits.length >= 8 && digits.length <= 15;
 };
 
 const isValidIsoDate = (value) => {
@@ -377,7 +381,7 @@ const isAffirmativeBookingReply = (value = "") => {
   ]);
 
   if (exactAffirmatives.has(text)) return true;
-  return /^(si|dale|ok|confirmo|listo)\b/.test(text);
+  return isEquivalentConfirmation(text);
 };
 
 const isNegativeBookingReply = (value = "") => {
@@ -420,15 +424,6 @@ const hasBookingControlKeywords = (value = "") => {
   );
 };
 
-const isInterruptibleAction = (action = "") =>
-  action === "LIST_ACTIVE_BOOKINGS" || action === "CANCEL_BOOKING";
-
-const shouldAllowStrictStateInterrupt = (state = null, action = "") => {
-  if (!state || !isInterruptibleAction(action)) return false;
-  if (state === "ATTENDANCE_CONFIRMATION") return false;
-  return true;
-};
-
 const clearBookingStrictStateMeta = (sessionId) =>
   sessionService.updateMeta(sessionId, {
     awaitingFullNameForBooking: false,
@@ -439,6 +434,7 @@ const clearBookingStrictStateMeta = (sessionId) =>
     pendingBooking: null,
     pendingBookingDrafts: null,
     pendingBookingClientName: null,
+    lastRejectedBookingAttempt: null,
     concreteAnswerRequestedAt: null,
   });
 
@@ -523,7 +519,7 @@ const isNonNameReply = (value = "") => {
     return true;
   }
 
-  return /^(si|dale|ok|listo|confirmo)\b/.test(normalized);
+  return isEquivalentConfirmation(normalized);
 };
 
 const extractFullNameFromMessage = (rawMessage, _aiCandidate = "") => {
@@ -855,6 +851,11 @@ const buildAvailabilityResponse = async ({
       return {
         replyText: `${prefix}⚠️ Ese horario no existe en la grilla.`,
         pendingBookingOffer: null,
+        rejectedBookingAttempt: {
+          dateStr: requestedDate,
+          timeStr: requestedTime,
+          reason: "INVALID_TIME",
+        },
       };
     }
   }
@@ -863,6 +864,7 @@ const buildAvailabilityResponse = async ({
     return {
       replyText: `${prefix}⚠️ Hubo un problema consultando disponibilidad.`,
       pendingBookingOffer: null,
+      rejectedBookingAttempt: null,
     };
   }
 
@@ -881,6 +883,7 @@ const buildAvailabilityResponse = async ({
             `${prefix}✅ Sí, tengo *${requestedCourtsCount} canchas* disponibles para el *${getFormattedDate(requestedDate)} a las ${requestedTime}*.` +
             `\n💰 Precio por cancha: $${exactMatch.price}`,
           pendingBookingOffer: null,
+          rejectedBookingAttempt: null,
         };
       }
 
@@ -903,6 +906,12 @@ const buildAvailabilityResponse = async ({
             ? `Te puedo ofrecer horarios con ${requestedCourtsCount} canchas:\n${alternativesList}`
             : `No tengo otro horario con ${requestedCourtsCount} canchas libres para esa fecha.`),
         pendingBookingOffer: null,
+        rejectedBookingAttempt: {
+          dateStr: requestedDate,
+          timeStr: requestedTime,
+          reason: "INSUFFICIENT_COURTS",
+          requestedCourts: requestedCourtsCount,
+        },
       };
     }
 
@@ -918,6 +927,7 @@ const buildAvailabilityResponse = async ({
           timeStr: requestedTime,
           createdAt: Date.now(),
         },
+        rejectedBookingAttempt: null,
       };
     }
 
@@ -933,6 +943,11 @@ const buildAvailabilityResponse = async ({
           ? `Te puedo ofrecer estos horarios:\n${list}\n\n_¿Cuál te reservo?_`
           : "No me quedan horarios disponibles para ese rango."),
       pendingBookingOffer: null,
+      rejectedBookingAttempt: {
+        dateStr: requestedDate,
+        timeStr: requestedTime,
+        reason: "NO_AVAILABILITY",
+      },
     };
   }
 
@@ -946,11 +961,13 @@ const buildAvailabilityResponse = async ({
         replyText:
           `${prefix}🚫 Para la *${periodLabel}* no tengo disponibilidad el ${getFormattedDate(requestedDate)}.`,
         pendingBookingOffer: null,
+        rejectedBookingAttempt: null,
       };
     }
     return {
       replyText: `${prefix}🚫 Todo ocupado para esa fecha.`,
       pendingBookingOffer: null,
+      rejectedBookingAttempt: null,
     };
   }
 
@@ -960,6 +977,7 @@ const buildAvailabilityResponse = async ({
     replyText:
       `${prefix}📅 *Libres para el ${getFormattedDate(requestedDate)}${periodTitle}:*\n\n${lista}\n\n_¿Cuál te reservo?_`,
     pendingBookingOffer: null,
+    rejectedBookingAttempt: null,
   };
 };
 
@@ -1312,16 +1330,36 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     const earlyDeterministicAction = TRANSACTIONAL_MODE_ENABLED
       ? inferDeterministicAction(userMessage)
       : null;
+    const globalInterruptIntent = parseGlobalInterruptIntent(userMessage);
 
     const strictInputState = getStrictInputState(sessionMeta);
     if (
       strictInputState &&
       !isAllowedInputForStrictState(userMessage, strictInputState, sessionMeta)
     ) {
+      if (globalInterruptIntent?.action === "RESET_FLOW") {
+        sessionService.clearHistory(sessionId);
+        const resetReply =
+          "Reinicié la conversación.\n" +
+          "Decime si querés *consultar disponibilidad*, *reservar* o *cancelar*.";
+        sessionService.addMessage(sessionId, "assistant", resetReply);
+        return resetReply;
+      }
+      if (globalInterruptIntent?.action === "TALK_TO_ADMIN") {
+        clearBookingStrictStateMeta(sessionId);
+        sessionMeta = sessionService.getMeta(sessionId);
+        const adminReply =
+          "Perfecto. Te derivamos con administración. En breve te contactan por este chat.";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", adminReply);
+        return adminReply;
+      }
       if (
         shouldAllowStrictStateInterrupt(
           strictInputState,
-          earlyDeterministicAction?.action || "",
+          globalInterruptIntent?.action ||
+            earlyDeterministicAction?.action ||
+            "",
         )
       ) {
         clearBookingStrictStateMeta(sessionId);
@@ -1358,10 +1396,11 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     }
     const number = await getNumberByUser(chatId, client);
     const registeredPhoneRaw = String(registeredUser?.phoneNumber || "").trim();
-    const canonicalClientPhone =
-      isLikelyPhoneNumber(registeredPhoneRaw)
-        ? registeredPhoneRaw
-        : number;
+    const canonicalClientPhone = normalizeCanonicalClientPhone(
+      registeredPhoneRaw,
+      number,
+      chatId,
+    );
     console.log(`👤 Mensaje de: ${knownName || chatId}`);
     console.log(`📞 Número de WhatsApp detectado: ${number}`);
     console.log(`📇 Número canónico para reservas: ${canonicalClientPhone}`);
@@ -1977,6 +2016,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             timeStr: draft.timeStr,
             createdAt: Date.now(),
           },
+          lastRejectedBookingAttempt: null,
           awaitingExtraBookingConfirmation: false,
           pendingBookingClientName: knownName,
           concreteAnswerRequestedAt: Date.now(),
@@ -2089,6 +2129,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           replyText = availabilityResponse.replyText;
           sessionService.updateMeta(sessionId, {
             pendingBookingOffer: availabilityResponse.pendingBookingOffer,
+            lastRejectedBookingAttempt:
+              availabilityResponse.rejectedBookingAttempt || null,
             concreteAnswerRequestedAt: availabilityResponse.pendingBookingOffer
               ? Date.now()
               : null,
@@ -2127,6 +2169,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             replyText = availabilityResponse.replyText;
             sessionService.updateMeta(sessionId, {
               pendingBookingOffer: availabilityResponse.pendingBookingOffer,
+              lastRejectedBookingAttempt:
+                availabilityResponse.rejectedBookingAttempt || null,
               concreteAnswerRequestedAt: availabilityResponse.pendingBookingOffer
                 ? Date.now()
                 : null,
@@ -2151,6 +2195,22 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           requestedCourt,
         );
         const canCreateBookingFromMessage = hasDirectBookingIntent(userMessage);
+
+        if (
+          requestedDate &&
+          requestedTime &&
+          shouldBlockRejectedSlotReattempt({
+            rejectedBookingAttempt: sessionMeta.lastRejectedBookingAttempt || null,
+            requestedDate,
+            requestedTime,
+          })
+        ) {
+          replyText =
+            "Ese horario ya fue rechazado por falta de disponibilidad.\n" +
+            "Decime otro horario y te lo reviso.";
+          sessionService.addMessage(sessionId, "assistant", replyText);
+          return replyText;
+        }
 
         if (detectedDrafts.length >= 2) {
           const pendingClientName = normalizeNameText(knownName || "");
@@ -2197,6 +2257,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
                 timeStr: userDerivedTime,
                 createdAt: Date.now(),
               },
+              lastRejectedBookingAttempt: null,
               concreteAnswerRequestedAt: Date.now(),
             });
           }
@@ -2270,6 +2331,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             timeStr: singleDraft.timeStr,
             createdAt: Date.now(),
           },
+          lastRejectedBookingAttempt: null,
           awaitingExtraBookingConfirmation: false,
           concreteAnswerRequestedAt: Date.now(),
         });
@@ -2316,6 +2378,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         replyText = availabilityResponse.replyText;
         sessionService.updateMeta(sessionId, {
           pendingBookingOffer: availabilityResponse.pendingBookingOffer,
+          lastRejectedBookingAttempt:
+            availabilityResponse.rejectedBookingAttempt || null,
           concreteAnswerRequestedAt: availabilityResponse.pendingBookingOffer
             ? Date.now()
             : null,
@@ -2455,6 +2519,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           replyText = availabilityResponse.replyText;
           sessionService.updateMeta(sessionId, {
             pendingBookingOffer: availabilityResponse.pendingBookingOffer,
+            lastRejectedBookingAttempt:
+              availabilityResponse.rejectedBookingAttempt || null,
             concreteAnswerRequestedAt: availabilityResponse.pendingBookingOffer
               ? Date.now()
               : null,
@@ -2519,6 +2585,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         replyText = availabilityResponse.replyText;
         sessionService.updateMeta(sessionId, {
           pendingBookingOffer: availabilityResponse.pendingBookingOffer,
+          lastRejectedBookingAttempt:
+            availabilityResponse.rejectedBookingAttempt || null,
           concreteAnswerRequestedAt: availabilityResponse.pendingBookingOffer
             ? Date.now()
             : null,

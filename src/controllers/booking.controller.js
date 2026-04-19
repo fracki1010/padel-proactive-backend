@@ -13,12 +13,15 @@ const {
   materializeFixedBookingsForDate,
   materializeFixedBookingsInRange,
 } = require("../services/fixedTurnsMaterialization.service");
+const {
+  normalizeCanonicalClientPhone,
+} = require("../utils/identityNormalization");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
 
 const normalizePhoneToChatId = (rawPhone = "") => {
-  const digits = String(rawPhone || "").replace(/\D/g, "");
+  const digits = normalizeCanonicalClientPhone(rawPhone);
   if (!digits) return "";
   return `${digits}@c.us`;
 };
@@ -163,7 +166,7 @@ const createBooking = async (req, res) => {
       searchDate: bookingDate,
     });
 
-    const normalizedClientPhone = String(clientPhone || "").trim();
+    const normalizedClientPhone = normalizeCanonicalClientPhone(clientPhone);
     const isMaintenanceBooking =
       normalizedClientPhone === "" || normalizedClientPhone === "MANTENIMIENTO";
 

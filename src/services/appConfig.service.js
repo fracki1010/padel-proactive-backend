@@ -130,6 +130,18 @@ const ensureAppConfig = async (companyId = null) => {
   });
 };
 
+const getWhatsappEnabled = async (companyId = null) => {
+  const config = await ensureAppConfig(companyId);
+  return Boolean(config.whatsappEnabled);
+};
+
+const setWhatsappEnabledConfigOnly = async (enabled, companyId = null) =>
+  AppConfig.findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $set: { whatsappEnabled: Boolean(enabled) } },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+  );
+
 const getPenaltyLimit = async (companyId = null) => {
   const config = await ensureAppConfig(companyId);
   return normalizePenaltyLimit(config.penaltyLimit);
@@ -377,11 +389,13 @@ module.exports = {
   getPenaltySystemEnabled,
   getStrictQuestionFlowEnabled,
   getTrustedClientConfirmationCount,
+  getWhatsappEnabled,
   setCancellationLockHours,
   setAttendanceReminderLeadMinutes,
   setAttendanceResponseTimeoutMinutes,
   setPenaltyLimit,
   setPenaltySystemEnabled,
+  setWhatsappEnabledConfigOnly,
   setStrictQuestionFlowEnabled,
   setOneHourReminderEnabled,
   setTrustedClientConfirmationCount,

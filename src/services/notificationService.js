@@ -4,9 +4,12 @@ const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
 } = require("./whatsappCommandQueue.service");
+const {
+  normalizeCanonicalClientPhone,
+} = require("../utils/identityNormalization");
 
 const normalizePhoneToChatId = (rawPhone = "") => {
-  const digits = String(rawPhone || "").replace(/\D/g, "");
+  const digits = normalizeCanonicalClientPhone(rawPhone);
   if (!digits) return "";
   return `${digits}@c.us`;
 };

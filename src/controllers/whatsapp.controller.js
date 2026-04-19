@@ -7,6 +7,9 @@ const {
 const {
   getWhatsappGroupsSnapshot,
 } = require("../services/whatsappGroupsSnapshot.service");
+const {
+  normalizeCanonicalClientPhone,
+} = require("../utils/identityNormalization");
 
 const resolveCompanyId = (req) => {
   if (req.user?.role === "super_admin") {
@@ -210,7 +213,7 @@ const getCommandStatus = async (req, res) => {
   }
 };
 
-const normalizePhone = (rawPhone = "") => String(rawPhone).replace(/\D/g, "");
+const normalizePhone = (rawPhone = "") => normalizeCanonicalClientPhone(rawPhone);
 
 const sendMessage = async (req, res) => {
   try {
