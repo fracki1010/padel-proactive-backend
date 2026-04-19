@@ -17,20 +17,23 @@ const resolveStrictStateTransition = ({
   }
 
   const canInterruptWithGlobalIntent =
-    action === "CANCEL_BOOKING" || action === "CHECK_AVAILABILITY";
+    action === "CANCEL_BOOKING" ||
+    action === "CHECK_AVAILABILITY" ||
+    action === "LIST_ACTIVE_BOOKINGS" ||
+    action === "CREATE_BOOKING";
 
   if (state === "FULL_NAME_CAPTURE") {
     if (canInterruptWithGlobalIntent) {
       return { decision: "RESET_AND_INTERRUPT", action };
     }
-    return { decision: "REQUIRE_STATE_INPUT" };
+    return { decision: "ALLOW_INTERPRET" };
   }
 
   if (state === "OFFER_CONFIRMATION") {
     if (canInterruptWithGlobalIntent) {
       return { decision: "RESET_AND_INTERRUPT", action };
     }
-    return { decision: "REQUIRE_STATE_INPUT" };
+    return { decision: "ALLOW_INTERPRET" };
   }
 
   return { decision: "REQUIRE_STATE_INPUT" };

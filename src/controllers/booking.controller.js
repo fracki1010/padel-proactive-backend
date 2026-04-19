@@ -15,6 +15,7 @@ const {
 } = require("../services/fixedTurnsMaterialization.service");
 const {
   normalizeCanonicalClientPhone,
+  normalizeClientIdentity,
 } = require("../utils/identityNormalization");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
@@ -169,6 +170,13 @@ const createBooking = async (req, res) => {
     const normalizedClientPhone = normalizeCanonicalClientPhone(clientPhone);
     const isMaintenanceBooking =
       normalizedClientPhone === "" || normalizedClientPhone === "MANTENIMIENTO";
+    const normalizedClientWhatsappId = normalizePhoneToChatId(clientPhone || "");
+    const identity = normalizeClientIdentity({
+      phone: normalizedClientPhone || "",
+      whatsappId: normalizedClientWhatsappId,
+      chatId: normalizedClientWhatsappId,
+      canonicalClientPhone: normalizedClientPhone || "",
+    });
 
     // C.1 Límite diario: máximo 3 reservas activas por cliente
     if (!isMaintenanceBooking && status !== "suspendido") {
@@ -205,6 +213,7 @@ const createBooking = async (req, res) => {
 
     // E. Crear
     const newBooking = await Booking.create({
+      canonicalClientId: identity.canonicalClientId || null,
       companyId,
       court: courtId,
       date: bookingDate,

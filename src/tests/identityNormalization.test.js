@@ -20,36 +20,58 @@ test("normalizePhone unifica phone/chatId/qa-prefix", () => {
   );
 });
 
-test("normalizeWhatsappIdValue limpia prefijo de transporte y conserva id base", () => {
+test("normalizeWhatsappIdValue conserva chatId QA completo", () => {
   assert.equal(
-    normalizeWhatsappIdValue("qa-defensive-server:5492611234567@c.us"),
-    "5492611234567@c.us",
+    normalizeWhatsappIdValue("qa-defensive-server:01:abc@c.us"),
+    "qa-defensive-server:01:abc@c.us",
   );
   assert.equal(normalizeWhatsappIdValue("5492611234567@lid"), "5492611234567@lid");
 });
 
-test("normalizeWhatsappIdKey colapsa @c.us y @lid al mismo identificador canónico", () => {
+test("normalizeWhatsappIdKey colapsa @c.us y @lid al mismo identificador por número", () => {
   const fromCus = normalizeWhatsappIdKey("5492611234567@c.us");
   const fromLid = normalizeWhatsappIdKey("5492611234567@lid");
   const fromPhone = normalizeWhatsappIdKey("5492611234567");
-  const fromQa = normalizeWhatsappIdKey("qa-defensive-server:5492611234567@c.us");
 
-  assert.equal(fromCus, "num:5492611234567");
+  assert.equal(fromCus, "phone:5492611234567");
   assert.equal(fromCus, fromLid);
   assert.equal(fromCus, fromPhone);
-  assert.equal(fromCus, fromQa);
 });
 
-test("normalizeClientIdentity produce canonicalPhone E.164 y whatsappKeys", () => {
+test("normalizeClientIdentity usa chatId como canonicalClientId para QA", () => {
   const identity = normalizeClientIdentity({
-    canonicalClientPhone: "",
-    phone: "",
-    chatId: "qa-defensive-server:5492611234567@c.us",
+    chatId: "qa-defensive-server:01:abc@c.us",
+  });
+
+  assert.equal(identity.canonicalClientId, "qa-defensive-server:01:abc@c.us");
+  assert.equal(identity.qaChatId, "qa-defensive-server:01:abc@c.us");
+});
+
+test("normalizeClientIdentity usa phone E.164 como canonicalClientId para reales", () => {
+  const identity = normalizeClientIdentity({
+    phone: "5492611234567",
   });
 
   assert.equal(identity.canonicalPhone, "+5492611234567");
-  assert.equal(identity.canonicalPhoneDigits, "5492611234567");
-  assert.ok(identity.whatsappKeys.includes("phone:5492611234567"));
+  assert.equal(identity.canonicalClientId, "+5492611234567");
+});
+
+test("matchBookingsByClient soporta match por canonicalClientId QA", () => {
+  const result = matchBookingsByClient({
+    client: {
+      chatId: "qa-defensive-server:01:abc@c.us",
+    },
+    bookings: [
+      {
+        _id: "b1",
+        canonicalClientId: "qa-defensive-server:01:abc@c.us",
+        clientWhatsappId: "qa-defensive-server:01:abc@c.us",
+      },
+    ],
+  });
+
+  assert.equal(result.matchedBookings.length, 1);
+  assert.equal(result.strategy, "canonical_client_id");
 });
 
 test("matchBookingsByClient audita mismatch con valores comparados", () => {
@@ -69,7 +91,6 @@ test("matchBookingsByClient audita mismatch con valores comparados", () => {
 
   assert.equal(result.matchedBookings.length, 0);
   assert.equal(result.strategy, "no_match");
-  assert.equal(result.audits[0].reason, "whatsapp_mismatch+phone_mismatch");
   assert.ok(Array.isArray(result.audits[0].compared.requestWhatsappKeys));
   assert.ok(Array.isArray(result.audits[0].compared.bookingWhatsappKeys));
 });

@@ -64,8 +64,16 @@ const parseGlobalInterruptIntent = (value = "") => {
     return { action: "CHECK_AVAILABILITY" };
   }
 
-  if (/^(cancelar|cancelar reserva|cancelar turno)$/.test(text)) {
+  if (/\b(cancelar|cancelame|cancela|anular|anula|dar de baja)\b/.test(text)) {
     return { action: "CANCEL_BOOKING" };
+  }
+
+  if (/(mis reservas|que tengo reservado|que turnos tengo|lista de reservas)/.test(text)) {
+    return { action: "LIST_ACTIVE_BOOKINGS" };
+  }
+
+  if (/(reservar|quiero reservar|anotame|agendame|hace la reserva|confirma.*turno)/.test(text)) {
+    return { action: "CREATE_BOOKING" };
   }
 
   return null;
