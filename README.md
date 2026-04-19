@@ -7,12 +7,14 @@ Backend API desacoplado del worker de WhatsApp.
 - Repo 1: `padel-proactive-backend` (API)
 - Repo 2: `padel-proactive-whatsapp-worker` (sesiones WhatsApp)
 - Comunicación principal: Redis + BullMQ
+- El backend funciona como productor de comandos; no ejecuta sesión WhatsApp local en producción.
 
 ## Variables importantes
 
 - `WHATSAPP_QUEUE_DRIVER=redis`
 - `WHATSAPP_QUEUE_NAME=whatsapp-commands`
 - `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
+- `WHATSAPP_ALLOW_MONGO_FALLBACK=false` (opcional; solo dev)
 
 ## Ejecución
 
@@ -23,6 +25,24 @@ npm start
 ```
 
 El worker ya no tiene que correr en este repo cuando usás arquitectura separada.
+
+Tests unitarios:
+
+```bash
+npm test
+```
+
+Auditoría defensiva WhatsApp (180 casos + reporte):
+
+```bash
+npm run test:wa:audit
+```
+
+Flags útiles del replay:
+- `--section <N>`: ejecuta solo una sección
+- `--same-session`: fuerza misma sesión para todos los casos
+- `--report-file <path>`: guarda reporte markdown
+- `--strict-assertions`: retorna error si hay violaciones
 
 ## Endpoints útiles
 
