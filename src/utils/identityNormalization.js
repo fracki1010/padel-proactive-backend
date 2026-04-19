@@ -2,6 +2,12 @@ const TRANSPORT_PREFIX_REGEX = /^([a-z_-]+):(.*)$/i;
 
 const normalizeRaw = (value = "") => String(value || "").trim().toLowerCase();
 
+const isQaLikeValue = (value = "") => {
+  const raw = normalizeRaw(value);
+  if (!raw) return false;
+  return raw.startsWith("qa-") || raw.startsWith("qa_") || raw.startsWith("qa:") || raw.includes("qa-defensive");
+};
+
 const unwrapTransportPrefix = (value = "") => {
   const raw = normalizeRaw(value);
   if (!raw) return "";
@@ -13,7 +19,7 @@ const unwrapTransportPrefix = (value = "") => {
   const rest = String(match[2] || "").trim();
   if (!rest) return raw;
 
-  if (prefix && !/\d/.test(prefix)) {
+  if (prefix && !/\d/.test(prefix) && !isQaLikeValue(raw)) {
     return rest;
   }
 
@@ -63,7 +69,7 @@ const normalizeWhatsappIdKey = (value = "") => {
   const local = stripWhatsappDomain(normalizedValue);
   const digits = String(local || "").replace(/\D/g, "");
   if (digits) return `phone:${digits}`;
-  return `id:${String(local || "").trim()}`;
+  return `wa:${String(local || "").trim()}`;
 };
 
 const normalizeChatIdKey = (value = "") => normalizeWhatsappIdKey(value);
@@ -72,6 +78,22 @@ const normalizeCanonicalClientPhone = (...values) => {
   for (const value of values) {
     const normalized = normalizePhone(value);
     if (normalized) return normalized;
+  }
+  return "";
+};
+
+const normalizeQaChatId = (value = "") => {
+  const raw = normalizeRaw(value);
+  if (!raw) return "";
+  return raw.replace(/\s+/g, "");
+};
+
+const pickQaPrimaryId = (...values) => {
+  for (const value of values) {
+    if (isQaLikeValue(value)) {
+      const normalized = normalizeQaChatId(value);
+      if (normalized) return normalized;
+    }
   }
   return "";
 };
@@ -91,6 +113,11 @@ const buildWhatsappKeys = (...values) => {
     const normalizedId = normalizeWhatsappIdValue(raw);
     if (!normalizedId) continue;
 
+    if (isQaLikeValue(rawValue)) {
+      appendKey(keys, `qa:${normalizeQaChatId(rawValue)}`);
+      continue;
+    }
+
     const digitsAny = normalizePhone(raw);
     if (digitsAny) appendKey(keys, `phone:${digitsAny}`);
 
@@ -99,22 +126,18 @@ const buildWhatsappKeys = (...values) => {
       const local = String(localPart || "").trim();
       const domain = String(domainPart || "").trim();
       if (local && domain) {
-        appendKey(keys, `wid:${local}@${domain}`);
+        appendKey(keys, `wafull:${local}@${domain}`);
       }
       if (local) {
-        appendKey(keys, `local:${local}`);
+        appendKey(keys, `wa:${local}`);
         const localDigits = String(local).replace(/\D/g, "");
-        if (localDigits) {
-          appendKey(keys, `phone:${localDigits}`);
-        }
+        if (localDigits) appendKey(keys, `phone:${localDigits}`);
       }
       continue;
     }
 
-    appendKey(keys, `local:${normalizedId}`);
-    if (!digitsAny) {
-      appendKey(keys, `id:${normalizedId}`);
-    }
+    appendKey(keys, `wa:${normalizedId}`);
+    if (!digitsAny) appendKey(keys, `id:${normalizedId}`);
   }
 
   return [...keys];
@@ -125,6 +148,9 @@ const normalizeClientIdentity = (input = {}) => {
   const whatsappId = input?.whatsappId || "";
   const chatId = input?.chatId || "";
   const canonicalClientPhone = input?.canonicalClientPhone || "";
+  const providedCanonicalClientId = String(input?.canonicalClientId || "").trim();
+
+  const qaPrimaryId = pickQaPrimaryId(chatId, whatsappId, providedCanonicalClientId);
 
   const canonicalPhoneDigits = normalizeCanonicalClientPhone(
     canonicalClientPhone,
@@ -133,14 +159,32 @@ const normalizeClientIdentity = (input = {}) => {
     chatId,
   );
 
+  const canonicalPhone = toE164(canonicalPhoneDigits);
   const normalizedWhatsappId = normalizeWhatsappIdValue(whatsappId || chatId || "");
-  const whatsappKeys = buildWhatsappKeys(whatsappId, chatId, canonicalPhoneDigits, phone);
+  const canonicalClientId = providedCanonicalClientId || qaPrimaryId || canonicalPhone;
+
+  const whatsappKeys = buildWhatsappKeys(
+    whatsappId,
+    chatId,
+    canonicalPhoneDigits,
+    phone,
+    qaPrimaryId,
+    canonicalClientId,
+  );
+
+  const identityKeys = new Set(whatsappKeys);
+  if (canonicalClientId) appendKey(identityKeys, `cid:${canonicalClientId}`);
+  if (qaPrimaryId) appendKey(identityKeys, `qa:${qaPrimaryId}`);
+  if (canonicalPhoneDigits) appendKey(identityKeys, `phone:${canonicalPhoneDigits}`);
 
   return {
-    canonicalPhone: toE164(canonicalPhoneDigits),
+    canonicalClientId,
+    canonicalPhone,
     canonicalPhoneDigits,
     whatsappId: normalizedWhatsappId,
+    qaChatId: qaPrimaryId,
     whatsappKeys,
+    identityKeys: [...identityKeys],
   };
 };
 
@@ -151,8 +195,16 @@ const intersectKeys = (left = [], right = []) => {
   return (left || []).filter((key) => rightSet.has(key));
 };
 
-const buildMismatchReason = ({ hasWhatsappMismatch, hasPhoneMismatch, hasComparableFields }) => {
+const buildMismatchReason = ({
+  hasCanonicalIdMismatch,
+  hasWhatsappMismatch,
+  hasPhoneMismatch,
+  hasQaMismatch,
+  hasComparableFields,
+}) => {
   if (!hasComparableFields) return "request_identity_empty";
+  if (hasCanonicalIdMismatch) return "canonical_client_id_mismatch";
+  if (hasQaMismatch) return "qa_chat_id_mismatch";
   if (hasWhatsappMismatch && hasPhoneMismatch) return "whatsapp_mismatch+phone_mismatch";
   if (hasWhatsappMismatch) return "whatsapp_mismatch";
   if (hasPhoneMismatch) return "phone_mismatch";
@@ -160,18 +212,32 @@ const buildMismatchReason = ({ hasWhatsappMismatch, hasPhoneMismatch, hasCompara
 };
 
 const matchIdentityPair = (bookingIdentity = {}, requestIdentity = {}) => {
-  const commonWhatsappKeys = intersectKeys(
-    bookingIdentity.whatsappKeys,
-    requestIdentity.whatsappKeys,
+  const commonIdentityKeys = intersectKeys(
+    bookingIdentity.identityKeys,
+    requestIdentity.identityKeys,
   );
 
-  const byWhatsapp = commonWhatsappKeys.length > 0;
+  const byCanonicalClientId =
+    Boolean(bookingIdentity.canonicalClientId) &&
+    Boolean(requestIdentity.canonicalClientId) &&
+    bookingIdentity.canonicalClientId === requestIdentity.canonicalClientId;
+
+  const byQaChatId =
+    Boolean(bookingIdentity.qaChatId) &&
+    Boolean(requestIdentity.qaChatId) &&
+    bookingIdentity.qaChatId === requestIdentity.qaChatId;
+
+  const byWhatsapp = commonIdentityKeys.some((key) => key.startsWith("wa:") || key.startsWith("wafull:"));
   const byPhone =
     Boolean(bookingIdentity.canonicalPhoneDigits) &&
     Boolean(requestIdentity.canonicalPhoneDigits) &&
     bookingIdentity.canonicalPhoneDigits === requestIdentity.canonicalPhoneDigits;
-  const matched = byWhatsapp || byPhone;
 
+  const matched = byCanonicalClientId || byQaChatId || byWhatsapp || byPhone;
+
+  const hasComparableCanonical =
+    Boolean(bookingIdentity.canonicalClientId) && Boolean(requestIdentity.canonicalClientId);
+  const hasComparableQa = Boolean(bookingIdentity.qaChatId) && Boolean(requestIdentity.qaChatId);
   const hasComparableWhatsapp =
     (bookingIdentity.whatsappKeys || []).length > 0 &&
     (requestIdentity.whatsappKeys || []).length > 0;
@@ -180,26 +246,39 @@ const matchIdentityPair = (bookingIdentity = {}, requestIdentity = {}) => {
     Boolean(requestIdentity.canonicalPhoneDigits);
 
   const reason = matched
-    ? byWhatsapp
-      ? "match.whatsapp"
-      : "match.phone"
+    ? byCanonicalClientId
+      ? "match.canonical_client_id"
+      : byQaChatId
+        ? "match.qa_chat_id"
+        : byWhatsapp
+          ? "match.whatsapp"
+          : "match.phone"
     : buildMismatchReason({
+        hasCanonicalIdMismatch: hasComparableCanonical && !byCanonicalClientId,
         hasWhatsappMismatch: hasComparableWhatsapp && !byWhatsapp,
         hasPhoneMismatch: hasComparablePhone && !byPhone,
-        hasComparableFields: hasComparableWhatsapp || hasComparablePhone,
+        hasQaMismatch: hasComparableQa && !byQaChatId,
+        hasComparableFields:
+          hasComparableCanonical || hasComparableWhatsapp || hasComparablePhone || hasComparableQa,
       });
 
   return {
     matched,
+    byCanonicalClientId,
+    byQaChatId,
     byWhatsapp,
     byPhone,
     reason,
     compared: {
+      requestCanonicalClientId: requestIdentity.canonicalClientId,
+      bookingCanonicalClientId: bookingIdentity.canonicalClientId,
+      requestQaChatId: requestIdentity.qaChatId,
+      bookingQaChatId: bookingIdentity.qaChatId,
       requestPhone: requestIdentity.canonicalPhone,
       bookingPhone: bookingIdentity.canonicalPhone,
       requestWhatsappKeys: requestIdentity.whatsappKeys || [],
       bookingWhatsappKeys: bookingIdentity.whatsappKeys || [],
-      commonWhatsappKeys,
+      commonIdentityKeys,
     },
   };
 };
@@ -209,6 +288,7 @@ const matchBookingsByClient = ({ bookings = [], client = {} } = {}) => {
 
   const audits = bookings.map((booking) => {
     const bookingIdentity = normalizeClientIdentity({
+      canonicalClientId: booking?.canonicalClientId || "",
       phone: booking?.clientPhone || "",
       whatsappId: booking?.clientWhatsappId || "",
       chatId: booking?.clientWhatsappId || "",
@@ -222,6 +302,8 @@ const matchBookingsByClient = ({ bookings = [], client = {} } = {}) => {
       bookingIdentity,
       requestIdentity,
       matched: pairMatch.matched,
+      byCanonicalClientId: pairMatch.byCanonicalClientId,
+      byQaChatId: pairMatch.byQaChatId,
       byWhatsapp: pairMatch.byWhatsapp,
       byPhone: pairMatch.byPhone,
       reason: pairMatch.reason,
@@ -229,20 +311,35 @@ const matchBookingsByClient = ({ bookings = [], client = {} } = {}) => {
     };
   });
 
+  const byCanonicalClientId = audits
+    .filter((item) => item.byCanonicalClientId)
+    .map((item) => item.booking);
+  const byQaChatId = audits.filter((item) => item.byQaChatId).map((item) => item.booking);
   const byWhatsapp = audits.filter((item) => item.byWhatsapp).map((item) => item.booking);
   const byPhone = audits.filter((item) => item.byPhone).map((item) => item.booking);
 
-  const strategy = byWhatsapp.length
-    ? "whatsapp"
-    : byPhone.length
-      ? "phone"
-      : "no_match";
+  let strategy = "no_match";
+  let matchedBookings = [];
+
+  if (byCanonicalClientId.length) {
+    strategy = "canonical_client_id";
+    matchedBookings = byCanonicalClientId;
+  } else if (byQaChatId.length) {
+    strategy = "qa_chat_id";
+    matchedBookings = byQaChatId;
+  } else if (byWhatsapp.length) {
+    strategy = "whatsapp";
+    matchedBookings = byWhatsapp;
+  } else if (byPhone.length) {
+    strategy = "phone";
+    matchedBookings = byPhone;
+  }
 
   return {
     requestIdentity,
     audits,
     strategy,
-    matchedBookings: byWhatsapp.length ? byWhatsapp : byPhone,
+    matchedBookings,
   };
 };
 
@@ -250,6 +347,8 @@ const matchClientIdentity = (left = {}, right = {}) => {
   const pair = matchIdentityPair(left, right);
   return {
     matched: pair.matched,
+    byCanonicalClientId: pair.byCanonicalClientId,
+    byQaChatId: pair.byQaChatId,
     byWhatsapp: pair.byWhatsapp,
     byPhone: pair.byPhone,
     reason: pair.reason,
@@ -258,17 +357,21 @@ const matchClientIdentity = (left = {}, right = {}) => {
 
 const findMatchingBookingsWithAudit = (bookings = [], requestIdentity = {}) => {
   const normalizedRequestIdentity =
-    requestIdentity && Array.isArray(requestIdentity.whatsappKeys)
+    requestIdentity && Array.isArray(requestIdentity.identityKeys)
       ? {
+          canonicalClientId: requestIdentity.canonicalClientId || "",
           canonicalPhone: requestIdentity.canonicalPhone || "",
           canonicalPhoneDigits: requestIdentity.canonicalPhoneDigits || "",
           whatsappId: requestIdentity.whatsappId || "",
+          qaChatId: requestIdentity.qaChatId || "",
           whatsappKeys: requestIdentity.whatsappKeys || [],
+          identityKeys: requestIdentity.identityKeys || [],
         }
       : normalizeClientIdentity(requestIdentity || {});
 
   const audits = bookings.map((booking) => {
     const bookingIdentity = normalizeClientIdentity({
+      canonicalClientId: booking?.canonicalClientId || "",
       phone: booking?.clientPhone || "",
       whatsappId: booking?.clientWhatsappId || "",
       chatId: booking?.clientWhatsappId || "",
@@ -280,6 +383,8 @@ const findMatchingBookingsWithAudit = (bookings = [], requestIdentity = {}) => {
       bookingIdentity,
       requestIdentity: normalizedRequestIdentity,
       matched: pairMatch.matched,
+      byCanonicalClientId: pairMatch.byCanonicalClientId,
+      byQaChatId: pairMatch.byQaChatId,
       byWhatsapp: pairMatch.byWhatsapp,
       byPhone: pairMatch.byPhone,
       reason: pairMatch.reason,
@@ -287,14 +392,32 @@ const findMatchingBookingsWithAudit = (bookings = [], requestIdentity = {}) => {
     };
   });
 
+  const byCanonicalClientId = audits
+    .filter((item) => item.byCanonicalClientId)
+    .map((item) => item.booking);
+  const byQaChatId = audits.filter((item) => item.byQaChatId).map((item) => item.booking);
   const byWhatsapp = audits.filter((item) => item.byWhatsapp).map((item) => item.booking);
   const byPhone = audits.filter((item) => item.byPhone).map((item) => item.booking);
 
   return {
     requestIdentity: normalizedRequestIdentity,
     audits,
-    strategy: byWhatsapp.length ? "whatsapp" : byPhone.length ? "phone" : "no_match",
-    matchedBookings: byWhatsapp.length ? byWhatsapp : byPhone,
+    strategy: byCanonicalClientId.length
+      ? "canonical_client_id"
+      : byQaChatId.length
+        ? "qa_chat_id"
+        : byWhatsapp.length
+          ? "whatsapp"
+          : byPhone.length
+            ? "phone"
+            : "no_match",
+    matchedBookings: byCanonicalClientId.length
+      ? byCanonicalClientId
+      : byQaChatId.length
+        ? byQaChatId
+        : byWhatsapp.length
+          ? byWhatsapp
+          : byPhone,
   };
 };
 

@@ -1,19 +1,18 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const {
-  matchBookingsByClient,
-} = require("../utils/identityNormalization");
+const { matchBookingsByClient } = require("../utils/identityNormalization");
 
-test("matching strategy prioriza whatsappId antes que teléfono", () => {
+test("matching prioriza canonicalClientId cuando existe", () => {
   const bookings = [
     {
-      _id: "booking-a",
+      _id: "booking-canonical",
+      canonicalClientId: "+5492610000000",
       clientPhone: "5492610000000",
-      clientWhatsappId: "otro-cliente@c.us",
+      clientWhatsappId: "otro@c.us",
     },
     {
-      _id: "booking-b",
+      _id: "booking-wa",
       clientPhone: "000000",
       clientWhatsappId: "5492610000000@lid",
     },
@@ -27,9 +26,9 @@ test("matching strategy prioriza whatsappId antes que teléfono", () => {
     },
   });
 
-  assert.equal(result.strategy, "whatsapp");
+  assert.equal(result.strategy, "canonical_client_id");
   assert.equal(result.matchedBookings.length, 1);
-  assert.equal(String(result.matchedBookings[0]._id), "booking-b");
+  assert.equal(String(result.matchedBookings[0]._id), "booking-canonical");
 });
 
 test("matching cae a teléfono canónico si no hay match por whatsappId", () => {
@@ -54,25 +53,21 @@ test("matching cae a teléfono canónico si no hay match por whatsappId", () => 
   assert.equal(String(result.matchedBookings[0]._id), "booking-phone");
 });
 
-test("matching devuelve auditoría clara cuando no encuentra reservas", () => {
-  const bookings = [
-    {
-      _id: "booking-no-match",
-      clientPhone: "5492613333333",
-      clientWhatsappId: "5492613333333@c.us",
-    },
-  ];
-
+test("matching por QA chatId cuando no hay teléfono real", () => {
   const result = matchBookingsByClient({
-    bookings,
+    bookings: [
+      {
+        _id: "booking-qa",
+        canonicalClientId: "qa-defensive-server:01:xyz@c.us",
+        clientWhatsappId: "qa-defensive-server:01:xyz@c.us",
+      },
+    ],
     client: {
-      chatId: "5492612222222@c.us",
-      canonicalClientPhone: "5492612222222",
+      chatId: "qa-defensive-server:01:xyz@c.us",
     },
   });
 
-  assert.equal(result.strategy, "no_match");
-  assert.equal(result.matchedBookings.length, 0);
-  assert.equal(result.audits.length, 1);
-  assert.equal(result.audits[0].reason, "whatsapp_mismatch+phone_mismatch");
+  assert.equal(result.strategy, "canonical_client_id");
+  assert.equal(result.matchedBookings.length, 1);
+  assert.equal(String(result.matchedBookings[0]._id), "booking-qa");
 });

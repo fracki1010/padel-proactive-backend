@@ -529,8 +529,9 @@ const extractFullNameFromMessage = (rawMessage, _aiCandidate = "") => {
   if (isNonNameReply(raw)) return null;
 
   const explicitPatterns = [
-    /(?:mi\s+nombre\s+es|soy)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}){1,3})\s*$/i,
+    /(?:mi\s+nombre\s+es|soy)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}){1,3})(?:\b|[,.!?]|$)/i,
     /^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}){1,3})$/,
+    /\b([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}){0,2})\b/i,
   ];
 
   for (const pattern of explicitPatterns) {
@@ -659,6 +660,9 @@ const parseStrictDraftConfirmation = (value = "", draftCount = 1) => {
 
   if (draftCount === 1) {
     if (/^confirmar(?:\s+reserva|\s+turno)?$/.test(text)) {
+      return { type: "ALL" };
+    }
+    if (isEquivalentConfirmation(text)) {
       return { type: "ALL" };
     }
   }
@@ -997,6 +1001,15 @@ const buildAttendanceOptionsOnlyReply = () =>
   "Para este turno solo puedo recibir una opción:\n1) SI ASISTO\n2) NO ASISTO";
 
 const CONCRETE_RESPONSE_TIMEOUT_MS = 3 * 60 * 1000;
+const ALLOWED_AI_ACTIONS = new Set([
+  "SERVICE_DEGRADED",
+  "INVALID_TIME_INPUT",
+  "CREATE_BOOKING",
+  "CHECK_AVAILABILITY",
+  "LIST_ACTIVE_BOOKINGS",
+  "CANCEL_BOOKING",
+  "FIXED_TURN_REQUEST",
+]);
 
 const parseStrictYesNoAnswer = (value = "") => {
   const text = normalizeLooseText(value);
@@ -1013,7 +1026,7 @@ const parseStrictYesNoAnswer = (value = "") => {
 const parseStrictCancel = (value = "") => {
   const text = normalizeLooseText(value);
   if (!text) return false;
-  return text === "cancelar";
+  return /\bcancel(ar|ame|a|ado)?\b/.test(text);
 };
 
 const parseStrictOfferConfirmation = (value = "") => {
@@ -1385,24 +1398,41 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             time: normalizeTimeString(extractTimeFromMessage(userMessage)),
             source: "strict_state_interrupt",
           };
+        } else if (transition.action === "LIST_ACTIVE_BOOKINGS") {
+          forcedActionFromState = {
+            action: "LIST_ACTIVE_BOOKINGS",
+            source: "strict_state_interrupt",
+          };
+        } else if (transition.action === "CREATE_BOOKING") {
+          forcedActionFromState = {
+            action: "CREATE_BOOKING",
+            date: extractDateFromMessage(userMessage),
+            time: normalizeTimeString(extractTimeFromMessage(userMessage)),
+            courtName: "INDIFERENTE",
+            source: "strict_state_interrupt",
+          };
         }
       } else if (transition.decision === "REQUIRE_STATE_INPUT") {
-        const strictInputReply = buildStrictStateInvalidInputReply(
-          strictInputState,
-          sessionMeta,
-        );
-        auditSecurityEvent({
-          companyId,
-          chatId,
-          sessionId,
-          event: "STATE_INPUT_BLOCKED",
-          reason: strictInputState,
-          userMessage,
-        });
-        sessionService.addMessage(sessionId, "user", userMessage);
-        sessionService.addMessage(sessionId, "assistant", strictInputReply);
-        stampConcreteAnswerDeadline(sessionId, sessionMeta);
-        return strictInputReply;
+        if (strictInputState === "FULL_NAME_CAPTURE") {
+          // En captura de nombre interpretamos el mensaje en lugar de bloquear.
+        } else {
+          const strictInputReply = buildStrictStateInvalidInputReply(
+            strictInputState,
+            sessionMeta,
+          );
+          auditSecurityEvent({
+            companyId,
+            chatId,
+            sessionId,
+            event: "STATE_INPUT_BLOCKED",
+            reason: strictInputState,
+            userMessage,
+          });
+          sessionService.addMessage(sessionId, "user", userMessage);
+          sessionService.addMessage(sessionId, "assistant", strictInputReply);
+          stampConcreteAnswerDeadline(sessionId, sessionMeta);
+          return strictInputReply;
+        }
       }
     }
 
@@ -1423,9 +1453,6 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       number,
       chatId,
     );
-    console.log(`👤 Mensaje de: ${knownName || chatId}`);
-    console.log(`📞 Número de WhatsApp detectado: ${number}`);
-    console.log(`📇 Número canónico para reservas: ${canonicalClientPhone}`);
 
     if (sessionMeta.awaitingAttendanceConfirmation && sessionMeta.attendanceBookingId) {
       const attendanceBooking = await Booking.findOne({
@@ -1872,19 +1899,16 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         });
         if (hasActiveBooking) {
           sessionService.updateMeta(sessionId, {
-            awaitingExtraBookingConfirmation: true,
-            pendingBooking: {
-              courtName: pendingBookingOffer.courtName || "INDIFERENTE",
-              dateStr: pendingBookingOffer.dateStr,
-              timeStr: pendingBookingOffer.timeStr,
-            },
-            pendingBookingClientName: requestedClientName,
             pendingBookingOffer: null,
+            pendingBooking: null,
+            pendingBookingDrafts: null,
+            pendingBookingClientName: null,
+            awaitingExtraBookingConfirmation: false,
             awaitingFullNameForBooking: false,
-            concreteAnswerRequestedAt:
-              Number(sessionMeta.concreteAnswerRequestedAt || 0) || Date.now(),
+            concreteAnswerRequestedAt: null,
           });
-          const askExtraBookingReply = buildSecondBookingConfirmationText();
+          const askExtraBookingReply =
+            "Ya tenés una reserva activa. Primero cancelá la vigente y después te ayudo a reservar otra.";
           sessionService.addMessage(sessionId, "user", userMessage);
           sessionService.addMessage(sessionId, "assistant", askExtraBookingReply);
           return askExtraBookingReply;
@@ -2081,7 +2105,9 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
       if (
         fullNameCaptureGlobalAction === "CHECK_AVAILABILITY" ||
-        fullNameCaptureGlobalAction === "CANCEL_BOOKING"
+        fullNameCaptureGlobalAction === "CANCEL_BOOKING" ||
+        fullNameCaptureGlobalAction === "LIST_ACTIVE_BOOKINGS" ||
+        fullNameCaptureGlobalAction === "CREATE_BOOKING"
       ) {
         clearBookingStrictStateMeta(sessionId);
         sessionMeta = sessionService.getMeta(sessionId);
@@ -2093,12 +2119,27 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             source: "full_name_capture_interrupt",
           };
         } else {
-          forcedActionFromState = {
-            action: "CANCEL_BOOKING",
-            date: extractDateFromMessage(userMessage),
-            time: normalizeTimeString(extractTimeFromMessage(userMessage)),
-            source: "full_name_capture_interrupt",
-          };
+          if (fullNameCaptureGlobalAction === "LIST_ACTIVE_BOOKINGS") {
+            forcedActionFromState = {
+              action: "LIST_ACTIVE_BOOKINGS",
+              source: "full_name_capture_interrupt",
+            };
+          } else if (fullNameCaptureGlobalAction === "CREATE_BOOKING") {
+            forcedActionFromState = {
+              action: "CREATE_BOOKING",
+              date: extractDateFromMessage(userMessage),
+              time: normalizeTimeString(extractTimeFromMessage(userMessage)),
+              courtName: "INDIFERENTE",
+              source: "full_name_capture_interrupt",
+            };
+          } else {
+            forcedActionFromState = {
+              action: "CANCEL_BOOKING",
+              date: extractDateFromMessage(userMessage),
+              time: normalizeTimeString(extractTimeFromMessage(userMessage)),
+              source: "full_name_capture_interrupt",
+            };
+          }
         }
       }
 
@@ -2148,11 +2189,6 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         forcedActionFromState ||
         earlyDeterministicAction ||
         inferDeterministicAction(userMessage);
-      if (parsedData?.action) {
-        console.log(
-          `[MessageHandler][${companyId || "global"}] Deterministic action=${parsedData.action} chatId=${chatId}`,
-        );
-      }
     }
 
     if (!parsedData) {
@@ -2161,8 +2197,11 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         companyId,
         strictQuestionFlowEnabled,
       });
-      console.log("🤖 Respuesta RAW de IA:", aiResponseRaw); // Para depuración
       parsedData = extractJSON(aiResponseRaw);
+    }
+
+    if (parsedData?.action && !ALLOWED_AI_ACTIONS.has(parsedData.action)) {
+      parsedData = null;
     }
 
     if (parsedData) {
@@ -2338,6 +2377,19 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           sessionService.addMessage(sessionId, "assistant", replyText);
           return replyText;
         }
+
+        const hasActiveBooking = await bookingService.hasActiveBookingForClient({
+          companyId,
+          clientPhone: canonicalClientPhone,
+          clientWhatsappId: chatId,
+        });
+        if (hasActiveBooking) {
+          replyText =
+            "Ya tenés una reserva activa. Primero cancelá la vigente y después te ayudo a reservar otra.";
+          sessionService.addMessage(sessionId, "assistant", replyText);
+          return replyText;
+        }
+
         let requestedClientName = normalizeNameText(knownName || "");
 
         if (!requestedDate || !isValidIsoDate(requestedDate)) {
@@ -2462,19 +2514,12 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       // CASO C: LISTAR RESERVAS VIGENTES DEL CLIENTE
       else if (parsedData.action === "LIST_ACTIVE_BOOKINGS") {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
-        console.log(
-          `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS via AI chatId=${chatId} canonicalClientPhone=${canonicalClientPhone}`,
-        );
         const activeBookings = await bookingService.getActiveBookingsForClient({
           companyId,
           clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
           limit: 15,
         });
-        console.log(
-          `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS result success=${activeBookings?.success} count=${activeBookings?.data?.length || 0}`,
-        );
-
         if (activeBookings.success) {
           replyText = buildActiveBookingsReply(activeBookings.data);
         } else {
@@ -2485,15 +2530,10 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       // CASO D: CANCELAR TURNO
       else if (parsedData.action === "CANCEL_BOOKING") {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
-        const requestedDate = parsedData.date;
-        const requestedTime = normalizeTimeString(parsedData.time);
-
-        if (!requestedDate || !isValidIsoDate(requestedDate) || !requestedTime) {
-          replyText =
-            "⚠️ Para cancelar necesito *fecha y hora exactas* del turno (ej: 2026-04-07 17:00).";
-          sessionService.addMessage(sessionId, "assistant", replyText);
-          return replyText;
-        }
+        const requestedDate = parsedData.date || extractDateFromMessage(userMessage);
+        const requestedTime = normalizeTimeString(
+          parsedData.time || extractTimeFromMessage(userMessage),
+        );
 
         const cancelResult = await bookingService.cancelBooking({
           companyId,
@@ -2522,7 +2562,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
           replyText =
             `❌ *Turno Cancelado*\n\n` +
-            `📅 *Fecha:* ${getFormattedDate(requestedDate)}\n` +
+            `📅 *Fecha:* ${getFormattedDate(cancelResult.data?.date || requestedDate)}\n` +
             `⏰ *Hora:* ${cancelResult.data.time}\n\n` +
             `_Tu turno fue cancelado correctamente. ¡Esperamos verte pronto! 👋_` +
             penaltyNote;
@@ -2602,18 +2642,12 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
               : null,
           });
         } else if (fallback?.action === "LIST_ACTIVE_BOOKINGS") {
-          console.log(
-            `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS via fallback chatId=${chatId} canonicalClientPhone=${canonicalClientPhone}`,
-          );
           const activeBookings = await bookingService.getActiveBookingsForClient({
             companyId,
             clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
             limit: 15,
           });
-          console.log(
-            `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS fallback result success=${activeBookings?.success} count=${activeBookings?.data?.length || 0}`,
-          );
           replyText = activeBookings.success
             ? buildActiveBookingsReply(activeBookings.data)
             : "⚠️ No pude consultar tus reservas vigentes en este momento.";
@@ -2671,18 +2705,12 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             : null,
         });
       } else if (fallback?.action === "LIST_ACTIVE_BOOKINGS") {
-        console.log(
-          `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS via plain-fallback chatId=${chatId} canonicalClientPhone=${canonicalClientPhone}`,
-        );
         const activeBookings = await bookingService.getActiveBookingsForClient({
           companyId,
           clientPhone: canonicalClientPhone,
             clientWhatsappId: chatId,
           limit: 15,
         });
-        console.log(
-          `[MessageHandler][${companyId || "global"}] LIST_ACTIVE_BOOKINGS plain-fallback result success=${activeBookings?.success} count=${activeBookings?.data?.length || 0}`,
-        );
         replyText = activeBookings.success
           ? buildActiveBookingsReply(activeBookings.data)
           : "⚠️ No pude consultar tus reservas vigentes en este momento.";

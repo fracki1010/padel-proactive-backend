@@ -29,6 +29,7 @@ const bookingSchema = new mongoose.Schema(
     clientName: { type: String, required: true },
     clientPhone: { type: String, required: true },
     clientWhatsappId: { type: String, default: null },
+    canonicalClientId: { type: String, default: null },
 
     // 5. ESTADO
     status: {
@@ -80,5 +81,7 @@ bookingSchema.index(
     partialFilterExpression: { status: { $ne: "cancelado" } },
   },
 );
+
+bookingSchema.index({ companyId: 1, canonicalClientId: 1, date: 1 });
 
 module.exports = mongoose.model("Booking", bookingSchema);

@@ -1,5 +1,6 @@
 const Booking = require("../models/booking.model");
 const User = require("../models/user.model");
+const { normalizeClientIdentity } = require("../utils/identityNormalization");
 
 const DEFAULT_MATERIALIZATION_DAYS_AHEAD = Number(
   process.env.FIXED_TURNS_MATERIALIZATION_DAYS_AHEAD || 90,
@@ -80,6 +81,11 @@ const materializeFixedBookingsForDate = async ({
       }
 
       try {
+        const identity = normalizeClientIdentity({
+          phone: user.phoneNumber || "",
+          whatsappId: user.whatsappId || "",
+          chatId: user.whatsappId || "",
+        });
         await Booking.create({
           ...scope,
           court: fixedTurn.court._id,
@@ -88,6 +94,7 @@ const materializeFixedBookingsForDate = async ({
           clientName: user.name || "Cliente",
           clientPhone: user.phoneNumber || "",
           clientWhatsappId: user.whatsappId || null,
+          canonicalClientId: identity.canonicalClientId || null,
           status: "reservado",
           paymentStatus: "pendiente",
           isFixed: true,
