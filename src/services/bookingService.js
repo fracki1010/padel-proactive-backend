@@ -19,8 +19,8 @@ const {
   materializeFixedBookingsForDate,
 } = require("./fixedTurnsMaterialization.service");
 const {
-  buildClientIdentity,
-  findMatchingBookingsWithAudit,
+  matchBookingsByClient,
+  normalizeClientIdentity,
   normalizeCanonicalClientPhone,
 } = require("../utils/identityNormalization");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
@@ -31,7 +31,7 @@ const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null
 const escapeRegex = (value = "") =>
   String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const buildRequestIdentity = ({ clientPhone = "", clientWhatsappId = "" }) =>
-  buildClientIdentity({
+  normalizeClientIdentity({
     phone: clientPhone,
     whatsappId: clientWhatsappId,
     chatId: clientWhatsappId,
@@ -146,8 +146,16 @@ const createNewBooking = async ({
 }) => {
   try {
     const scope = buildCompanyFilter(companyId);
+    const normalizedClientPhone =
+      normalizeCanonicalClientPhone(clientPhone, clientWhatsappId) || String(clientPhone || "");
+    const requestIdentityPayload = {
+      phone: normalizedClientPhone,
+      whatsappId: clientWhatsappId,
+      chatId: clientWhatsappId,
+      canonicalClientPhone: normalizedClientPhone,
+    };
     // 0. Verificar si el usuario está suspendido
-    const user = await User.findOne({ ...scope, phoneNumber: clientPhone });
+    const user = await User.findOne({ ...scope, phoneNumber: normalizedClientPhone });
     if (user && user.isSuspended) {
       return { success: false, error: "SUSPENDED" };
     }
@@ -171,7 +179,7 @@ const createNewBooking = async ({
     // 2.0 Límite diario por cliente: máximo 3 reservas activas por día
     const clientDailyBookingsCount = await Booking.countDocuments({
       ...scope,
-      clientPhone,
+      clientPhone: normalizedClientPhone,
       date: bookingDate,
       status: { $ne: "cancelado" },
     });
@@ -188,15 +196,22 @@ const createNewBooking = async ({
 
     // 2.1 Evitar duplicados del mismo cliente en la misma fecha/hora
     if (!allowSameClientSameSlot) {
-      const existingClientBooking = await Booking.findOne({
+      const slotBookings = await Booking.find({
         ...scope,
-        clientPhone,
         date: bookingDate,
         timeSlot: slot._id,
         status: { $ne: "cancelado" },
+      })
+        .select("_id clientPhone clientWhatsappId")
+        .lean();
+
+      const matchedClientInSlot = matchBookingsByClient({
+        bookings: slotBookings,
+        client: requestIdentityPayload,
       });
 
-      if (existingClientBooking) {
+      if (matchedClientInSlot.matchedBookings.length > 0) {
+        const existingClientBooking = matchedClientInSlot.matchedBookings[0];
         return {
           success: false,
           error: "ALREADY_BOOKED",
@@ -284,8 +299,8 @@ const createNewBooking = async ({
       date: bookingDate,
       timeSlot: slot._id,
       clientName,
-      clientPhone: normalizeCanonicalClientPhone(clientPhone) || String(clientPhone || ""),
-      clientWhatsappId: buildClientIdentity({ whatsappId: clientWhatsappId }).whatsappValue || null,
+      clientPhone: normalizedClientPhone,
+      clientWhatsappId: normalizeClientIdentity({ whatsappId: clientWhatsappId }).whatsappId || null,
       finalPrice: slot.price, // Congelamos el precio actual
       status: "confirmado",
     });
@@ -329,7 +344,6 @@ const hasActiveBookingForClient = async ({
     const scope = buildCompanyFilter(companyId);
     const todayStr = getDatePartsInTimezone(new Date());
     const todayDate = dateStringToUtcMidnight(todayStr);
-    const requestIdentity = buildRequestIdentity({ clientPhone, clientWhatsappId });
 
     const candidates = await Booking.find({
       ...scope,
@@ -340,7 +354,15 @@ const hasActiveBookingForClient = async ({
       .limit(200)
       .lean();
 
-    const matching = findMatchingBookingsWithAudit(candidates, requestIdentity);
+    const matching = matchBookingsByClient({
+      bookings: candidates,
+      client: {
+        phone: clientPhone,
+        whatsappId: clientWhatsappId,
+        chatId: clientWhatsappId,
+        canonicalClientPhone: clientPhone,
+      },
+    });
 
     return matching.matchedBookings.length > 0;
   } catch (error) {
@@ -380,7 +402,15 @@ const getActiveBookingsForClient = async ({
 
     console.log(`${debugPrefix} candidates=${bookings.length}`);
 
-    const matchingResult = findMatchingBookingsWithAudit(bookings, requestIdentity);
+    const matchingResult = matchBookingsByClient({
+      bookings,
+      client: {
+        phone: clientPhone,
+        whatsappId: clientWhatsappId,
+        chatId: clientWhatsappId,
+        canonicalClientPhone: clientPhone,
+      },
+    });
     const bookingAudits = matchingResult.audits.map((item) => ({
       bookingId: String(item?.booking?._id || ""),
       bookingIdentity: item.bookingIdentity,
@@ -388,6 +418,7 @@ const getActiveBookingsForClient = async ({
       byPhone: item.byPhone,
       matched: item.matched,
       reason: item.reason,
+      compared: item.compared,
       date: item?.booking?.date
         ? new Date(item.booking.date).toISOString().slice(0, 10)
         : "",
@@ -399,7 +430,9 @@ const getActiveBookingsForClient = async ({
     const matchedByPhone = bookingAudits.filter((item) => item.byPhone).length;
 
     console.log(
-      `${debugPrefix} audit summary candidates=${bookings.length} matched=${matchingByClient.length} strategy=${matchingResult.strategy} matchedByWhatsapp=${matchedByWhatsapp} matchedByPhone=${matchedByPhone}`,
+      `${debugPrefix} audit summary candidates=${bookings.length} matched=${matchingByClient.length} strategy=${matchingResult.strategy} matchedByWhatsapp=${matchedByWhatsapp} matchedByPhone=${matchedByPhone} request=${JSON.stringify(
+        matchingResult.requestIdentity,
+      )}`,
     );
     if (!matchingByClient.length) {
       console.log(
@@ -535,7 +568,8 @@ const cancelBooking = async ({
   try {
     const scope = buildCompanyFilter(companyId);
     const bookingDate = dateStringToUtcMidnight(dateStr);
-    const requestIdentity = buildRequestIdentity({ clientPhone, clientWhatsappId });
+    const normalizedClientPhone =
+      normalizeCanonicalClientPhone(clientPhone, clientWhatsappId) || String(clientPhone || "");
 
     // 1. Buscar el slot por hora
     const slot = await TimeSlot.findOne({ ...scope, startTime: timeStr });
@@ -551,7 +585,15 @@ const cancelBooking = async ({
       status: { $ne: "cancelado" },
     });
 
-    const matching = findMatchingBookingsWithAudit(bookingsInSlot, requestIdentity);
+    const matching = matchBookingsByClient({
+      bookings: bookingsInSlot,
+      client: {
+        phone: normalizedClientPhone,
+        whatsappId: clientWhatsappId,
+        chatId: clientWhatsappId,
+        canonicalClientPhone: normalizedClientPhone,
+      },
+    });
     const booking = matching.matchedBookings[0] || null;
 
     if (!booking) {
@@ -586,7 +628,7 @@ const cancelBooking = async ({
       getPenaltyLimit(companyId),
       getPenaltySystemEnabled(companyId),
     ]);
-    const user = await User.findOne({ ...scope, phoneNumber: clientPhone });
+    const user = await User.findOne({ ...scope, phoneNumber: normalizedClientPhone });
     let newPenalties = 0;
     let nowSuspended = false;
     let penaltyApplied = false;
@@ -611,7 +653,7 @@ const cancelBooking = async ({
     await sendAdminNotification(
       "booking_cancelled",
       `Turno Cancelado${suspendedNote}`,
-      `Cliente: ${booking.clientName}\nTeléfono: ${clientPhone}\nFecha: ${formatBookingDateShort(booking.date)}\nHora: ${slot.startTime}\nPenalizaciones: ${PENALTY_SYSTEM_ENABLED ? `${newPenalties}/${PENALTY_LIMIT}` : "desactivadas"}`,
+      `Cliente: ${booking.clientName}\nTeléfono: ${normalizedClientPhone}\nFecha: ${formatBookingDateShort(booking.date)}\nHora: ${slot.startTime}\nPenalizaciones: ${PENALTY_SYSTEM_ENABLED ? `${newPenalties}/${PENALTY_LIMIT}` : "desactivadas"}`,
       { bookingId: booking._id, companyId },
       { companyId },
     );
