@@ -7,40 +7,47 @@ const getCourtSummary = async (companyId = null) => {
             isActive: true,
             companyId: companyId || null,
         });
-        
-        
+
         if (courts.length === 0) return { info: "No hay canchas.", areDifferent: false };
 
-        // Extraemos tipos únicos de superficie y techado
-        const types = courts.map(c => `${c.surface}-${c.isIndoor ? 'Techada' : 'Descubierta'}`);
-        const uniqueTypes = [...new Set(types)]; // Elimina duplicados
+        // Agrupamos por courtType
+        const typeGroups = {};
+        for (const c of courts) {
+            const type = c.courtType || "Estándar";
+            if (!typeGroups[type]) typeGroups[type] = [];
+            typeGroups[type].push(c.name);
+        }
 
+        const uniqueTypes = Object.keys(typeGroups);
         const areDifferent = uniqueTypes.length > 1;
-        
+
         let instructions = "";
 
         if (areDifferent) {
+            const typeList = uniqueTypes.map(t => `"${t}" (${typeGroups[t].join(', ')})`).join(', ');
             instructions = `
             [SITUACIÓN: CANCHAS DIFERENTES]
-            - Tenemos variedad de canchas: ${uniqueTypes.join(', ')}.
-            - SI EL USUARIO NO ESPECIFICA, DEBES PREGUNTAR: "¿Prefieres techada, descubierta o alguna superficie en especial?".
-            - Solo asigna una si el usuario elige.
+            - Tenemos los siguientes tipos de cancha: ${typeList}.
+            - SI EL USUARIO NO ESPECIFICA EL TIPO, DEBES PREGUNTAR cuál prefiere mencionando los tipos disponibles.
+            - Cuando el usuario elija un tipo, manda "courtName": "<tipo exacto>" (ej: "Techada").
+            - El sistema asignará automáticamente la cancha libre de ese tipo.
+            - Solo manda el nombre de una cancha específica si el usuario pide una cancha puntual por nombre.
             `;
         } else {
             instructions = `
             [SITUACIÓN: CANCHAS IGUALES]
-            - Todas las canchas son iguales (${uniqueTypes[0]}).
+            - Todas las canchas son del mismo tipo (${uniqueTypes[0]}).
             - NO PREGUNTES "¿Qué cancha querés?". ES MOLESTO.
             - Si el usuario pide turno, asume que le da igual.
             - En el JSON, manda "courtName": "INDIFERENTE".
             `;
         }
 
-        return { instructions, areDifferent };
+        return { instructions, areDifferent, typeGroups };
 
     } catch (error) {
         console.error(error);
-        return { instructions: "", areDifferent: false };
+        return { instructions: "", areDifferent: false, typeGroups: {} };
     }
 };
 

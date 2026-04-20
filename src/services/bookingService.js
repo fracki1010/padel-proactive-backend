@@ -250,44 +250,41 @@ const createNewBooking = async ({
     // ESTRATEGIA DE SELECCIÓN DE CANCHA
     // =================================================================
 
+    const { COURT_TYPES } = require('../models/court.model');
+
+    const busyBookings = await Booking.find({
+      ...scope,
+      date: bookingDate,
+      timeSlot: slot._id,
+      status: { $ne: "cancelado" },
+    });
+    const busyCourtIds = busyBookings.map((b) => b.court.toString());
+
     // CASO A: AL USUARIO LE DA IGUAL ("INDIFERENTE")
-    // La IA manda "INDIFERENTE" cuando sabe que las canchas son iguales
     if (courtName === "INDIFERENTE") {
-      // a) Buscamos TODAS las canchas activas
       const allCourts = await Court.find({ ...scope, isActive: true });
-
-      // b) Buscamos qué canchas están ocupadas en ese horario exacto
-      const busyBookings = await Booking.find({
-        ...scope,
-        date: bookingDate,
-        timeSlot: slot._id,
-        status: { $ne: "cancelado" },
-      });
-
-      // Array de IDs de canchas ocupadas
-      const busyCourtIds = busyBookings.map((b) => b.court.toString());
-
-      // c) Filtramos: Nos quedamos con la primera que NO esté en la lista de ocupadas
       selectedCourt = allCourts.find(
         (c) => !busyCourtIds.includes(c._id.toString()),
       );
-
-      // Si no quedó ninguna, es que está todo lleno
-      if (!selectedCourt) {
-        return { success: false, error: "BUSY" };
-      }
+      if (!selectedCourt) return { success: false, error: "BUSY" };
     }
-    // CASO B: EL USUARIO ELIGIÓ UNA ESPECÍFICA (Ej: "Cancha 1" o "Techada")
+    // CASO B: EL USUARIO ELIGIÓ UN TIPO (Ej: "Techada", "VIP")
+    else if (COURT_TYPES.includes(courtName)) {
+      const courtsOfType = await Court.find({ ...scope, isActive: true, courtType: courtName });
+      selectedCourt = courtsOfType.find(
+        (c) => !busyCourtIds.includes(c._id.toString()),
+      );
+      if (!selectedCourt) return { success: false, error: "BUSY" };
+    }
+    // CASO C: EL USUARIO ELIGIÓ UNA CANCHA ESPECÍFICA POR NOMBRE
     else {
       const escapedCourtName = escapeRegex(courtName);
-      // a) Buscamos esa cancha específica
       selectedCourt = await Court.findOne({
         ...scope,
         name: { $regex: new RegExp(`^${escapedCourtName}$`, "i") },
       });
 
       if (!selectedCourt) {
-        // Intento fallback: Búsqueda parcial por si dijo "la 1" en vez de "Cancha 1"
         selectedCourt = await Court.findOne({
           ...scope,
           name: { $regex: escapedCourtName, $options: "i" },
@@ -296,7 +293,6 @@ const createNewBooking = async ({
           return { success: false, error: "CANCHA_NOT_FOUND" };
       }
 
-      // b) Verificamos si ESA cancha puntual está ocupada
       const existingBooking = await Booking.findOne({
         ...scope,
         court: selectedCourt._id,
@@ -305,9 +301,7 @@ const createNewBooking = async ({
         status: { $ne: "cancelado" },
       });
 
-      if (existingBooking) {
-        return { success: false, error: "BUSY" };
-      }
+      if (existingBooking) return { success: false, error: "BUSY" };
     }
 
     // =================================================================
@@ -509,6 +503,18 @@ const getAvailableSlots = async (dateStr, options = {}) => {
       return true;
     });
 
+    const blockedSlots = {};
+    for (const slot of allSlots) {
+      const bookingsForThisSlot = bookings.filter(
+        (b) => b.timeSlot.toString() === slot._id.toString(),
+      );
+      if (bookingsForThisSlot.length >= totalCourtsCount && totalCourtsCount > 0) {
+        blockedSlots[slot.startTime] = {
+          isFixed: bookingsForThisSlot.every((b) => b.isFixed === true),
+        };
+      }
+    }
+
     return {
       success: true,
       date: dateStr,
@@ -527,6 +533,7 @@ const getAvailableSlots = async (dateStr, options = {}) => {
           totalCourts: Number(totalCourtsCount),
         };
       }),
+      blockedSlots,
     };
   } catch (error) {
     console.error("Error obteniendo disponibilidad:", error);
