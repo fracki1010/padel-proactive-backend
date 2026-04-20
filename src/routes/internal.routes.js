@@ -1,12 +1,20 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const { handleIncomingMessage } = require("../handlers/messageHandler");
+const { getGroqKeyPoolStats } = require("../services/groqService");
 const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
 } = require("../services/whatsappCommandQueue.service");
 
 const router = express.Router();
+
+const isInternalTokenValid = (req) => {
+  const expectedToken = String(process.env.BACKEND_INTERNAL_TOKEN || "").trim();
+  if (!expectedToken) return true;
+  const receivedToken = String(req.headers["x-internal-token"] || "").trim();
+  return receivedToken === expectedToken;
+};
 
 const normalizeCompanyId = (rawCompanyId) => {
   if (!rawCompanyId) return null;
@@ -41,10 +49,7 @@ const extractReplyMessage = (responseRaw) => {
 };
 
 router.post("/whatsapp/incoming", async (req, res) => {
-  const expectedToken = String(process.env.BACKEND_INTERNAL_TOKEN || "").trim();
-  const receivedToken = String(req.headers["x-internal-token"] || "").trim();
-
-  if (expectedToken && receivedToken !== expectedToken) {
+  if (!isInternalTokenValid(req)) {
     return res.status(401).json({ success: false, error: "Invalid internal token" });
   }
 
@@ -93,6 +98,24 @@ router.post("/whatsapp/incoming", async (req, res) => {
         enqueued: true,
         commandId: command?._id ? String(command._id) : null,
       },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: String(error?.message || error),
+    });
+  }
+});
+
+router.get("/groq/key-pool", async (req, res) => {
+  if (!isInternalTokenValid(req)) {
+    return res.status(401).json({ success: false, error: "Invalid internal token" });
+  }
+
+  try {
+    return res.status(200).json({
+      success: true,
+      data: getGroqKeyPoolStats(),
     });
   } catch (error) {
     return res.status(500).json({
