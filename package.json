@@ -22,6 +22,7 @@
     "seed:super-admin": "node src/seed/seedAdmin.js",
     "test:wa:defensive": "node src/scripts/replayWhatsappDefensiveTests.js",
     "test:wa:audit": "node src/scripts/replayWhatsappDefensiveTests.js --file docs/whatsapp-defensive-test-messages.txt --report-file docs/whatsapp-replay-audit-latest.md --strict-assertions",
+    "test:wa:audit:safe": "node src/scripts/replayWhatsappDefensiveTests.js --file docs/whatsapp-defensive-test-messages.txt --report-file docs/whatsapp-replay-audit-latest.md --strict-assertions --max-ai-calls 30",
     "migrate:multi-tenant": "node scripts/migrateToMultiTenant.js",
     "requeue:wa-queued": "node scripts/requeueQueuedWhatsappCommands.js"
   },

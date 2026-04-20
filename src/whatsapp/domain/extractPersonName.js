@@ -25,6 +25,7 @@ const suspiciousPayloadPatterns = [
 const nonNameCommandPatterns = [
   /\b(reservar|reserva|turno|cancha|hora|disponibilidad|cancelar|confirmar|admin)\b/i,
   /\b(hoy|manana|pasado manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/i,
+  /^(como|que|quien|donde|cuando|cuanto|cual|por que)\s/i,
 ];
 
 const TOKEN_REGEX = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[\-'][A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)*$/;

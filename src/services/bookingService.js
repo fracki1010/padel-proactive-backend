@@ -30,7 +30,7 @@ const {
 } = require("./bookingMatching.service");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
-  process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
+  process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 3,
 );
 const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
 const escapeRegex = (value = "") =>
