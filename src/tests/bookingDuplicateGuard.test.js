@@ -1,25 +1,24 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { matchBookingsByClient } = require("../utils/identityNormalization");
+const { matchBookingsByClient } = require("../services/bookingMatching.service");
 
-test("evita doble CREATE_BOOKING detectando reserva existente por canonicalClientId", () => {
-  const result = matchBookingsByClient({
-    client: {
+test("evita doble CREATE_BOOKING detectando reserva existente por whatsapp normalizado", () => {
+  const result = matchBookingsByClient(
+    {
       chatId: "5492611234567@c.us",
       canonicalClientPhone: "5492611234567",
     },
-    bookings: [
+    [
       {
         _id: "existing-booking",
-        canonicalClientId: "+5492611234567",
-        clientPhone: "5492611234567",
-        clientWhatsappId: "5492611234567@lid",
+        clientPhone: "000",
+        clientWhatsappId: "qa-defensive-server:5492611234567@lid",
       },
     ],
-  });
+  );
 
   assert.equal(result.matchedBookings.length, 1);
-  assert.equal(result.strategy, "canonical_client_id");
+  assert.equal(result.strategy, "whatsapp");
   assert.equal(String(result.matchedBookings[0]._id), "existing-booking");
 });

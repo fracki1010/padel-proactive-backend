@@ -86,6 +86,9 @@ const materializeFixedBookingsForDate = async ({
           whatsappId: user.whatsappId || "",
           chatId: user.whatsappId || "",
         });
+        const canonicalClientId = identity.isQaSession
+          ? identity.whatsappId || null
+          : identity.canonicalPhone || null;
         await Booking.create({
           ...scope,
           court: fixedTurn.court._id,
@@ -94,7 +97,7 @@ const materializeFixedBookingsForDate = async ({
           clientName: user.name || "Cliente",
           clientPhone: user.phoneNumber || "",
           clientWhatsappId: user.whatsappId || null,
-          canonicalClientId: identity.canonicalClientId || null,
+          canonicalClientId,
           status: "reservado",
           paymentStatus: "pendiente",
           isFixed: true,

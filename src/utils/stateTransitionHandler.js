@@ -16,6 +16,18 @@ const resolveStrictStateTransition = ({
     return { decision: "RESET_FLOW" };
   }
 
+  const globalAlwaysActions = new Set([
+    "CANCEL_BOOKING",
+    "CHECK_AVAILABILITY",
+    "LIST_ACTIVE_BOOKINGS",
+    "CREATE_BOOKING",
+    "TALK_TO_ADMIN",
+  ]);
+
+  if (state !== "ATTENDANCE_CONFIRMATION" && globalAlwaysActions.has(action)) {
+    return { decision: "RESET_AND_INTERRUPT", action };
+  }
+
   const canInterruptWithGlobalIntent =
     action === "CANCEL_BOOKING" ||
     action === "CHECK_AVAILABILITY" ||

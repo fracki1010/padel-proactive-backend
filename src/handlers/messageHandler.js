@@ -28,6 +28,20 @@ const {
   hasInvalidTimeInput,
   parseTime,
 } = require("../utils/timeParser");
+const {
+  extractPersonName,
+} = require("../whatsapp/domain/extractPersonName");
+const {
+  parseBookingDateTime,
+  getTodayIso,
+} = require("../whatsapp/domain/parseBookingDateTime");
+const {
+  interpretIncomingMessage,
+  INTENTS,
+} = require("../whatsapp/domain/messageInterpreter");
+const {
+  deriveStateFromMeta,
+} = require("../whatsapp/domain/bookingStateMachine");
 
 // --- FUNCIÓN HELPER PARA EXTRAER JSON ---
 // Busca cualquier cosa que parezca un objeto JSON {...} dentro del texto
@@ -50,15 +64,7 @@ const extractJSON = (text) => {
 };
 
 const getTodayIsoArgentina = () => {
-  const argentinaNow = new Date(
-    new Date().toLocaleString("en-US", {
-      timeZone: "America/Argentina/Buenos_Aires",
-    }),
-  );
-  const year = argentinaNow.getFullYear();
-  const month = String(argentinaNow.getMonth() + 1).padStart(2, "0");
-  const day = String(argentinaNow.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return getTodayIso(new Date(), "America/Argentina/Buenos_Aires");
 };
 
 const TRANSACTIONAL_MODE_ENABLED =
@@ -75,6 +81,33 @@ const INCOMING_RATE_MAX_CONTROL_MESSAGES = Number(
   process.env.WHATSAPP_BOT_RATE_MAX_CONTROL_MESSAGES || 8,
 );
 const incomingRateState = new Map();
+const MAX_SAME_MESSAGE_BEFORE_LOOP_REPLY = 3;
+
+const fingerprintMessage = (value = "") =>
+  normalizeSpanishText(value)
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const buildAntiLoopReply = ({ interpretation = {}, sessionMeta = {} } = {}) => {
+  const missingName = sessionMeta.awaitingFullNameForBooking;
+  const missingConfirmation = sessionMeta.pendingBookingOffer?.dateStr && sessionMeta.pendingBookingOffer?.timeStr;
+  const intent = interpretation?.detectedIntent || INTENTS.UNKNOWN;
+
+  if (missingName) {
+    return "Sigo esperando tu *nombre y apellido* para avanzar con la reserva. Ejemplo: *Juan Pérez*.";
+  }
+  if (missingConfirmation) {
+    return "Para avanzar, decime solo una opción: *CONFIRMAR RESERVA* o *CANCELAR*.";
+  }
+  if (intent === INTENTS.CREATE_BOOKING) {
+    return "Entendido. Para reservar sin errores necesito *fecha y hora* (ej: hoy 20:00).";
+  }
+  if (intent === INTENTS.CANCEL_BOOKING) {
+    return "Entendido. Si no me pasás fecha/hora, intento cancelar tu próxima reserva activa.";
+  }
+  return "Te estoy entendiendo, pero para avanzar necesito un dato más concreto.";
+};
 
 const normalizeTimeString = (rawTime) => {
   return parseTime(rawTime);
@@ -152,82 +185,11 @@ const getNextWeekdayIsoDate = (targetWeekday, options = {}) => {
 };
 
 const extractDateFromMessage = (rawText) => {
-  const text = normalizeSpanishText(rawText);
-  const today = getTodayIsoArgentina();
-  const textWithoutMorningPeriod = text
-    .replace(/\b(?:de|por|en|a)\s+la\s+manana\b/g, " ")
-    .replace(/\bla\s+manana\b/g, " ")
-    .replace(/\bde\s+manana\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (text.includes("pasado manana")) return addDaysToIsoDate(today, 2);
-  if (textWithoutMorningPeriod.includes("manana"))
-    return addDaysToIsoDate(today, 1);
-  if (text.includes("hoy")) return today;
-
-  const weekdayMatchers = [
-    { pattern: /\blunes\b/, weekday: 1 },
-    { pattern: /\bmartes\b/, weekday: 2 },
-    { pattern: /\bmiercoles\b/, weekday: 3 },
-    { pattern: /\bjueves\b/, weekday: 4 },
-    { pattern: /\bviernes\b/, weekday: 5 },
-    { pattern: /\bsabado\b/, weekday: 6 },
-    { pattern: /\bdomingo\b/, weekday: 0 },
-  ];
-
-  for (const matcher of weekdayMatchers) {
-    if (matcher.pattern.test(text)) {
-      return getNextWeekdayIsoDate(matcher.weekday, { includeToday: true });
-    }
-  }
-
-  const isoMatch = text.match(/\b(\d{4}-\d{2}-\d{2})\b/);
-  if (isoMatch && isValidIsoDate(isoMatch[1])) return isoMatch[1];
-
-  const dmyMatch = text.match(/\b(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?\b/);
-  if (!dmyMatch) return null;
-
-  const day = Number(dmyMatch[1]);
-  const month = Number(dmyMatch[2]);
-  const currentYear = Number(today.slice(0, 4));
-  const rawYear = dmyMatch[3];
-  let year = currentYear;
-  if (rawYear) {
-    year = Number(rawYear.length === 2 ? `20${rawYear}` : rawYear);
-  }
-
-  const candidate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-  return isValidIsoDate(candidate) ? candidate : null;
+  return parseBookingDateTime(rawText, new Date(), "America/Argentina/Buenos_Aires").date;
 };
 
 const extractTimeFromMessage = (rawText) => {
-  const text = normalizeSpanishText(rawText);
-
-  const hourMinuteMatch = text.match(/\b([01]?\d|2[0-3])[:.]([0-5]\d)\b/);
-  if (hourMinuteMatch) {
-    return `${hourMinuteMatch[1].padStart(2, "0")}:${hourMinuteMatch[2]}`;
-  }
-
-  const hourHsMatch = text.match(/\b([01]?\d|2[0-3])\s*(?:hs|h)\b/);
-  if (hourHsMatch) return `${hourHsMatch[1].padStart(2, "0")}:00`;
-
-  const aLasMatch = text.match(/a\s*las\s*([01]?\d|2[0-3])\b/);
-  if (aLasMatch) return `${aLasMatch[1].padStart(2, "0")}:00`;
-
-  const contextualHourMatch = text.match(
-    /\b(?:hoy|manana|pasado\s+manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo)[,\s]+([01]?\d|2[0-3])\b/,
-  );
-  if (contextualHourMatch) {
-    return `${contextualHourMatch[1].padStart(2, "0")}:00`;
-  }
-
-  const compactHourMinuteMatch = text.match(/\b([01]\d|2[0-3])([0-5]\d)\b/);
-  if (compactHourMinuteMatch) {
-    return `${compactHourMinuteMatch[1]}:${compactHourMinuteMatch[2]}`;
-  }
-
-  return null;
+  return parseBookingDateTime(rawText, new Date(), "America/Argentina/Buenos_Aires").time;
 };
 
 const inferFallbackAction = (rawText) => {
@@ -276,57 +238,26 @@ const inferFallbackAction = (rawText) => {
 };
 
 const inferDeterministicAction = (rawText = "") => {
-  const text = normalizeLooseText(rawText);
-  if (!text) return null;
+  const interpretation = interpretIncomingMessage({
+    text: rawText,
+    now: new Date(),
+    timezone: "America/Argentina/Buenos_Aires",
+  });
 
-  const requestedDate = extractDateFromMessage(rawText);
-  const requestedTime = normalizeTimeString(extractTimeFromMessage(rawText));
-
-  const hasCancelIntent =
-    /\b(cancelar|cancelame|cancela|anular|anula|dar de baja)\b/.test(text) &&
-    /\b(turno|reserva|cancha|hora|fecha|hoy|manana|\d{1,2}[:.]?\d{0,2})\b/.test(text);
-  if (hasCancelIntent) {
+  const interpretedAction = interpretation?.nextAction?.action || null;
+  if (interpretedAction) {
     return {
-      action: "CANCEL_BOOKING",
-      date: requestedDate,
-      time: requestedTime,
-      source: "deterministic",
-    };
-  }
-
-  if (hasDirectBookingIntent(rawText)) {
-    return {
-      action: "CREATE_BOOKING",
-      date: requestedDate,
-      time: requestedTime,
-      courtName: "INDIFERENTE",
-      source: "deterministic",
+      ...interpretation.nextAction,
+      source: "deterministic_interpreter",
     };
   }
 
   const fallback = inferFallbackAction(rawText);
   if (!fallback) return null;
-  if (fallback.action === "CHECK_AVAILABILITY") {
-    return {
-      action: "CHECK_AVAILABILITY",
-      date: fallback.date,
-      time: normalizeTimeString(fallback.time),
-      source: "deterministic",
-    };
-  }
-  if (fallback.action === "LIST_ACTIVE_BOOKINGS") {
-    return { action: "LIST_ACTIVE_BOOKINGS", source: "deterministic" };
-  }
-  if (fallback.action === "FIXED_TURN_REQUEST") {
-    return {
-      action: "FIXED_TURN_REQUEST",
-      date: fallback.date,
-      time: normalizeTimeString(fallback.time),
-      message: rawText,
-      source: "deterministic",
-    };
-  }
-  return null;
+  return {
+    ...fallback,
+    source: "deterministic_fallback",
+  };
 };
 
 const normalizeNameText = (value = "") =>
@@ -525,35 +456,13 @@ const isNonNameReply = (value = "") => {
 };
 
 const extractFullNameFromMessage = (rawMessage, _aiCandidate = "") => {
-  const raw = String(rawMessage || "").trim();
-  if (isNonNameReply(raw)) return null;
-
-  const explicitPatterns = [
-    /(?:mi\s+nombre\s+es|soy)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}){1,3})(?:\b|[,.!?]|$)/i,
-    /^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}){1,3})$/,
-    /\b([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}){0,2})\b/i,
-  ];
-
-  for (const pattern of explicitPatterns) {
-    const match = raw.match(pattern);
-    if (!match?.[1]) continue;
-    const candidate = normalizeNameText(match[1]);
-    if (
-      isLikelyFullName(candidate) &&
-      !isPlaceholderName(candidate) &&
-      !hasBookingControlKeywords(candidate)
-    ) {
-      return candidate;
-    }
-  }
-
-  return null;
+  const parsed = extractPersonName(rawMessage);
+  if (!parsed?.isValid) return null;
+  return parsed.value;
 };
 
 const isValidClientName = (value = "") =>
-  isLikelyFullName(value) &&
-  !isPlaceholderName(value) &&
-  !isNonNameReply(value);
+  Boolean(extractPersonName(value)?.isValid);
 
 const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult) => {
   if (bookingResult.success) {
@@ -1314,6 +1223,38 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       return tooLongMessageReply;
     }
 
+    const earlyInterpretation = interpretIncomingMessage({
+      text: userMessage,
+      state: deriveStateFromMeta(sessionMeta),
+      now: new Date(),
+      timezone: "America/Argentina/Buenos_Aires",
+      sessionMeta,
+      draft: sessionMeta.pendingBookingOffer || sessionMeta.pendingBooking || null,
+    });
+    const currentFingerprint = fingerprintMessage(userMessage);
+    const sameAsPrevious =
+      currentFingerprint &&
+      currentFingerprint === String(sessionMeta.lastUserMessageFingerprint || "");
+    const repeatedCount = sameAsPrevious
+      ? Number(sessionMeta.sameMessageRepeatCount || 0) + 1
+      : 1;
+    sessionService.updateMeta(sessionId, {
+      lastUserMessageFingerprint: currentFingerprint,
+      sameMessageRepeatCount: repeatedCount,
+      lastDetectedIntent: earlyInterpretation.detectedIntent || INTENTS.UNKNOWN,
+      conversationState: earlyInterpretation.nextState || deriveStateFromMeta(sessionMeta),
+    });
+
+    if (repeatedCount >= MAX_SAME_MESSAGE_BEFORE_LOOP_REPLY) {
+      const antiLoopReply = buildAntiLoopReply({
+        interpretation: earlyInterpretation,
+        sessionMeta,
+      });
+      sessionService.addMessage(sessionId, "user", userMessage);
+      sessionService.addMessage(sessionId, "assistant", antiLoopReply);
+      return antiLoopReply;
+    }
+
     const incomingRateResult = enforceIncomingRateLimit({
       sessionId,
       companyId,
@@ -1343,9 +1284,12 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       }
     }
 
-    const earlyDeterministicAction = TRANSACTIONAL_MODE_ENABLED
-      ? inferDeterministicAction(userMessage)
-      : null;
+    const earlyDeterministicAction =
+      TRANSACTIONAL_MODE_ENABLED && earlyInterpretation?.nextAction
+        ? { ...earlyInterpretation.nextAction, source: "deterministic_interpreter" }
+        : TRANSACTIONAL_MODE_ENABLED
+          ? inferDeterministicAction(userMessage)
+          : null;
     const globalInterruptIntent = parseGlobalInterruptIntent(userMessage);
     let forcedActionFromState = null;
 

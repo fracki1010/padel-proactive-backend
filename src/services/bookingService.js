@@ -19,11 +19,15 @@ const {
   materializeFixedBookingsForDate,
 } = require("./fixedTurnsMaterialization.service");
 const {
-  matchBookingsByClient,
-  normalizeClientIdentity,
   normalizeCanonicalClientPhone,
   toE164,
 } = require("../utils/identityNormalization");
+const {
+  normalizeClientIdentity,
+} = require("../whatsapp/domain/clientIdentity");
+const {
+  matchBookingsByClient,
+} = require("./bookingMatching.service");
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
@@ -46,7 +50,8 @@ const resolveCanonicalClientId = ({ clientPhone = "", clientWhatsappId = "" }) =
     chatId: clientWhatsappId,
     canonicalClientPhone: clientPhone,
   });
-  return identity.canonicalClientId || toE164(identity.canonicalPhoneDigits) || null;
+  if (identity.isQaSession && identity.whatsappId) return identity.whatsappId;
+  return identity.canonicalPhone || toE164(identity.canonicalPhoneDigits) || null;
 };
 
 const getDatePartsInTimezone = (date, timeZone = TIMEZONE) => {
@@ -220,10 +225,10 @@ const createNewBooking = async ({
         .select("_id clientPhone clientWhatsappId canonicalClientId")
         .lean();
 
-      const matchedClientInSlot = matchBookingsByClient({
-        bookings: slotBookings,
-        client: requestIdentityPayload,
-      });
+      const matchedClientInSlot = matchBookingsByClient(
+        requestIdentityPayload,
+        slotBookings,
+      );
 
       if (matchedClientInSlot.matchedBookings.length > 0) {
         const existingClientBooking = matchedClientInSlot.matchedBookings[0];
@@ -370,15 +375,15 @@ const hasActiveBookingForClient = async ({
       .limit(200)
       .lean();
 
-    const matching = matchBookingsByClient({
-      bookings: candidates,
-      client: {
+    const matching = matchBookingsByClient(
+      {
         phone: clientPhone,
         whatsappId: clientWhatsappId,
         chatId: clientWhatsappId,
         canonicalClientPhone: clientPhone,
       },
-    });
+      candidates,
+    );
 
     return matching.matchedBookings.length > 0;
   } catch (error) {
@@ -408,15 +413,15 @@ const getActiveBookingsForClient = async ({
       .sort({ date: 1, createdAt: 1 })
       .lean();
 
-    const matchingResult = matchBookingsByClient({
-      bookings,
-      client: {
+    const matchingResult = matchBookingsByClient(
+      {
         phone: clientPhone,
         whatsappId: clientWhatsappId,
         chatId: clientWhatsappId,
         canonicalClientPhone: clientPhone,
       },
-    });
+      bookings,
+    );
     const matchingByClient = matchingResult.matchedBookings;
 
     // "Reservas vigentes" = reservas activas desde hoy en adelante.
@@ -565,15 +570,15 @@ const cancelBooking = async ({
         status: { $ne: "cancelado" },
       });
 
-      const matching = matchBookingsByClient({
-        bookings: bookingsInSlot,
-        client: {
+      const matching = matchBookingsByClient(
+        {
           phone: normalizedClientPhone,
           whatsappId: clientWhatsappId,
           chatId: clientWhatsappId,
           canonicalClientPhone: normalizedClientPhone,
         },
-      });
+        bookingsInSlot,
+      );
       booking = matching.matchedBookings[0] || null;
     } else {
       const todayStr = getDatePartsInTimezone(new Date());
@@ -586,15 +591,15 @@ const cancelBooking = async ({
         .populate("timeSlot", "startTime")
         .sort({ date: -1, createdAt: -1 });
 
-      const matching = matchBookingsByClient({
-        bookings: candidates,
-        client: {
+      const matching = matchBookingsByClient(
+        {
           phone: normalizedClientPhone,
           whatsappId: clientWhatsappId,
           chatId: clientWhatsappId,
           canonicalClientPhone: normalizedClientPhone,
         },
-      });
+        candidates,
+      );
       booking = matching.matchedBookings[0] || null;
       if (booking?.timeSlot?.startTime) {
         resolvedDateStr = getDatePartsInTimezone(new Date(booking.date));
