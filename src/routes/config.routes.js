@@ -153,7 +153,7 @@ router.get("/courts", async (req, res) => {
 router.post("/courts", async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
-    const { name, surface, isIndoor, isActive } = req.body || {};
+    const { name, courtType, surface, isIndoor, isActive } = req.body || {};
 
     if (!name || !String(name).trim()) {
       return res.status(400).json({
@@ -177,9 +177,13 @@ router.post("/courts", async (req, res) => {
       });
     }
 
+    const { COURT_TYPES } = require('../models/court.model');
     const createdCourt = await Court.create({
       ...scope,
       name: normalizedName,
+      ...(typeof courtType === "string" && COURT_TYPES.includes(courtType)
+        ? { courtType }
+        : {}),
       ...(typeof surface === "string" && surface.trim()
         ? { surface: surface.trim() }
         : {}),
