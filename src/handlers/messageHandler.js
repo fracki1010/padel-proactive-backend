@@ -851,9 +851,11 @@ const buildAvailabilityResponse = async ({
       : availability.slots.slice(0, 5);
     const list = alternatives.map((s) => `• ${s.time} ($${s.price})`).join("\n");
     const periodLine = periodLabel ? ` dentro de la ${periodLabel}` : "";
+    const isFixedBlocking = availability.blockedSlots?.[requestedTime]?.isFixed === true;
+    const fixedNote = isFixedBlocking ? " — ese horario está reservado como turno fijo" : "";
     return {
       replyText:
-        `${prefix}🚫 No tengo disponibilidad para *${requestedTime}* el ${getFormattedDate(requestedDate)}${periodLine}.\n\n` +
+        `${prefix}🚫 No tengo disponibilidad para *${requestedTime}* el ${getFormattedDate(requestedDate)}${periodLine}${fixedNote}.\n\n` +
         (alternatives.length
           ? `Te puedo ofrecer estos horarios:\n${list}\n\n_¿Cuál te reservo?_`
           : "No me quedan horarios disponibles para ese rango."),

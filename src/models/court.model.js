@@ -1,6 +1,8 @@
 // src/models/Court.js
 const mongoose = require('mongoose');
 
+const COURT_TYPES = ["Estándar", "Techada", "Descubierta", "VIP", "Premium"];
+
 const courtSchema = new mongoose.Schema({
   companyId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -12,13 +14,18 @@ const courtSchema = new mongoose.Schema({
     required: true,
     trim: true // Ej: "Cancha 1", "Central"
   },
+  courtType: {
+    type: String,
+    enum: COURT_TYPES,
+    default: "Estándar"
+  },
   surface: {
     type: String,
-    default: 'Césped sintético' // Según business_info.txt
+    default: 'Césped sintético'
   },
   isIndoor: {
     type: Boolean,
-    default: false // Según business_info.txt se suspende por lluvia, no es techado
+    default: false
   },
   isActive: {
     type: Boolean,
@@ -29,3 +36,4 @@ const courtSchema = new mongoose.Schema({
 });
 
 module.exports = mongoose.model('Court', courtSchema);
+module.exports.COURT_TYPES = COURT_TYPES;
