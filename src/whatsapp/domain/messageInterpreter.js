@@ -16,10 +16,11 @@ const INTENTS = {
   UNKNOWN: "UNKNOWN",
 };
 
-const detectIntent = (text = "") => {
+const detectIntent = (text = "", { currentState = null } = {}) => {
   const normalized = normalizeSpanishText(text);
   if (!normalized) return INTENTS.UNKNOWN;
 
+  // Intents globales — siempre disponibles independientemente del estado
   if (/^(hola|buenas|buen dia|buenas tardes|buenas noches)\b/.test(normalized)) {
     return INTENTS.GREETING;
   }
@@ -29,6 +30,13 @@ const detectIntent = (text = "") => {
   if (/\b(hablar con admin|administrador|pasame con admin)\b/.test(normalized)) {
     return INTENTS.TALK_TO_ADMIN;
   }
+
+  // State-aware: en AWAITING_NAME priorizar extracción de nombre antes que confirmar/rechazar
+  if (currentState === "AWAITING_NAME") {
+    const personName = extractPersonName(text);
+    if (personName.isValid) return INTENTS.PROVIDE_NAME;
+  }
+
   if (/\b(cancelar|anular|cancelame|dar de baja)\b/.test(normalized)) {
     return INTENTS.CANCEL_BOOKING;
   }
@@ -38,13 +46,17 @@ const detectIntent = (text = "") => {
   if (/\b(disponibilidad|horarios disponibles|hay lugar|tenes lugar|ver disponibilidad|que horarios hay)\b/.test(normalized)) {
     return INTENTS.CHECK_AVAILABILITY;
   }
-  if (/\b(reservar|reserva|quiero reservar|anotame|agendame|haceme la reserva|hace la reserva)\b/.test(normalized)) {
-    return INTENTS.CREATE_BOOKING;
-  }
+
+  // CONFIRM antes de CREATE_BOOKING: "confirmar reserva" debe ser CONFIRM, no CREATE_BOOKING
+  // Bug original: "reserva" en CREATE_BOOKING disparaba antes que el check de CONFIRM
   if (/\b(si|ok|dale|confirmar|confirmo|listo|confirmar reserva|confirmar turno)\b/.test(normalized)) {
     return INTENTS.CONFIRM;
   }
-  if (/\b(no|cancelar|dejalo|olvidate|mejor no)\b/.test(normalized)) {
+
+  if (/\b(reservar|reserva|quiero reservar|anotame|agendame|haceme la reserva|hace la reserva)\b/.test(normalized)) {
+    return INTENTS.CREATE_BOOKING;
+  }
+  if (/\b(no|dejalo|olvidate|mejor no)\b/.test(normalized)) {
     return INTENTS.REJECT;
   }
 
@@ -129,18 +141,23 @@ const interpretIncomingMessage = ({
   availableSlots = [],
   sessionMeta = {},
 } = {}) => {
-  const detectedIntent = detectIntent(text || "");
+  const derivedState = state || deriveStateFromMeta(sessionMeta);
+  const detectedIntent = detectIntent(text || "", { currentState: derivedState });
   const extractedEntities = extractEntities({ text: text || "", now, timezone });
 
-  const derivedState = state || deriveStateFromMeta(sessionMeta);
   const hasValidDraft = Boolean(draft?.dateStr && draft?.timeStr);
   const hasPersonName = Boolean(extractedEntities.personName);
+  // hasKnownName: nombre ya registrado en perfil o capturado en sesión previa
+  const hasKnownName = Boolean(
+    sessionMeta?.knownName || sessionMeta?.pendingBookingClientNameCandidate,
+  );
   const stateDecision = transitionBookingState({
     currentState: derivedState,
     intent: detectedIntent,
     hasValidDraft,
     hasPersonName,
     hasCancellationCandidates: Array.isArray(activeBookings) && activeBookings.length > 0,
+    hasKnownName,
   });
 
   const nextAction =
@@ -173,4 +190,6 @@ module.exports = {
   interpretIncomingMessage,
   detectIntent,
   extractEntities,
+  mapIntentToAction,
+  buildReplyStrategy,
 };
