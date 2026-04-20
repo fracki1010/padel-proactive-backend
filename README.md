@@ -13,6 +13,8 @@ Backend API desacoplado del worker de WhatsApp.
 
 - `GROQ_API_KEYS` (opcional, recomendado): múltiples API keys separadas por coma para fallback automático por límite/cuota.
 - `GROQ_API_KEY` (fallback): se usa si no definís `GROQ_API_KEYS`.
+- `GROQ_KEY_POOL_LOG_ENABLED=true|false`: activa/desactiva logs de resumen del pool de keys.
+- `GROQ_KEY_POOL_LOG_EVERY_REQUESTS=50`: frecuencia de resumen (cada N requests a Groq).
 - `WHATSAPP_QUEUE_DRIVER=redis`
 - `WHATSAPP_QUEUE_NAME=whatsapp-commands`
 - `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`, `REDIS_TLS`
@@ -57,6 +59,7 @@ Flags útiles del replay:
 - `GET /api/whatsapp/groups` (alias de compatibilidad de listado de grupos)
 - `GET /api/whatsapp/chats?type=group` (alias de compatibilidad de listado de grupos)
 - `POST /api/bookings/fixed-turns/rematerialize` (admin/super_admin, rematerializa turnos fijos a bookings futuros)
+- `GET /api/internal/groq/key-pool` (requiere `x-internal-token` si está configurado; métricas de rotación/bloqueo de keys Groq)
 
 ### Rematerialización manual de turnos fijos
 
