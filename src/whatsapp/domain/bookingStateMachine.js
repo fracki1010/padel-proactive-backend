@@ -10,15 +10,16 @@ const STATES = {
 };
 
 const deriveStateFromMeta = (meta = {}) => {
-  if (meta.awaitingBookingClientNameConfirmation) return STATES.AWAITING_NAME_CONFIRMATION;
-  if (meta.awaitingFullNameForBooking) return STATES.AWAITING_NAME;
-  if (meta.pendingBookingOffer?.dateStr && meta.pendingBookingOffer?.timeStr) {
+  const m = meta || {};
+  if (m.awaitingBookingClientNameConfirmation) return STATES.AWAITING_NAME_CONFIRMATION;
+  if (m.awaitingFullNameForBooking) return STATES.AWAITING_NAME;
+  if (m.pendingBookingOffer?.dateStr && m.pendingBookingOffer?.timeStr) {
     return STATES.AWAITING_FINAL_CONFIRMATION;
   }
-  if (meta.awaitingCancellationTarget) return STATES.AWAITING_CANCELLATION_TARGET;
-  if (meta.lastAvailabilityShownAt) return STATES.SHOWING_AVAILABILITY;
-  if (meta.lastFlowStatus === "completed") return STATES.COMPLETED;
-  if (meta.lastFlowStatus === "cancelled") return STATES.CANCELLED;
+  if (m.awaitingCancellationTarget) return STATES.AWAITING_CANCELLATION_TARGET;
+  if (m.lastAvailabilityShownAt) return STATES.SHOWING_AVAILABILITY;
+  if (m.lastFlowStatus === "completed") return STATES.COMPLETED;
+  if (m.lastFlowStatus === "cancelled") return STATES.CANCELLED;
   return STATES.IDLE;
 };
 
@@ -28,6 +29,9 @@ const transitionBookingState = ({
   hasValidDraft = false,
   hasPersonName = false,
   hasCancellationCandidates = false,
+  // hasKnownName: el sistema YA conoce el nombre del cliente (perfil o captura previa)
+  // Permite confirmar sin re-pedir nombre aunque estemos en AWAITING_NAME
+  hasKnownName = false,
 } = {}) => {
   if (intent === "RESTART") {
     return { nextState: STATES.IDLE, nextAction: "RESET_FLOW", reason: "global_restart" };
@@ -57,7 +61,8 @@ const transitionBookingState = ({
   }
 
   if (intent === "CREATE_BOOKING") {
-    if (!hasPersonName) {
+    // Si no hay nombre en el mensaje actual ni nombre conocido en el sistema → pedir nombre
+    if (!hasPersonName && !hasKnownName) {
       return {
         nextState: STATES.AWAITING_NAME,
         nextAction: "ASK_NAME",
@@ -94,6 +99,15 @@ const transitionBookingState = ({
 
   if (intent === "CONFIRM") {
     if (hasValidDraft) {
+      // En AWAITING_NAME: solo ejecutar si ya conocemos el nombre del cliente
+      // Si no lo conocemos, insistir en pedirlo antes de ejecutar
+      if (currentState === STATES.AWAITING_NAME && !hasPersonName && !hasKnownName) {
+        return {
+          nextState: STATES.AWAITING_NAME,
+          nextAction: "ASK_NAME",
+          reason: "confirm_needs_name",
+        };
+      }
       return {
         nextState: STATES.COMPLETED,
         nextAction: "EXECUTE_DRAFT",

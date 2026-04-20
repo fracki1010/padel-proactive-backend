@@ -151,9 +151,38 @@ const parseTimeEntity = (input = "") => {
   return { time: null, invalidTime: false };
 };
 
+const isDateInPast = (dateStr = "", now = new Date(), timezone = "America/Argentina/Buenos_Aires") => {
+  if (!dateStr) return false;
+  const today = getTodayIso(now, timezone);
+  return dateStr < today;
+};
+
+const isDateTimeInPast = (
+  dateStr = "",
+  timeStr = "",
+  now = new Date(),
+  timezone = "America/Argentina/Buenos_Aires",
+) => {
+  if (!dateStr || !timeStr) return false;
+  const today = getTodayIso(now, timezone);
+  if (dateStr < today) return true;
+  if (dateStr > today) return false;
+  // Same day: compare time
+  const tzNow = getNowInTimezone(now, timezone);
+  const [nowH, nowM] = [tzNow.getHours(), tzNow.getMinutes()];
+  const [slotH, slotM] = timeStr.split(":").map(Number);
+  return slotH < nowH || (slotH === nowH && slotM <= nowM);
+};
+
 const parseBookingDateTime = (input = "", now = new Date(), timezone = "America/Argentina/Buenos_Aires") => {
   const dateParsed = parseDate(input, now, timezone);
   const timeParsed = parseTimeEntity(input);
+
+  const isPastDate = isDateInPast(dateParsed.date, now, timezone);
+  const isPastDateTime =
+    dateParsed.date && timeParsed.time
+      ? isDateTimeInPast(dateParsed.date, timeParsed.time, now, timezone)
+      : isPastDate;
 
   return {
     date: dateParsed.date,
@@ -162,6 +191,7 @@ const parseBookingDateTime = (input = "", now = new Date(), timezone = "America/
     relativeDate: dateParsed.relativeDate,
     weekday: dateParsed.weekday || null,
     invalidTime: Boolean(timeParsed.invalidTime),
+    isPast: isPastDateTime,
     raw: {
       date: dateParsed,
       time: timeParsed,

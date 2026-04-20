@@ -15,12 +15,18 @@ const matchSingleBooking = (requestIdentity, booking = {}) => {
 
   const commonKeys = intersect(requestIdentity.whatsappKeys, bookingIdentity.whatsappKeys);
 
+  // byWhatsapp: solo cuenta keys de canal WhatsApp/QA (wa:, wafull:, qa:)
+  // phone: es un fallback de identidad, no confirma que el canal sea WhatsApp
+  const waCommonKeys = commonKeys.filter(
+    (k) => k.startsWith("wa:") || k.startsWith("wafull:") || k.startsWith("qa:"),
+  );
+
   const byPhone =
     Boolean(requestIdentity.canonicalPhoneDigits) &&
     Boolean(bookingIdentity.canonicalPhoneDigits) &&
     requestIdentity.canonicalPhoneDigits === bookingIdentity.canonicalPhoneDigits;
 
-  const byWhatsapp = commonKeys.length > 0;
+  const byWhatsapp = waCommonKeys.length > 0;
   const matched = byPhone || byWhatsapp;
 
   return {
@@ -33,15 +39,14 @@ const matchSingleBooking = (requestIdentity, booking = {}) => {
       ? byWhatsapp
         ? "match.whatsapp"
         : "match.phone"
-      : byPhone || byWhatsapp
-        ? "no_match.ambiguous"
-        : "no_match.identity_mismatch",
+      : "no_match.identity_mismatch",
     compared: {
       requestPhone: requestIdentity.canonicalPhone,
       bookingPhone: bookingIdentity.canonicalPhone,
       requestWhatsappKeys: requestIdentity.whatsappKeys,
       bookingWhatsappKeys: bookingIdentity.whatsappKeys,
       commonKeys,
+      waCommonKeys,
     },
   };
 };

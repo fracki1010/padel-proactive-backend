@@ -52,6 +52,18 @@ const buildWhatsappKeys = ({ whatsappId = "", chatId = "", canonicalPhoneDigits 
     if (!normalized) continue;
     if (isQaSession(value)) {
       keys.add(`qa:${normalized}`);
+      // Extraer phone embebido en chatIds QA como "qa-server:5491234567@lid"
+      // Esto permite que reservas hechas en sesión QA se matcheen con el usuario real
+      const rawVal = normalizeRaw(value);
+      const qaEmbedMatch = rawVal.match(/^[a-z_-]+:(.+)$/i);
+      if (qaEmbedMatch?.[1]) {
+        const embeddedPart = String(qaEmbedMatch[1] || "");
+        const embeddedDigits = embeddedPart.split("@")[0].replace(/\D/g, "");
+        if (embeddedDigits.length >= 6) {
+          keys.add(`wa:${embeddedDigits}`);
+          keys.add(`phone:${embeddedDigits}`);
+        }
+      }
       continue;
     }
     if (normalized.includes("@")) {
