@@ -196,12 +196,14 @@ const createNewBooking = async ({
       return { success: false, error: "INVALID_TIME" }; // "Ese horario no existe"
     }
 
-    // 2.0 Límite diario por cliente: máximo 3 reservas activas por día
+    // 2.0 Límite diario por cliente: máximo N reservas activas por día
+    // Los turnos fijos no cuentan — son recurrentes acordados, no reservas nuevas del día
     const clientDailyBookingsCount = await Booking.countDocuments({
       ...scope,
       clientPhone: normalizedClientPhone,
       date: bookingDate,
       status: { $ne: "cancelado" },
+      isFixed: { $ne: true },
     });
 
     if (clientDailyBookingsCount >= DAILY_BOOKING_LIMIT_PER_CLIENT) {
@@ -435,16 +437,44 @@ const getActiveBookingsForClient = async ({
       })
       .slice(0, Math.max(1, Number(limit) || 10));
 
+    // Separar bookings fijos de individuales
+    const fixedBookings = sortedUpcoming.filter((b) => b.isFixed);
+    const individualBookings = sortedUpcoming.filter((b) => !b.isFixed);
+
+    // Deduplicar turnos fijos por (court, timeSlot) → mostrar como recurrente
+    const seenFixedKeys = new Set();
+    const fixedTurnsSummary = [];
+    for (const b of fixedBookings) {
+      const key = `${b.court?._id}-${b.timeSlot?._id}`;
+      if (seenFixedKeys.has(key)) continue;
+      seenFixedKeys.add(key);
+
+      // Obtener dayOfWeek de la fecha del booking
+      const bookingDate = new Date(b.date);
+      const dayOfWeek = bookingDate.getUTCDay(); // 0=Dom ... 6=Sab
+
+      fixedTurnsSummary.push({
+        type: "fixed",
+        dayOfWeek,
+        courtName: b?.court?.name || "Cancha",
+        startTime: b?.timeSlot?.startTime || "",
+        endTime: b?.timeSlot?.endTime || "",
+      });
+    }
+
+    const individualData = individualBookings.map((booking) => ({
+      type: "individual",
+      bookingId: booking._id,
+      date: getDatePartsInTimezone(new Date(booking.date)),
+      courtName: booking?.court?.name || "Cancha",
+      startTime: booking?.timeSlot?.startTime || "",
+      endTime: booking?.timeSlot?.endTime || "",
+      status: booking?.status || "confirmado",
+    }));
+
     return {
       success: true,
-      data: sortedUpcoming.map((booking) => ({
-        bookingId: booking._id,
-        date: getDatePartsInTimezone(new Date(booking.date)),
-        courtName: booking?.court?.name || "Cancha",
-        startTime: booking?.timeSlot?.startTime || "",
-        endTime: booking?.timeSlot?.endTime || "",
-        status: booking?.status || "confirmado",
-      })),
+      data: [...fixedTurnsSummary, ...individualData],
     };
   } catch (error) {
     console.error("Error obteniendo reservas vigentes del cliente:", error);

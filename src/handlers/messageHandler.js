@@ -632,16 +632,28 @@ const extractBookingDraftsFromMessage = (rawText, fallbackCourt = "INDIFERENTE")
   return [];
 };
 
+const DAY_NAMES_ES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+
 const buildActiveBookingsReply = (bookings = []) => {
   if (!Array.isArray(bookings) || bookings.length === 0) {
     return "📭 No encontré reservas vigentes para este número de WhatsApp.";
   }
 
   const lines = bookings.map((booking, index) => {
-    const dateText = getFormattedDate(booking.date);
     const timeText = booking.endTime
       ? `${booking.startTime} - ${booking.endTime}`
       : booking.startTime;
+
+    if (booking.type === "fixed") {
+      const dayName = DAY_NAMES_ES[booking.dayOfWeek] || "?";
+      return (
+        `${index + 1}) 📌 ${booking.courtName}\n` +
+        `   🔁 Todos los ${dayName}\n` +
+        `   ⏰ ${timeText}`
+      );
+    }
+
+    const dateText = getFormattedDate(booking.date);
     return (
       `${index + 1}) 📅 ${dateText}\n` +
       `   ⏰ ${timeText}\n` +
