@@ -6,6 +6,7 @@ const path = require("path");
 const connectDB = require("../config/database");
 const { closeDB } = require("../config/database");
 const sessionService = require("../services/sessionService");
+const groqService = require("../services/groqService");
 const { handleIncomingMessage } = require("../handlers/messageHandler");
 
 const DEFAULT_FILE = path.join(
@@ -32,6 +33,9 @@ const parseArgs = () => {
         .trim()
         .toLowerCase() === "true",
     reportFile: process.env.WA_TEST_REPORT_FILE || "",
+    maxAiCalls: process.env.WA_TEST_MAX_AI_CALLS
+      ? Number(process.env.WA_TEST_MAX_AI_CALLS)
+      : null,
   };
 
   for (let i = 0; i < args.length; i += 1) {
@@ -71,6 +75,11 @@ const parseArgs = () => {
     }
     if (arg === "--report-file" && args[i + 1]) {
       options.reportFile = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--max-ai-calls" && args[i + 1]) {
+      options.maxAiCalls = Number(args[i + 1]);
       i += 1;
       continue;
     }
@@ -280,8 +289,24 @@ const run = async () => {
   console.log(`⏱️ delay: ${options.delayMs}ms`);
   console.log(`🔁 same session: ${options.sameSession ? "SI" : "NO"}`);
   console.log(`📦 secciones: ${sections.length}`);
+  if (Number.isFinite(options.maxAiCalls)) {
+    console.log(`🤖 max-ai-calls: ${options.maxAiCalls}`);
+  }
 
   await connectDB();
+
+  if (Number.isFinite(options.maxAiCalls) && options.maxAiCalls >= 0) {
+    console.log(`🔒 max-ai-calls: ${options.maxAiCalls} (modo básico al superarlo)`);
+    let aiCallCount = 0;
+    const originalGetChatResponse = groqService.getChatResponse.bind(groqService);
+    groqService.getChatResponse = async (...args) => {
+      if (aiCallCount >= options.maxAiCalls) {
+        return JSON.stringify({ action: "SERVICE_DEGRADED", retryAfterText: "modo-test" });
+      }
+      aiCallCount += 1;
+      return originalGetChatResponse(...args);
+    };
+  }
 
   const summary = [];
   const allViolations = [];

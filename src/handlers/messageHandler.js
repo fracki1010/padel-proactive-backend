@@ -1836,28 +1836,6 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           return needNameReply;
         }
 
-        const hasActiveBooking = await bookingService.hasActiveBookingForClient({
-          companyId,
-          clientPhone: canonicalClientPhone,
-            clientWhatsappId: chatId,
-        });
-        if (hasActiveBooking) {
-          sessionService.updateMeta(sessionId, {
-            pendingBookingOffer: null,
-            pendingBooking: null,
-            pendingBookingDrafts: null,
-            pendingBookingClientName: null,
-            awaitingExtraBookingConfirmation: false,
-            awaitingFullNameForBooking: false,
-            concreteAnswerRequestedAt: null,
-          });
-          const askExtraBookingReply =
-            "Ya tenés una reserva activa. Primero cancelá la vigente y después te ayudo a reservar otra.";
-          sessionService.addMessage(sessionId, "user", userMessage);
-          sessionService.addMessage(sessionId, "assistant", askExtraBookingReply);
-          return askExtraBookingReply;
-        }
-
         const bookingResult = await bookingService.createNewBooking({
           companyId,
           courtName: pendingBookingOffer.courtName || "INDIFERENTE",
@@ -2318,18 +2296,6 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           }
           replyText =
             "Si querés que lo reserve, respondé *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*.";
-          sessionService.addMessage(sessionId, "assistant", replyText);
-          return replyText;
-        }
-
-        const hasActiveBooking = await bookingService.hasActiveBookingForClient({
-          companyId,
-          clientPhone: canonicalClientPhone,
-          clientWhatsappId: chatId,
-        });
-        if (hasActiveBooking) {
-          replyText =
-            "Ya tenés una reserva activa. Primero cancelá la vigente y después te ayudo a reservar otra.";
           sessionService.addMessage(sessionId, "assistant", replyText);
           return replyText;
         }
