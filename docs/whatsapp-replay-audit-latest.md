@@ -1,5 +1,5 @@
 # WhatsApp Defensive Replay Report
-- GeneratedAt: 2026-04-19T22:59:34.116Z
+- GeneratedAt: 2026-04-20T02:30:21.859Z
 - File: docs/whatsapp-defensive-test-messages.txt
 - Sections: 178
 - Violations: 0
@@ -440,7 +440,7 @@
 ## [74] Conversación larga 2
 - Sent: 9
 - Errors: 0
-- Markers: OK:6, ASK_FULL_NAME:1, BOOKING_CONFIRMED:1, BOOKING_CANCELLED:1
+- Markers: OK:8, ASK_FULL_NAME:1
 - Violations: none
 
 ## [75] Cancelar fuera de estado

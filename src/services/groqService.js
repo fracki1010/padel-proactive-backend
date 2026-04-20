@@ -52,6 +52,41 @@ const MAX_HISTORY_MESSAGES = Number(process.env.GROQ_MAX_HISTORY || 8);
 const MAX_BUSINESS_CONTEXT_CHARS = Number(
   process.env.GROQ_MAX_BUSINESS_CONTEXT_CHARS || 2200,
 );
+const GROQ_KEY_POOL_LOG_ENABLED =
+  String(process.env.GROQ_KEY_POOL_LOG_ENABLED || "true").toLowerCase() !== "false";
+const GROQ_KEY_POOL_LOG_EVERY_REQUESTS = Math.max(
+  1,
+  Number(process.env.GROQ_KEY_POOL_LOG_EVERY_REQUESTS || 50),
+);
+
+const groqPoolStats = {
+  startedAt: new Date().toISOString(),
+  totalRequests: 0,
+  totalAttempts: 0,
+  totalSuccesses: 0,
+  totalRateLimitErrors: 0,
+  totalNonRateLimitErrors: 0,
+  totalServiceDegradedResponses: 0,
+  totalRotations: 0,
+  lastUsedClientId: null,
+  lastUsedAt: null,
+};
+
+for (const client of groqClients) {
+  client.stats = {
+    attempts: 0,
+    successes: 0,
+    rateLimitErrors: 0,
+    nonRateLimitErrors: 0,
+    blockedCount: 0,
+    lastBlockedReason: null,
+    lastBlockedAt: null,
+    lastBlockedUntilMs: null,
+    lastUsedAt: null,
+    lastSuccessAt: null,
+    lastErrorAt: null,
+  };
+}
 
 const truncateText = (text = "", maxChars = 2200) => {
   const clean = String(text || "");
@@ -125,13 +160,21 @@ const markGroqClientBlocked = (groqClient, error) => {
     : nowMs + retryInSeconds * 1000;
 
   groqClient.blockedUntilMs = Math.max(groqClient.blockedUntilMs, nextBlockMs);
+  groqClient.stats.blockedCount += 1;
+  groqClient.stats.lastBlockedReason = shouldBlockUntilTomorrow
+    ? "daily_limit_or_no_retry_after"
+    : "retry_after";
+  groqClient.stats.lastBlockedAt = new Date(nowMs).toISOString();
+  groqClient.stats.lastBlockedUntilMs = groqClient.blockedUntilMs;
 
-  console.warn("Groq key temporalmente bloqueada por rate limit", {
-    key: groqClient.maskedKey,
-    blockedFor: shouldBlockUntilTomorrow
-      ? "hasta próximo día UTC"
-      : `${retryInSeconds}s`,
-  });
+  if (GROQ_KEY_POOL_LOG_ENABLED) {
+    console.warn("Groq key temporalmente bloqueada por rate limit", {
+      key: groqClient.maskedKey,
+      blockedFor: shouldBlockUntilTomorrow
+        ? "hasta próximo día UTC"
+        : `${retryInSeconds}s`,
+    });
+  }
 };
 
 const pickNextGroqClient = (excludedClientIds = new Set()) => {
@@ -159,14 +202,61 @@ const getSoonestRetryAfterSeconds = () => {
   return Math.max(1, Math.ceil(Math.min(...waits) / 1000));
 };
 
+const getGroqKeyPoolStats = () => {
+  const nowMs = Date.now();
+  return {
+    ...groqPoolStats,
+    keysConfigured: groqClients.length,
+    keysAvailable: groqClients.filter((client) => client.blockedUntilMs <= nowMs).length,
+    keysBlocked: groqClients.filter((client) => client.blockedUntilMs > nowMs).length,
+    clients: groqClients.map((client) => ({
+      id: client.id,
+      key: client.maskedKey,
+      blocked: client.blockedUntilMs > nowMs,
+      blockedUntil: client.blockedUntilMs > nowMs
+        ? new Date(client.blockedUntilMs).toISOString()
+        : null,
+      ...client.stats,
+    })),
+  };
+};
+
+const logGroqPoolSummary = (reason = "periodic") => {
+  if (!GROQ_KEY_POOL_LOG_ENABLED) return;
+  const stats = getGroqKeyPoolStats();
+  console.info("[GroqPool] resumen", {
+    reason,
+    totalRequests: stats.totalRequests,
+    totalAttempts: stats.totalAttempts,
+    totalSuccesses: stats.totalSuccesses,
+    totalRateLimitErrors: stats.totalRateLimitErrors,
+    totalRotations: stats.totalRotations,
+    totalServiceDegradedResponses: stats.totalServiceDegradedResponses,
+    keysConfigured: stats.keysConfigured,
+    keysAvailable: stats.keysAvailable,
+    keysBlocked: stats.keysBlocked,
+  });
+};
+
 const requestChatCompletion = async ({ conversation, model, maxTokens }) => {
   const triedClientIds = new Set();
   let lastRateLimitError = null;
+  let previousClientId = null;
+  groqPoolStats.totalRequests += 1;
 
   for (let attempts = 0; attempts < groqClients.length; attempts += 1) {
     const groqClient = pickNextGroqClient(triedClientIds);
     if (!groqClient) break;
     triedClientIds.add(groqClient.id);
+    if (previousClientId && previousClientId !== groqClient.id) {
+      groqPoolStats.totalRotations += 1;
+    }
+    previousClientId = groqClient.id;
+    groqPoolStats.lastUsedClientId = groqClient.id;
+    groqPoolStats.lastUsedAt = new Date().toISOString();
+    groqPoolStats.totalAttempts += 1;
+    groqClient.stats.attempts += 1;
+    groqClient.stats.lastUsedAt = new Date().toISOString();
 
     try {
       const completion = await groqClient.client.chat.completions.create({
@@ -177,12 +267,24 @@ const requestChatCompletion = async ({ conversation, model, maxTokens }) => {
         response_format: { type: "json_object" },
       });
 
+      groqPoolStats.totalSuccesses += 1;
+      groqClient.stats.successes += 1;
+      groqClient.stats.lastSuccessAt = new Date().toISOString();
+      if (groqPoolStats.totalRequests % GROQ_KEY_POOL_LOG_EVERY_REQUESTS === 0) {
+        logGroqPoolSummary("periodic");
+      }
       return completion.choices[0]?.message?.content || "";
     } catch (error) {
       if (!isGroqRateLimit(error)) {
+        groqPoolStats.totalNonRateLimitErrors += 1;
+        groqClient.stats.nonRateLimitErrors += 1;
+        groqClient.stats.lastErrorAt = new Date().toISOString();
         throw error;
       }
 
+      groqPoolStats.totalRateLimitErrors += 1;
+      groqClient.stats.rateLimitErrors += 1;
+      groqClient.stats.lastErrorAt = new Date().toISOString();
       markGroqClientBlocked(groqClient, error);
       lastRateLimitError = error;
     }
@@ -216,6 +318,8 @@ const buildServiceDegradedResponse = (primaryError, fallbackError = null) => {
     retryAfter: retryAfterHeader || null,
     retryAfterSeconds: retryInSeconds || null,
   });
+  groqPoolStats.totalServiceDegradedResponses += 1;
+  logGroqPoolSummary("service_degraded");
 
   return JSON.stringify({
     action: "SERVICE_DEGRADED",
@@ -476,4 +580,7 @@ const getChatResponse = async (
   }
 };
 
-module.exports = { getChatResponse };
+module.exports = {
+  getChatResponse,
+  getGroqKeyPoolStats,
+};
