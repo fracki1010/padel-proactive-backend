@@ -33,6 +33,7 @@ const DEFAULT_MAX_ATTEMPTS = Number(
 );
 
 let redisQueueInstance = null;
+let redisQueueUnavailableReason = "";
 
 const normalizeCompanyId = (companyId = null) => companyId || null;
 
@@ -46,9 +47,9 @@ const getRedisQueue = () => {
     ({ Queue } = require("bullmq"));
     IORedis = require("ioredis");
   } catch (error) {
-    throw new Error(
-      `WHATSAPP_QUEUE_DRIVER=redis requiere instalar dependencias bullmq/ioredis: ${error?.message || error}`,
-    );
+    redisQueueUnavailableReason =
+      `WHATSAPP_QUEUE_DRIVER=redis requiere instalar dependencias bullmq/ioredis: ${error?.message || error}`;
+    return null;
   }
 
   const redisConnection = new IORedis({
@@ -64,6 +65,7 @@ const getRedisQueue = () => {
 
   const queueName = String(process.env.WHATSAPP_QUEUE_NAME || "whatsapp-commands").trim();
   redisQueueInstance = new Queue(queueName, { connection: redisConnection });
+  redisQueueUnavailableReason = "";
   return redisQueueInstance;
 };
 
@@ -80,6 +82,12 @@ const createCommandRecord = async ({ companyId, type, payload, requestedBy }) =>
 
 const enqueueRedisJob = async (command) => {
   const queue = getRedisQueue();
+  if (!queue) {
+    throw new Error(
+      redisQueueUnavailableReason ||
+        "Redis queue no disponible para WhatsApp command queue.",
+    );
+  }
 
   await queue.add(
     "whatsapp-command",
@@ -146,6 +154,14 @@ const enqueueWhatsappCommand = async ({
     try {
       await enqueueRedisJob(command);
     } catch (error) {
+      const allowRuntimeFallback =
+        allowMongoFallback || String(process.env.NODE_ENV || "").trim() === "test";
+      if (allowRuntimeFallback) {
+        console.warn(
+          `[WhatsAppCommandQueue] Redis no disponible, se mantiene comando en Mongo queue. reason=${error?.message || error}`,
+        );
+        return { command, deduplicated: false, fallback: "mongo_runtime" };
+      }
       await WhatsappCommand.findByIdAndUpdate(command._id, {
         $set: {
           status: COMMAND_STATUSES.FAILED,

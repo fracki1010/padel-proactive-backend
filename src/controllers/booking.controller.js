@@ -177,6 +177,9 @@ const createBooking = async (req, res) => {
       chatId: normalizedClientWhatsappId,
       canonicalClientPhone: normalizedClientPhone || "",
     });
+    const canonicalClientId = identity.isQaSession
+      ? identity.whatsappId || null
+      : identity.canonicalPhone || null;
 
     // C.1 Límite diario: máximo 3 reservas activas por cliente
     if (!isMaintenanceBooking && status !== "suspendido") {
@@ -213,7 +216,7 @@ const createBooking = async (req, res) => {
 
     // E. Crear
     const newBooking = await Booking.create({
-      canonicalClientId: identity.canonicalClientId || null,
+      canonicalClientId,
       companyId,
       court: courtId,
       date: bookingDate,

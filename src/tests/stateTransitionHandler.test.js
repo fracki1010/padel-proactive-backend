@@ -34,3 +34,14 @@ test("OFFER_CONFIRMATION permite CANCELAR con reset controlado", () => {
   assert.equal(result.decision, "RESET_AND_INTERRUPT");
   assert.equal(result.action, "CANCEL_BOOKING");
 });
+
+test("NAME_CONFIRMATION permite interrupción global de cancelación", () => {
+  const result = resolveStrictStateTransition({
+    state: "NAME_CONFIRMATION",
+    isAllowedInput: false,
+    globalIntentAction: "CANCEL_BOOKING",
+  });
+
+  assert.equal(result.decision, "RESET_AND_INTERRUPT");
+  assert.equal(result.action, "CANCEL_BOOKING");
+});
