@@ -18,7 +18,7 @@ const getUserByWhatsappId = async (whatsappId, options = {}) => {
 const saveOrUpdateUser = async (whatsappId, name, options = {}) => {
   try {
     const companyId = options.companyId || null;
-    const cleanPhone = await getNumberByUser(whatsappId, options.client);
+    const cleanPhone = await getNumberByUser(whatsappId, companyId);
 
     const user = await User.findOneAndUpdate(
       { whatsappId, companyId }, // Filtro

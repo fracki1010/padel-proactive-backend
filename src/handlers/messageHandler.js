@@ -765,6 +765,7 @@ const buildAvailabilityResponse = async ({
   userMessage = "",
   availability,
   modePrefix = "",
+  courtName = null,
 }) => {
   const dayPeriod = extractDayPeriodFromMessage(userMessage);
   const periodLabel = getDayPeriodLabel(dayPeriod);
@@ -849,35 +850,73 @@ const buildAvailabilityResponse = async ({
       };
     }
 
+    const isCourtTypeFilter = courtName && courtName !== "INDIFERENTE";
+    const getCourtTypeCount = (slot) =>
+      slot.courtTypes
+        ? (slot.courtTypes.find((ct) => ct.type === courtName)?.count ?? 0)
+        : slot.availableCourts;
+    const courtLabel = isCourtTypeFilter ? ` en *cancha ${courtName.toLowerCase()}*` : "";
+
     if (exactMatch) {
+      const typeAvailable = !isCourtTypeFilter || getCourtTypeCount(exactMatch) > 0;
+
+      if (typeAvailable) {
+        return {
+          replyText:
+            `${prefix}✅ Sí, tengo disponibilidad${courtLabel} para el *${getFormattedDate(requestedDate)} a las ${requestedTime}*.\n` +
+            `💰 Precio: $${exactMatch.price}\n\n` +
+            `_¿Te lo reservo?_`,
+          pendingBookingOffer: {
+            courtName: courtName || "INDIFERENTE",
+            dateStr: requestedDate,
+            timeStr: requestedTime,
+            createdAt: Date.now(),
+          },
+          rejectedBookingAttempt: null,
+        };
+      }
+
+      // El horario existe pero no hay cancha del tipo pedido
+      const alternativesWithType = availability.slots
+        .filter((s) => getCourtTypeCount(s) > 0)
+        .slice(0, 5);
+      const listWithType = alternativesWithType.map((s) => `• ${s.time} ($${s.price})`).join("\n");
       return {
         replyText:
-          `${prefix}✅ Sí, tengo disponibilidad para el *${getFormattedDate(requestedDate)} a las ${requestedTime}*.\n` +
-          `💰 Precio: $${exactMatch.price}\n\n` +
-          `_¿Te lo reservo?_`,
-        pendingBookingOffer: {
-          courtName: "INDIFERENTE",
+          `${prefix}🚫 No tengo *cancha ${courtName.toLowerCase()}* para las *${requestedTime}* el ${getFormattedDate(requestedDate)}.\n\n` +
+          (alternativesWithType.length
+            ? `Horarios con cancha ${courtName.toLowerCase()} disponibles:\n${listWithType}\n\n_¿Cuál te reservo?_`
+            : `No tengo cancha ${courtName.toLowerCase()} disponible para esa fecha.`),
+        pendingBookingOffer: null,
+        rejectedBookingAttempt: {
           dateStr: requestedDate,
           timeStr: requestedTime,
-          createdAt: Date.now(),
+          reason: "NO_COURT_TYPE_AVAILABILITY",
         },
-        rejectedBookingAttempt: null,
       };
     }
 
+    const allAlternatives = isCourtTypeFilter
+      ? availability.slots.filter((s) => getCourtTypeCount(s) > 0)
+      : availability.slots;
     const alternatives = dayPeriod
-      ? filterSlotsByPeriod(availability.slots, dayPeriod).slice(0, 5)
-      : availability.slots.slice(0, 5);
+      ? filterSlotsByPeriod(allAlternatives, dayPeriod).slice(0, 5)
+      : allAlternatives.slice(0, 5);
     const list = alternatives.flatMap(formatSlotLines).join("\n");
     const periodLine = periodLabel ? ` dentro de la ${periodLabel}` : "";
     const isFixedBlocking = availability.blockedSlots?.[requestedTime]?.isFixed === true;
     const fixedNote = isFixedBlocking ? " — ese horario está reservado como turno fijo" : "";
+    const noAvailMsg = isCourtTypeFilter
+      ? `🚫 No tengo *cancha ${courtName.toLowerCase()}* para las *${requestedTime}* el ${getFormattedDate(requestedDate)}${fixedNote}.`
+      : `${prefix}🚫 No tengo disponibilidad para *${requestedTime}* el ${getFormattedDate(requestedDate)}${periodLine}${fixedNote}.`;
     return {
       replyText:
-        `${prefix}🚫 No tengo disponibilidad para *${requestedTime}* el ${getFormattedDate(requestedDate)}${periodLine}${fixedNote}.\n\n` +
+        `${noAvailMsg}\n\n` +
         (alternatives.length
           ? `Te puedo ofrecer estos horarios:\n${list}\n\n_¿Cuál te reservo?_`
-          : "No me quedan horarios disponibles para ese rango."),
+          : isCourtTypeFilter
+            ? `No tengo cancha ${courtName.toLowerCase()} disponible para ese rango.`
+            : "No me quedan horarios disponibles para ese rango."),
       pendingBookingOffer: null,
       rejectedBookingAttempt: {
         dateStr: requestedDate,
@@ -2510,6 +2549,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           requestedTime,
           userMessage,
           availability,
+          courtName: parsedData.courtName || null,
         });
         replyText = availabilityResponse.replyText;
         sessionService.updateMeta(sessionId, {
