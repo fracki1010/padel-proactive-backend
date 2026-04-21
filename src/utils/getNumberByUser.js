@@ -1,21 +1,21 @@
-const {
-  normalizeCanonicalClientPhone,
-} = require("./identityNormalization");
-const client = require("whatsapp-web.js");
+const axios = require("axios");
+const { normalizeCanonicalClientPhone } = require("./identityNormalization");
+
+const WORKER_URL = process.env.WHATSAPP_WORKER_URL || "http://localhost:3010";
 
 async function getNumberByUser(whatsappId) {
   const chatId = String(whatsappId || "").trim();
   if (!chatId) return "";
 
-  // En arquitectura desacoplada no hay cliente WA en backend;
-  // usamos el chatId (ej: 54911xxxxxxx@c.us) como fuente canónica.
-  if (!client) {
-    return normalizeCanonicalClientPhone(chatId);
+  try {
+    const { data } = await axios.get(
+      `${WORKER_URL}/get-number/${encodeURIComponent(chatId)}`,
+      { timeout: 3000 },
+    );
+    if (data?.phoneNumber) return data.phoneNumber;
+  } catch {
+    // worker no disponible, fallback a normalización local
   }
-
-  const contact = await client.getContactById(chatId);
-  const fromContact = normalizeCanonicalClientPhone(contact?.number || "");
-  if (fromContact) return fromContact;
 
   return normalizeCanonicalClientPhone(chatId);
 }

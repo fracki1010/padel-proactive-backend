@@ -9,7 +9,7 @@ const seedAdmin = async () => {
     await connectDB();
 
     const username = process.env.SEED_SUPER_ADMIN_USER || "superadmin";
-    const password = process.env.SEED_SUPER_ADMIN_PASS || "change_me_now_123";
+    const password = process.env.SEED_SUPER_ADMIN_PASS || "franco-nicolas-123";
 
     const existingAdmin = await Admin.findOne({ username });
     if (existingAdmin) {
