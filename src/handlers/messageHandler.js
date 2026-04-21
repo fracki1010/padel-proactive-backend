@@ -100,6 +100,9 @@ const buildAntiLoopReply = ({ interpretation = {}, sessionMeta = {} } = {}) => {
   if (missingConfirmation) {
     return "Para avanzar, decime solo una opción: *CONFIRMAR RESERVA* o *CANCELAR*.";
   }
+  if (intent === INTENTS.CONFIRM && !missingConfirmation) {
+    return "No tenés ningún turno pendiente de confirmar. ¿Querés reservar uno? Decime *fecha y hora* (ej: hoy 20:00).";
+  }
   if (intent === INTENTS.CREATE_BOOKING) {
     return "Entendido. Para reservar sin errores necesito *fecha y hora* (ej: hoy 20:00).";
   }
@@ -2602,6 +2605,14 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const requestedTime = normalizeTimeString(
           parsedData.time || extractTimeFromMessage(userMessage),
         );
+
+        if (!requestedDate && !requestedTime) {
+          replyText =
+            "Para cancelar tu turno, indicame la *fecha y hora* (ej: *mañana 20:00* o *viernes 18:30*).";
+          sessionService.addMessage(sessionId, "user", userMessage);
+          sessionService.addMessage(sessionId, "assistant", replyText);
+          return replyText;
+        }
 
         const cancelResult = await bookingService.cancelBooking({
           companyId,
