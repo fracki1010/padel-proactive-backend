@@ -1,8 +1,9 @@
 const {
   normalizeCanonicalClientPhone,
 } = require("./identityNormalization");
+const client = require("whatsapp-web.js");
 
-async function getNumberByUser(whatsappId, client) {
+async function getNumberByUser(whatsappId) {
   const chatId = String(whatsappId || "").trim();
   if (!chatId) return "";
 
