@@ -93,6 +93,8 @@ const createUser = async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
     const body = { ...req.body };
+    console.log(body);
+    
     if (body.phoneNumber !== undefined) {
       body.phoneNumber = "no definido";
     } else {  
