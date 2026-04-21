@@ -72,12 +72,12 @@ const formatName = (tokens = []) =>
     })
     .join(" ");
 
-const cleanCandidate = (value = “”) =>
+const cleanCandidate = (value = "") =>
   normalizeSpaces(
-    String(value || “”)
-      .replace(/[“””`´]/g, “”)
-      .replace(/[()\[\]{}<>]/g, “ “)
-      .replace(/[!?.,:*#@+&|]/g, “ “),
+    String(value || "")
+      .replace(/["""`´]/g, "")
+      .replace(/[()\[\]{}<>]/g, " ")
+      .replace(/[!?.,:*#@+&|]/g, " "),
   );
 
 const extractCandidate = (text = "") => {
