@@ -2300,24 +2300,33 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         }
 
         if (!canCreateBookingFromMessage) {
-          if (
-            userDerivedDate &&
-            isValidIsoDate(userDerivedDate) &&
-            userDerivedTime
-          ) {
+          const offerDate =
+            userDerivedDate && isValidIsoDate(userDerivedDate)
+              ? userDerivedDate
+              : requestedDate && isValidIsoDate(requestedDate)
+                ? requestedDate
+                : null;
+          const offerTime = userDerivedTime || requestedTime;
+
+          if (offerDate && offerTime) {
             sessionService.updateMeta(sessionId, {
               pendingBookingOffer: {
                 courtName: requestedCourt,
-                dateStr: userDerivedDate,
-                timeStr: userDerivedTime,
+                dateStr: offerDate,
+                timeStr: offerTime,
                 createdAt: Date.now(),
               },
               lastRejectedBookingAttempt: null,
               concreteAnswerRequestedAt: Date.now(),
             });
+            replyText =
+              "Si querés que lo reserve, respondé *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*.";
+          } else if (offerTime && !offerDate) {
+            replyText = `¿Para qué día querés reservar a las *${offerTime}*? (ej: *hoy*, *mañana* o *22/04*)`;
+          } else {
+            replyText =
+              "Para reservar necesito el día y la hora del turno. Ejemplo: *mañana a las 20:00*.";
           }
-          replyText =
-            "Si querés que lo reserve, respondé *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*.";
           sessionService.addMessage(sessionId, "assistant", replyText);
           return replyText;
         }
