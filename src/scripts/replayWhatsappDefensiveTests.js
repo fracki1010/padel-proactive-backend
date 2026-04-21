@@ -24,6 +24,7 @@ const parseArgs = () => {
   const options = {
     file: process.env.WA_TEST_MESSAGES_FILE || DEFAULT_FILE,
     delayMs: Number(process.env.WA_TEST_DELAY_MS || 250),
+    sectionDelayMs: Number(process.env.WA_TEST_SECTION_DELAY_MS || 0),
     companyId: process.env.WA_TEST_COMPANY_ID || null,
     chatBase: process.env.WA_TEST_CHAT_BASE || "qa-defensive",
     sameSession: false,
@@ -83,10 +84,18 @@ const parseArgs = () => {
       i += 1;
       continue;
     }
+    if (arg === "--section-delay-ms" && args[i + 1]) {
+      options.sectionDelayMs = Number(args[i + 1]);
+      i += 1;
+      continue;
+    }
   }
 
   if (!Number.isFinite(options.delayMs) || options.delayMs < 0) {
     options.delayMs = 250;
+  }
+  if (!Number.isFinite(options.sectionDelayMs) || options.sectionDelayMs < 0) {
+    options.sectionDelayMs = 0;
   }
 
   return options;
@@ -370,6 +379,15 @@ const run = async () => {
 
       summary.push(sectionResult);
       sessionService.clearHistory(sessionId);
+
+      const isLastSection = sectionIndex === sections.length - 1;
+      if (options.sectionDelayMs > 0 && !isLastSection) {
+        const delayMin = (options.sectionDelayMs / 60000).toFixed(1);
+        console.log(
+          `⏸  Pausa entre secciones: ${delayMin} min. Siguiente: [${sections[sectionIndex + 1].id}] ${sections[sectionIndex + 1].title}`,
+        );
+        await sleep(options.sectionDelayMs);
+      }
     }
   } finally {
     await closeDB();
