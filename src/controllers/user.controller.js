@@ -6,6 +6,7 @@ const {
 const {
   getTrustedClientConfirmationCount,
 } = require("../services/appConfig.service");
+const { getNumberByUser } = require("../utils/getNumberByUser");
 const toIsoDateOnly = (value) => {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value || "");
@@ -91,8 +92,12 @@ const getUserById = async (req, res) => {
 const createUser = async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
+    const body = { ...req.body };
+    if (body.phoneNumber !== undefined) {
+      body.phoneNumber = await getNumberByUser(body.phoneNumber);
+    }
     const user = await User.create({
-      ...req.body,
+      ...body,
       ...companyScope(req, companyId),
     });
 
@@ -114,9 +119,13 @@ const createUser = async (req, res) => {
 const updateUser = async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
+    const body = { ...req.body };
+    if (body.phoneNumber !== undefined) {
+      body.phoneNumber = await getNumberByUser(body.phoneNumber);
+    }
     const user = await User.findOneAndUpdate(
       { _id: req.params.id, ...companyScope(req, companyId) },
-      req.body,
+      body,
       { returnDocument: "after", runValidators: true },
     );
     if (!user) {
