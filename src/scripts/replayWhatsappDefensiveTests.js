@@ -29,6 +29,8 @@ const parseArgs = () => {
     chatBase: process.env.WA_TEST_CHAT_BASE || "qa-defensive",
     sameSession: false,
     section: null,
+    fromSection: null,
+    toSection: null,
     strictAssertions:
       String(process.env.WA_TEST_STRICT_ASSERTIONS || "false")
         .trim()
@@ -63,6 +65,16 @@ const parseArgs = () => {
     }
     if (arg === "--section" && args[i + 1]) {
       options.section = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--from" && args[i + 1]) {
+      options.fromSection = Number(args[i + 1]);
+      i += 1;
+      continue;
+    }
+    if (arg === "--to" && args[i + 1]) {
+      options.toSection = Number(args[i + 1]);
       i += 1;
       continue;
     }
@@ -282,9 +294,17 @@ const run = async () => {
 
   const raw = fs.readFileSync(options.file, "utf8");
   const allSections = parseSectionsFromFile(raw);
-  const sections = options.section
-    ? allSections.filter((item) => String(item.id) === String(options.section))
-    : allSections;
+  let sections = allSections;
+  if (options.section) {
+    sections = allSections.filter((item) => String(item.id) === String(options.section));
+  } else if (options.fromSection !== null || options.toSection !== null) {
+    const from = options.fromSection ?? 1;
+    const to = options.toSection ?? allSections.length;
+    sections = allSections.filter((item) => {
+      const n = Number(item.id);
+      return n >= from && n <= to;
+    });
+  }
 
   if (!sections.length) {
     console.error("❌ No encontré secciones de prueba para ejecutar.");
