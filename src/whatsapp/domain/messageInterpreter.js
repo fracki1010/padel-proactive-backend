@@ -47,6 +47,11 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
     return INTENTS.CHECK_AVAILABILITY;
   }
 
+  // Frases de asistencia ("si asisto", "no asisto") no son confirmaciones de reserva.
+  if (/\b(asisto|asistiré|asistire|no\s+asisto|si\s+asisto)\b/.test(normalized)) {
+    return INTENTS.UNKNOWN;
+  }
+
   // CONFIRM antes de CREATE_BOOKING: "confirmar reserva" debe ser CONFIRM, no CREATE_BOOKING
   // Bug original: "reserva" en CREATE_BOOKING disparaba antes que el check de CONFIRM
   if (/\b(si|ok|dale|confirmar|confirmo|listo|confirmar reserva|confirmar turno)\b/.test(normalized)) {
