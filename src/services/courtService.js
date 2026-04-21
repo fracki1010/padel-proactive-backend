@@ -28,7 +28,8 @@ const getCourtSummary = async (companyId = null) => {
             instructions = `
             [SITUACIÓN: CANCHAS DIFERENTES]
             - Tenemos los siguientes tipos de cancha: ${typeList}.
-            - SI EL USUARIO NO ESPECIFICA EL TIPO, DEBES PREGUNTAR cuál prefiere mencionando los tipos disponibles.
+            - SI EL USUARIO NO ESPECIFICA EL TIPO, usa la acción "AWAIT_COURT_SELECTION" (CASO 7) con la fecha y hora del pedido, y pregunta cuál prefiere.
+            - NUNCA uses solo "message" para preguntar la preferencia: siempre usa "AWAIT_COURT_SELECTION" con date y time.
             - Cuando el usuario elija un tipo, manda "courtName": "<tipo exacto>" (ej: "Techada").
             - El sistema asignará automáticamente la cancha libre de ese tipo.
             - Solo manda el nombre de una cancha específica si el usuario pide una cancha puntual por nombre.

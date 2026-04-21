@@ -550,6 +550,15 @@ const getChatResponse = async (
     {
        "message": "Respuesta normal..."
     }
+
+    CASO 7: PREGUNTAR POR TIPO DE CANCHA (cuando hay múltiples tipos y el usuario no especificó cuál quiere)
+    IMPORTANTE: Usa este caso SIEMPRE que vayas a preguntar la preferencia de cancha. NUNCA uses solo "message" para esto.
+    {
+      "action": "AWAIT_COURT_SELECTION",
+      "date": "YYYY-MM-DD",
+      "time": "HH:mm",
+      "message": "Tenemos canchas '[Tipo1]' y '[Tipo2]'. ¿Cuál es tu preferencia?"
+    }
     `;
 
     // Construimos la conversación
