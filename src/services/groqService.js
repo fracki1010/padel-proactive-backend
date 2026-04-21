@@ -523,7 +523,8 @@ const getChatResponse = async (
     {
       "action": "CHECK_AVAILABILITY",
       "date": "YYYY-MM-DD",
-      "time": "HH:mm" // opcional, solo si pidió una hora puntual
+      "time": "HH:mm", // opcional, solo si pidió una hora puntual
+      "courtName": "Techada" // opcional, solo si el usuario pidió un tipo específico de cancha (ej: "techada", "descubierta")
     }
 
     CASO 3: CANCELAR TURNO
