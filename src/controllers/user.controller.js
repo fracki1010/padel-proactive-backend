@@ -94,6 +94,8 @@ const createUser = async (req, res) => {
     const companyId = resolveCompanyId(req);
     const body = { ...req.body };
     if (body.phoneNumber !== undefined) {
+      body.phoneNumber = "no definido";
+    } else {  
       body.phoneNumber = await getNumberByUser(body.phoneNumber);
     }
     const user = await User.create({
