@@ -1,5 +1,5 @@
 # WhatsApp Defensive Replay Report
-- GeneratedAt: 2026-04-20T11:32:11.578Z
+- GeneratedAt: 2026-04-21T00:37:36.233Z
 - File: docs/whatsapp-defensive-test-messages.txt
 - Sections: 178
 - Violations: 0
@@ -170,7 +170,7 @@
 ## [152] Extra - edge long but under 280
 - Sent: 1
 - Errors: 0
-- Markers: ASK_FULL_NAME:1
+- Markers: OK:1
 - Violations: none
 
 ## [151] Extra - name invalid with symbols
@@ -638,7 +638,7 @@
 ## [74] Conversación larga 2
 - Sent: 9
 - Errors: 0
-- Markers: OK:6, ASK_FULL_NAME:1, BOOKING_CONFIRMED:1, BOOKING_CANCELLED:1
+- Markers: OK:8, ASK_FULL_NAME:1
 - Violations: none
 
 ## [73] Conversación larga 1
@@ -836,13 +836,13 @@
 ## [41] Doble significado natural language
 - Sent: 2
 - Errors: 0
-- Markers: OK:1, ASK_FULL_NAME:1
+- Markers: OK:2
 - Violations: none
 
 ## [40] Flood mixed intent
 - Sent: 10
 - Errors: 0
-- Markers: OK:8, ASK_FULL_NAME:2
+- Markers: OK:9, ASK_FULL_NAME:1
 - Violations: none
 
 ## [39] Flood control messages 2
@@ -1010,7 +1010,7 @@
 ## [11] Confirmación oferta estricta - ruido
 - Sent: 6
 - Errors: 0
-- Markers: OK:5, ASK_FULL_NAME:1
+- Markers: OK:6
 - Violations: none
 
 ## [10] Nombre inválido con keywords operativas
