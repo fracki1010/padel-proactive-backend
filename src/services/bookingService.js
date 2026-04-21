@@ -336,7 +336,8 @@ const createNewBooking = async ({
       success: true,
       data: {
         bookingId: newBooking._id,
-        courtName: selectedCourt.name, // Importante: devolvemos el nombre real asignado
+        courtName: selectedCourt.name,
+        courtType: selectedCourt.courtType || null,
         startTime: slot.startTime,
         endTime: slot.endTime,
         price: slot.price,

@@ -469,7 +469,7 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
     return (
       `✅ *¡Reserva Confirmada!* 🎾\n\n` +
       `👤 *Jugador:* ${requestedClientName}\n` +
-      `📌 *Cancha:* ${bookingResult.data.courtName}\n` +
+      `📌 *Cancha:* ${bookingResult.data.courtName}${bookingResult.data.courtType ? ` (${bookingResult.data.courtType})` : ""}\n` +
       `📅 *Fecha:* ${getFormattedDate(requestedDate)}\n` +
       `⏰ *Hora:* ${bookingResult.data.startTime} - ${bookingResult.data.endTime}\n` +
       `💰 *Precio:* $${bookingResult.data.price}`
@@ -685,7 +685,7 @@ const buildBookingDraftSummaryReply = async ({
     const priceLine = priceText ? `\n   💰 Precio: ${priceText}` : "";
     lines.push(
       `${draft.id}) 👤 ${clientName}\n` +
-        `   📌 Cancha: ${draft.courtName}\n` +
+        `   📌 Cancha: ${draft.courtName === "INDIFERENTE" ? "Cualquier cancha disponible" : draft.courtName}\n` +
         `   📅 Fecha: ${formatIsoDateAsDayMonthYear(draft.dateStr)}\n` +
         `   ⏰ Hora: ${draft.timeStr}${endTimeText}` +
         priceLine,
@@ -861,9 +861,13 @@ const buildAvailabilityResponse = async ({
       const typeAvailable = !isCourtTypeFilter || getCourtTypeCount(exactMatch) > 0;
 
       if (typeAvailable) {
+        const typesLine =
+          !isCourtTypeFilter && exactMatch.courtTypes?.length > 0
+            ? `\n🏟️ Tipos disponibles: ${exactMatch.courtTypes.map((ct) => ct.type).join(", ")}`
+            : "";
         return {
           replyText:
-            `${prefix}✅ Sí, tengo disponibilidad${courtLabel} para el *${getFormattedDate(requestedDate)} a las ${requestedTime}*.\n` +
+            `${prefix}✅ Sí, tengo disponibilidad${courtLabel} para el *${getFormattedDate(requestedDate)} a las ${requestedTime}*.${typesLine}\n` +
             `💰 Precio: $${exactMatch.price}\n\n` +
             `_¿Te lo reservo?_`,
           pendingBookingOffer: {
