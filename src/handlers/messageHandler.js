@@ -937,6 +937,7 @@ const ALLOWED_AI_ACTIONS = new Set([
   "CREATE_BOOKING",
   "CHECK_AVAILABILITY",
   "LIST_ACTIVE_BOOKINGS",
+  "AWAIT_COURT_SELECTION",
   "CANCEL_BOOKING",
   "FIXED_TURN_REQUEST",
 ]);
@@ -1903,6 +1904,75 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       }
     }
 
+    // Si hay una selección de tipo de cancha pendiente, resolverla antes de ir a la IA
+    if (
+      sessionMeta.pendingCourtTypeSelection?.dateStr &&
+      sessionMeta.pendingCourtTypeSelection?.timeStr
+    ) {
+      const { COURT_TYPES } = require("../models/court.model");
+      const normalizedMsg = normalizeSpanishText(userMessage);
+      const selectedCourtType = COURT_TYPES.find((ct) =>
+        normalizedMsg.includes(normalizeSpanishText(ct))
+      );
+      const isIndiferente = /\b(cualquiera|indiferente|primera disponible|da igual|lo mismo)\b/.test(normalizedMsg);
+      const isCancel = parseStrictCancel(userMessage);
+
+      if (isCancel) {
+        sessionService.updateMeta(sessionId, { pendingCourtTypeSelection: null });
+        const cancelCourtReply = "Perfecto, cancelé esa reserva. ¿En qué más te ayudo?";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", cancelCourtReply);
+        return cancelCourtReply;
+      }
+
+      if (selectedCourtType || isIndiferente) {
+        const courtName = selectedCourtType || "INDIFERENTE";
+        const { dateStr, timeStr } = sessionMeta.pendingCourtTypeSelection;
+        sessionService.updateMeta(sessionId, { pendingCourtTypeSelection: null });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        let replyText = "";
+        let requestedClientName = normalizeNameText(knownName || "");
+        const requestedCourt = courtName;
+        const singleDraft = buildDraftFromRaw({ courtName: requestedCourt, dateStr, timeStr }, 0);
+
+        sessionService.updateMeta(sessionId, {
+          awaitingFullNameForBooking: false,
+          pendingBooking: null,
+          pendingBookingDrafts: null,
+          pendingBookingClientName: requestedClientName || null,
+          pendingBookingOffer: {
+            courtName: singleDraft.courtName,
+            dateStr: singleDraft.dateStr,
+            timeStr: singleDraft.timeStr,
+            createdAt: Date.now(),
+          },
+          lastRejectedBookingAttempt: null,
+          awaitingExtraBookingConfirmation: false,
+          concreteAnswerRequestedAt: Date.now(),
+        });
+
+        if (!requestedClientName || !isValidClientName(requestedClientName)) {
+          sessionService.updateMeta(sessionId, {
+            awaitingFullNameForBooking: true,
+            pendingBooking: { courtName: requestedCourt, dateStr, timeStr },
+            pendingBookingOffer: null,
+          });
+          replyText =
+            "Antes de reservar, necesito tu *nombre completo* (ej: *Juan Pérez*).";
+          sessionService.addMessage(sessionId, "assistant", replyText);
+          return replyText;
+        }
+
+        replyText = await buildBookingDraftSummaryReply({
+          companyId,
+          clientName: requestedClientName,
+          drafts: [singleDraft],
+        });
+        sessionService.addMessage(sessionId, "assistant", replyText);
+        return replyText;
+      }
+    }
+
     if (sessionMeta.awaitingBookingClientNameConfirmation) {
       const candidateName = normalizeNameText(
         sessionMeta.pendingBookingClientNameCandidate || "",
@@ -2545,6 +2615,19 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
         replyText =
           "Perfecto. Ya le aviso al admin para que gestione ese *turno fijo* y te confirme por acá.";
+      }
+
+      // CASO E2: SELECCIÓN DE TIPO DE CANCHA PENDIENTE
+      else if (parsedData.action === "AWAIT_COURT_SELECTION") {
+        const courtSelectionDate = parsedData.date || null;
+        const courtSelectionTime = normalizeTimeString(parsedData.time) || null;
+        sessionService.updateMeta(sessionId, {
+          pendingBookingOffer: null,
+          pendingCourtTypeSelection: courtSelectionDate && courtSelectionTime
+            ? { dateStr: courtSelectionDate, timeStr: courtSelectionTime }
+            : null,
+        });
+        replyText = sanitizeModelOnlyMessage(parsedData.message || "¿Cuál es tu preferencia de cancha?");
       }
 
       // CASO F: SOLO MENSAJE (La IA respondió en JSON con campo "message")
