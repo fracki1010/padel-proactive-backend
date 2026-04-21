@@ -38,8 +38,8 @@ const getCourtSummary = async (companyId = null) => {
             [SITUACIÓN: CANCHAS IGUALES]
             - Todas las canchas son del mismo tipo (${uniqueTypes[0]}).
             - NO PREGUNTES "¿Qué cancha querés?". ES MOLESTO.
-            - Si el usuario pide turno, asume que le da igual.
-            - En el JSON, manda "courtName": "INDIFERENTE".
+            - Si el usuario pide turno sin especificar cancha, asume que le da igual y manda "courtName": "INDIFERENTE".
+            - Si el usuario menciona explícitamente una cancha por nombre o número (ej: "cancha 2", "cancha B"), usá ese valor exacto en "courtName".
             `;
         }
 

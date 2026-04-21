@@ -104,7 +104,7 @@ const buildAntiLoopReply = ({ interpretation = {}, sessionMeta = {} } = {}) => {
     return "Entendido. Para reservar sin errores necesito *fecha y hora* (ej: hoy 20:00).";
   }
   if (intent === INTENTS.CANCEL_BOOKING) {
-    return "Entendido. Si no me pasás fecha/hora, intento cancelar tu próxima reserva activa.";
+    return "Para cancelar tu turno, pasame la *fecha y hora* (ej: mañana 20:00).";
   }
   return "Te estoy entendiendo, pero para avanzar necesito un dato más concreto.";
 };
@@ -1266,7 +1266,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       conversationState: earlyInterpretation.nextState || deriveStateFromMeta(sessionMeta),
     });
 
-    if (repeatedCount >= MAX_SAME_MESSAGE_BEFORE_LOOP_REPLY) {
+    const antiLoopBypassIntents = new Set([INTENTS.LIST_ACTIVE_BOOKINGS]);
+    if (repeatedCount >= MAX_SAME_MESSAGE_BEFORE_LOOP_REPLY && !antiLoopBypassIntents.has(earlyInterpretation.detectedIntent)) {
       const antiLoopReply = buildAntiLoopReply({
         interpretation: earlyInterpretation,
         sessionMeta,

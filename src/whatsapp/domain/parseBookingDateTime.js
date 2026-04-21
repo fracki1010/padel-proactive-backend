@@ -56,11 +56,11 @@ const parseDate = (input = "", now = new Date(), timezone = "America/Argentina/B
   if (/\bpasado manana\b/.test(text)) {
     return { date: addDays(today, 2), relativeDate: "PASADO_MANANA" };
   }
-  if (/\bmanana\b/.test(text)) {
-    return { date: addDays(today, 1), relativeDate: "MANANA" };
-  }
   if (/\bhoy\b/.test(text)) {
     return { date: today, relativeDate: "HOY" };
+  }
+  if (/\bmanana\b/.test(text)) {
+    return { date: addDays(today, 1), relativeDate: "MANANA" };
   }
 
   for (const [name, index] of Object.entries(WEEKDAY_MAP)) {
