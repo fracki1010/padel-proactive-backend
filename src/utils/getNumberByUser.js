@@ -9,16 +9,18 @@ async function getNumberByUser(whatsappId, companyId = null) {
 
   try {
     const params = companyId ? { companyId } : {};
-    const { data } = await axios.get(
-      `${WORKER_URL}/get-number/${encodeURIComponent(chatId)}`,
-      { params, timeout: 3000 },
-    );
+    const url = `${WORKER_URL}/get-number/${encodeURIComponent(chatId)}`;
+    console.log(`[getNumberByUser] → worker: ${url}`, { companyId });
+    const { data } = await axios.get(url, { params, timeout: 3000 });
+    console.log(`[getNumberByUser] ← worker respondió:`, data);
     if (data?.phoneNumber) return data.phoneNumber;
-  } catch {
-    // worker no disponible, fallback a normalización local
+  } catch (error) {
+    console.warn(`[getNumberByUser] worker no disponible, usando fallback. Error: ${error.message}`);
   }
 
-  return normalizeCanonicalClientPhone(chatId);
+  const fallback = normalizeCanonicalClientPhone(chatId);
+  console.log(`[getNumberByUser] fallback local:`, fallback);
+  return fallback;
 }
 
 module.exports = { getNumberByUser };
