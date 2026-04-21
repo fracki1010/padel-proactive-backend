@@ -505,7 +505,10 @@ const getAvailableSlots = async (dateStr, options = {}) => {
 
     // 3. Traer datos maestros
     const allSlots = await TimeSlot.find({ ...scope, isActive: true }).sort({ order: 1 });
-    const totalCourtsCount = await Court.countDocuments({ ...scope, isActive: true });
+    const allCourts = await Court.find({ ...scope, isActive: true }).select("_id courtType").lean();
+    const totalCourtsCount = allCourts.length;
+    const distinctTypes = [...new Set(allCourts.map((c) => c.courtType || "Estándar"))];
+    const hasMultipleTypes = distinctTypes.length > 1;
 
     // 4. Traer reservas
     const bookings = await Booking.find({
@@ -552,15 +555,30 @@ const getAvailableSlots = async (dateStr, options = {}) => {
         const bookingsForThisSlot = bookings.filter(
           (b) => b.timeSlot.toString() === s._id.toString(),
         );
-        const availableCourts = Math.max(
-          0,
-          Number(totalCourtsCount) - bookingsForThisSlot.length,
+        const bookedCourtIds = new Set(
+          bookingsForThisSlot.map((b) => b.court?.toString()).filter(Boolean),
         );
+        const availableCourtsList = allCourts.filter(
+          (c) => !bookedCourtIds.has(c._id.toString()),
+        );
+        const availableCourts = availableCourtsList.length;
+
+        let courtTypes = null;
+        if (hasMultipleTypes) {
+          const typeCountMap = {};
+          for (const c of availableCourtsList) {
+            const t = c.courtType || "Estándar";
+            typeCountMap[t] = (typeCountMap[t] || 0) + 1;
+          }
+          courtTypes = Object.entries(typeCountMap).map(([type, count]) => ({ type, count }));
+        }
+
         return {
           time: s.startTime,
           price: s.price,
           availableCourts,
-          totalCourts: Number(totalCourtsCount),
+          totalCourts: totalCourtsCount,
+          ...(courtTypes && { courtTypes }),
         };
       }),
       blockedSlots,

@@ -751,6 +751,13 @@ const filterSlotsByPeriod = (slots = [], period = null) => {
   });
 };
 
+const formatSlotLines = (slot) => {
+  if (slot.courtTypes?.length > 0) {
+    return slot.courtTypes.map((ct) => `• ${slot.time} (${ct.type}) ($${slot.price})`);
+  }
+  return [`• ${slot.time} ($${slot.price})`];
+};
+
 const buildAvailabilityResponse = async ({
   companyId = null,
   requestedDate,
@@ -861,7 +868,7 @@ const buildAvailabilityResponse = async ({
     const alternatives = dayPeriod
       ? filterSlotsByPeriod(availability.slots, dayPeriod).slice(0, 5)
       : availability.slots.slice(0, 5);
-    const list = alternatives.map((s) => `• ${s.time} ($${s.price})`).join("\n");
+    const list = alternatives.flatMap(formatSlotLines).join("\n");
     const periodLine = periodLabel ? ` dentro de la ${periodLabel}` : "";
     const isFixedBlocking = availability.blockedSlots?.[requestedTime]?.isFixed === true;
     const fixedNote = isFixedBlocking ? " — ese horario está reservado como turno fijo" : "";
@@ -900,7 +907,7 @@ const buildAvailabilityResponse = async ({
     };
   }
 
-  const lista = slotsToShow.map((s) => `• ${s.time} ($${s.price})`).join("\n");
+  const lista = slotsToShow.flatMap(formatSlotLines).join("\n");
   const periodTitle = dayPeriod ? ` en la ${periodLabel}` : "";
   return {
     replyText:
