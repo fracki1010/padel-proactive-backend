@@ -12,6 +12,8 @@ async function getNumberByUser(whatsappId) {
       `${WORKER_URL}/get-number/${encodeURIComponent(chatId)}`,
       { timeout: 3000 },
     );
+    console.log(data);
+    
     if (data?.phoneNumber) return data.phoneNumber;
   } catch {
     // worker no disponible, fallback a normalización local
