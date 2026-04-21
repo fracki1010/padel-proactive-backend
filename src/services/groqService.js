@@ -507,6 +507,8 @@ const getChatResponse = async (
     - Si dicen "hoy 17", también es CHECK_AVAILABILITY con date=${fechaISO} y time="17:00".
     - En CHECK_AVAILABILITY, incluye "time" cuando el usuario mencione una hora puntual.
     - Si faltan datos para interpretar fecha/hora, pregunta aclaración en "message".
+    - Frases como "si asisto", "no asisto", "asisto mañana", "asistiré" se refieren a ASISTENCIA a una reserva existente, NO a crear una reserva nueva. Si no hay contexto claro de una reserva vigente, respondé con "message" preguntando a qué turno se refiere.
+    - Si el usuario ya fue registrado con un nombre (clientName conocido), NO aceptes un nombre diferente como si fuera una corrección. Si intenta darse un nombre distinto, recordale que ya está registrado con el nombre anterior y pedile confirmación explícita antes de cambiarlo.
 
     [SALIDA JSON REQUERIDA]
     

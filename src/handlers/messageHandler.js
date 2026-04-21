@@ -2148,6 +2148,19 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
     // Si estábamos esperando nombre completo para una reserva pendiente, lo resolvemos antes de llamar a IA.
     if (sessionMeta.awaitingFullNameForBooking) {
+      // CANCELAR sin fecha/hora = el usuario quiere abortar el flujo de registro, no cancelar una reserva existente.
+      if (
+        parseStrictCancel(userMessage) &&
+        !extractDateFromMessage(userMessage) &&
+        !extractTimeFromMessage(userMessage)
+      ) {
+        clearBookingStrictStateMeta(sessionId);
+        const abortFlowReply = "Perfecto, no reservo ese turno.";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", abortFlowReply);
+        return abortFlowReply;
+      }
+
       const fullNameCaptureGlobalAction =
         globalInterruptIntent?.action || (parseStrictCancel(userMessage) ? "CANCEL_BOOKING" : "");
 
