@@ -42,6 +42,8 @@ const {
 const {
   deriveStateFromMeta,
 } = require("../whatsapp/domain/bookingStateMachine");
+const { normalizeHomoglyphs } = require("../utils/normalizeHomoglyphs");
+const { stripUrlsFromText } = require("../utils/stripUrlsFromText");
 
 // --- FUNCIÓN HELPER PARA EXTRAER JSON ---
 // Busca cualquier cosa que parezca un objeto JSON {...} dentro del texto
@@ -274,11 +276,13 @@ const normalizeLooseText = (value = "") =>
     .replace(/\s+/g, " ")
     .trim();
 
-const sanitizeIncomingUserMessage = (value = "") =>
-  String(value || "")
+const sanitizeIncomingUserMessage = (value = "") => {
+  const clean = String(value || "")
     .replace(/[\u0000-\u001F\u007F]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  return normalizeHomoglyphs(clean);
+};
 
 const isPromptInjectionAttempt = (value = "") => {
   const text = normalizeSpanishText(value);
@@ -459,7 +463,8 @@ const isNonNameReply = (value = "") => {
 };
 
 const extractFullNameFromMessage = (rawMessage, _aiCandidate = "") => {
-  const parsed = extractPersonName(rawMessage);
+  const textForName = stripUrlsFromText(rawMessage);
+  const parsed = extractPersonName(textForName);
   if (!parsed?.isValid) return null;
   return parsed.value;
 };
@@ -761,6 +766,20 @@ const formatSlotLines = (slot) => {
   return [`• ${slot.time} ($${slot.price})`];
 };
 
+const timeToMinutes = (timeStr = "") => {
+  const [h, m] = String(timeStr).split(":").map(Number);
+  return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
+};
+
+const findNearbySlots = (requestedTime = "", slots = [], windowMinutes = 90) => {
+  const reqMin = timeToMinutes(requestedTime);
+  if (reqMin === null) return [];
+  return slots.filter((s) => {
+    const slotMin = timeToMinutes(s.time);
+    return slotMin !== null && Math.abs(slotMin - reqMin) <= windowMinutes && slotMin !== reqMin;
+  });
+};
+
 const buildAvailabilityResponse = async ({
   companyId = null,
   requestedDate,
@@ -786,8 +805,15 @@ const buildAvailabilityResponse = async ({
       .lean();
 
     if (!slotExists) {
+      const nearbySlots = Array.isArray(availability?.slots)
+        ? findNearbySlots(requestedTime, availability.slots, 90)
+        : [];
+      const nearbyText =
+        nearbySlots.length > 0
+          ? `\nTe puedo ofrecer:\n${nearbySlots.flatMap(formatSlotLines).join("\n")}\n\n_¿Cuál te reservo?_`
+          : "";
       return {
-        replyText: `${prefix}⚠️ Ese horario no existe en la grilla.`,
+        replyText: `${prefix}⚠️ Ese horario no existe en la grilla.${nearbyText}`,
         pendingBookingOffer: null,
         rejectedBookingAttempt: {
           dateStr: requestedDate,
@@ -2369,7 +2395,12 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
       // CASO A: RESERVAR
       else if (parsedData.action === "CREATE_BOOKING") {
-        const requestedDate = parsedData.date;
+        const requestedDate =
+          parsedData.date && isValidIsoDate(parsedData.date)
+            ? parsedData.date
+            : sessionMeta.lastAvailabilityDate && isValidIsoDate(sessionMeta.lastAvailabilityDate)
+              ? sessionMeta.lastAvailabilityDate
+              : parsedData.date;
         const requestedTime = normalizeTimeString(parsedData.time);
         const userDerivedDate = extractDateFromMessage(userMessage);
         const userDerivedTime = normalizeTimeString(extractTimeFromMessage(userMessage));
@@ -2576,6 +2607,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           pendingBookingOffer: availabilityResponse.pendingBookingOffer,
           lastRejectedBookingAttempt:
             availabilityResponse.rejectedBookingAttempt || null,
+          lastAvailabilityDate: requestedDate,
           concreteAnswerRequestedAt: availabilityResponse.pendingBookingOffer
             ? Date.now()
             : null,
