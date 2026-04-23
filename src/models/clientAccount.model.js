@@ -20,12 +20,16 @@ const clientAccountSchema = new mongoose.Schema(
     },
     phone: {
       type: String,
-      required: true,
+      default: "",
       trim: true,
     },
     passwordHash: {
       type: String,
       required: true,
+    },
+    googleAuth: {
+      type: Boolean,
+      default: false,
     },
     isActive: {
       type: Boolean,

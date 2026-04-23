@@ -6,6 +6,8 @@ const {
   registerClient,
   loginClient,
   getMe,
+  updatePhone,
+  googleAuth,
   createClientBooking,
   getMyBookings,
   cancelMyBooking,
@@ -21,7 +23,9 @@ router.get("/availability", getAvailability);
 // Auth de clientes
 router.post("/auth/register", registerClient);
 router.post("/auth/login", loginClient);
+router.post("/auth/google", googleAuth);
 router.get("/auth/me", protectClient, getMe);
+router.put("/auth/me/phone", protectClient, updatePhone);
 
 // Reservas de clientes
 router.post("/bookings", protectClient, createClientBooking);
