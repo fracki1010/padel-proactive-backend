@@ -73,6 +73,8 @@ app.use(
   superAdminRoutes,
 );
 
+app.use("/api/public/:slug", require("./routes/public.routes"));
+
 // Ruta básica de prueba
 app.get("/", (req, res) => {
   res.send("¡El servidor del Chatbot Groq y Reservas está funcionando! 🚀");

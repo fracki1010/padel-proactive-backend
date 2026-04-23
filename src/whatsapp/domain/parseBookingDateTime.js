@@ -1,4 +1,4 @@
-const { parseTime, hasInvalidTimeInput } = require("../../utils/timeParser");
+const { parseTime, hasInvalidTimeInput, hasCompactInvalidTime } = require("../../utils/timeParser");
 
 const WEEKDAY_MAP = {
   domingo: 0,
@@ -128,11 +128,25 @@ const inferHourFromNaturalLanguage = (input = "") => {
     }
   }
 
+  // Hora suelta después de fecha DMY: "20/04 18" → 18:00
+  const afterDmyMatch = normalized.match(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\s+(\d{1,2})\b/);
+  if (afterDmyMatch) {
+    const h = Number(afterDmyMatch[1]);
+    if (h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:00`;
+  }
+
+  // Hora suelta después de fecha ISO: "2026-04-20 18" → 18:00
+  const afterIsoMatch = normalized.match(/\b\d{4}-\d{2}-\d{2}\s+(\d{1,2})\b/);
+  if (afterIsoMatch) {
+    const h = Number(afterIsoMatch[1]);
+    if (h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:00`;
+  }
+
   return null;
 };
 
 const parseTimeEntity = (input = "") => {
-  if (hasInvalidTimeInput(input)) {
+  if (hasInvalidTimeInput(input) || hasCompactInvalidTime(input)) {
     return { time: null, invalidTime: true };
   }
 

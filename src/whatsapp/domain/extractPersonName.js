@@ -27,6 +27,8 @@ const nonNameCommandPatterns = [
   /\b(hoy|manana|pasado manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/i,
   /\b(como|que|quien|donde|cuando|cuanto|cual|por que)\b/i,
   /\b(contame|decime|dime|mostrame|explicame|ayudame|necesito|quiero saber|decis|sabes)\b/i,
+  /\b(hay|habia|hubiera|hubo|habra|haya)\b/i,
+  /\b(reservame|anotame|mandame|haceme|confirmame|poneme|traeme|marcame)\b/i,
 ];
 
 const TOKEN_REGEX = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[\-'][A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)*$/;

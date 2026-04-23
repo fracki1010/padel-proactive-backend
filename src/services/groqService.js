@@ -455,6 +455,7 @@ const getChatResponse = async (
         - No conoces el nombre del usuario.
         - Si quiere reservar, DEBES preguntar su nombre obligatoriamente.
         - NOMBRE Y APELLIDO DEL CLIENTE (darle este ejemplo siempre ej: "Juan Pérez").
+        - Si el usuario responde con un nombre genérico o placeholder ("invitado", "cliente", "socio", "usuario", "anónimo", "nombre apellido", o similares), NO lo aceptes como nombre real. Pedile nuevamente su nombre y apellido verdaderos.
         `;
     }
 
@@ -496,10 +497,10 @@ const getChatResponse = async (
     - Si no conoces un dato, pide aclaración o responde que no está disponible ese dato.
     ${strictQuestionFlowEnabled ? `
     [FLUJO ESTRICTO - OBLIGATORIO]
-    - Haz una sola pregunta por mensaje.
+    - Haz UNA SOLA pregunta por mensaje. Nunca dos en el mismo mensaje.
     - Si faltan varios datos, pide solo uno por turno.
     - Orden obligatorio cuando faltan datos para reservar: 1) nombre completo, 2) fecha, 3) hora.
-    - Nunca pidas dos datos a la vez.` : ""}
+    - Nunca pidas dos datos a la vez. Si sentís la tentación de hacer dos preguntas, elegí solo la primera.` : ""}
     
     [AMBIGUEDADES - REGLAS OBLIGATORIAS]
     - Frases como "¿tenés algo para hoy a las 17?" o "algo para las 17" significan CONSULTA DE DISPONIBILIDAD, no reserva confirmada.
@@ -508,7 +509,7 @@ const getChatResponse = async (
     - En CHECK_AVAILABILITY, incluye "time" cuando el usuario mencione una hora puntual.
     - Si faltan datos para interpretar fecha/hora, pregunta aclaración en "message".
     - Frases como "si asisto", "no asisto", "asisto mañana", "asistiré" se refieren a ASISTENCIA a una reserva existente, NO a crear una reserva nueva. Si no hay contexto claro de una reserva vigente, respondé con "message" preguntando a qué turno se refiere.
-    - Si el usuario ya fue registrado con un nombre (clientName conocido), NO aceptes un nombre diferente como si fuera una corrección. Si intenta darse un nombre distinto, recordale que ya está registrado con el nombre anterior y pedile confirmación explícita antes de cambiarlo.
+    - Si el usuario ya fue registrado con un nombre (clientName conocido), NO aceptes ni proceses un nombre diferente bajo ninguna circunstancia. Si intenta darse un nombre distinto, informale que su nombre ya está registrado como el EXACTO anterior (copia el nombre tal cual) y que para cambiarlo debe comunicarse con el administrador del club. Continuá el flujo con el nombre registrado sin preguntar ni sugerir ningún tipo de cambio.
 
     [SALIDA JSON REQUERIDA]
     

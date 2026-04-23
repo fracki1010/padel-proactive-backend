@@ -37,7 +37,7 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
     if (personName.isValid) return INTENTS.PROVIDE_NAME;
   }
 
-  if (/\b(cancelar|anular|cancelame|dar de baja)\b/.test(normalized)) {
+  if (/\b(cancelar|cancelo|cancelame|anular|anulo|anulado|anulada|dar de baja)\b/.test(normalized)) {
     return INTENTS.CANCEL_BOOKING;
   }
   if (/\b(mis reservas|que turnos tengo|que tengo reservado|hay alguna reserva a mi nombre)\b/.test(normalized)) {
@@ -54,7 +54,7 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
 
   // CONFIRM antes de CREATE_BOOKING: "confirmar reserva" debe ser CONFIRM, no CREATE_BOOKING
   // Bug original: "reserva" en CREATE_BOOKING disparaba antes que el check de CONFIRM
-  if (/\b(si|ok|dale|confirmar|confirmo|listo|confirmar reserva|confirmar turno)\b/.test(normalized)) {
+  if (/\b(si|ok|dale|confirmar|confirmado|confirmo|listo|confirmar reserva|confirmar turno)\b/.test(normalized)) {
     return INTENTS.CONFIRM;
   }
 
