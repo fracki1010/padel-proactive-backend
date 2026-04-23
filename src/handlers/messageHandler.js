@@ -278,6 +278,7 @@ const normalizeLooseText = (value = "") =>
 
 const sanitizeIncomingUserMessage = (value = "") => {
   const clean = String(value || "")
+    .normalize("NFKC")
     .replace(/[\u0000-\u001F\u007F]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -469,8 +470,10 @@ const extractFullNameFromMessage = (rawMessage, _aiCandidate = "") => {
   return parsed.value;
 };
 
-const isValidClientName = (value = "") =>
-  Boolean(extractPersonName(value)?.isValid);
+const isValidClientName = (value = "") => {
+  if (isPlaceholderName(value)) return false;
+  return Boolean(extractPersonName(value)?.isValid);
+};
 
 const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult) => {
   if (bookingResult.success) {
@@ -1029,7 +1032,7 @@ const parseStrictYesNoAnswer = (value = "") => {
 const parseStrictCancel = (value = "") => {
   const text = normalizeLooseText(value);
   if (!text) return false;
-  return /\bcancel(ar|ame|a|ado)?\b/.test(text);
+  return /\bcancel(ar|ame|a|ado|o)?\b/.test(text) || /\banul(ar|o|ado|ada|a)?\b/.test(text);
 };
 
 const parseStrictOfferConfirmation = (value = "") => {
@@ -1284,6 +1287,27 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       sessionService.addMessage(sessionId, "user", userMessage);
       sessionService.addMessage(sessionId, "assistant", promptInjectionReply);
       return promptInjectionReply;
+    }
+
+    if (/^\s*\{/.test(userMessage) && /\}\s*$/.test(userMessage)) {
+      try {
+        JSON.parse(userMessage);
+        const jsonPayloadReply =
+          "No entendí ese mensaje. Escribime directamente si querés *consultar disponibilidad*, *reservar* o *cancelar*.";
+        auditSecurityEvent({
+          companyId,
+          chatId,
+          sessionId,
+          event: "INPUT_BLOCKED",
+          reason: "json_payload_attempt",
+          userMessage,
+        });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", jsonPayloadReply);
+        return jsonPayloadReply;
+      } catch (_) {
+        // No es JSON válido, continuar flujo normal
+      }
     }
 
     if (!userMessage) {
@@ -1745,6 +1769,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         finalReply = failedMessages.join("\n\n") || "⚠️ No pude reservar los turnos solicitados.";
       }
 
+      const firstSuccessfulDraft = executionResults.find((item) => item.result?.success)?.draft;
       sessionService.updateMeta(sessionId, {
         pendingBookingDrafts: null,
         pendingBookingClientName: null,
@@ -1755,6 +1780,9 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         awaitingBookingClientNameConfirmation: false,
         pendingBookingClientNameCandidate: null,
         concreteAnswerRequestedAt: null,
+        lastConfirmedBookingSlot: firstSuccessfulDraft
+          ? { dateStr: firstSuccessfulDraft.dateStr, timeStr: firstSuccessfulDraft.timeStr, confirmedAt: Date.now() }
+          : null,
       });
       sessionService.addMessage(sessionId, "user", userMessage);
       sessionService.addMessage(sessionId, "assistant", finalReply);
@@ -1852,6 +1880,9 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           pendingBookingOffer: null,
           awaitingFullNameForBooking: false,
           concreteAnswerRequestedAt: null,
+          lastConfirmedBookingSlot: bookingResult?.success
+            ? { dateStr: pendingBooking.dateStr, timeStr: pendingBooking.timeStr, confirmedAt: Date.now() }
+            : null,
         });
         sessionService.addMessage(sessionId, "user", userMessage);
         sessionService.addMessage(sessionId, "assistant", bookingReply);
@@ -1955,6 +1986,9 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           awaitingBookingClientNameConfirmation: false,
           pendingBookingClientNameCandidate: null,
           concreteAnswerRequestedAt: null,
+          lastConfirmedBookingSlot: bookingResult?.success
+            ? { dateStr: pendingBookingOffer.dateStr, timeStr: pendingBookingOffer.timeStr, confirmedAt: Date.now() }
+            : null,
         });
         sessionService.addMessage(sessionId, "user", userMessage);
         sessionService.addMessage(sessionId, "assistant", bookingReply);
@@ -2042,6 +2076,15 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         });
         sessionService.addMessage(sessionId, "assistant", replyText);
         return replyText;
+      } else {
+        const { COURT_TYPES: CT } = require("../models/court.model");
+        const courtTypesList = CT.map((ct) => `*${ct}*`).join(" o ");
+        const invalidCourtTypeReply =
+          `Por favor, indicame si preferís ${courtTypesList} ` +
+          "(o escribí *cualquiera* si no tenés preferencia).";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", invalidCourtTypeReply);
+        return invalidCourtTypeReply;
       }
     }
 
@@ -2190,6 +2233,19 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         return abortFlowReply;
       }
 
+      // NO explícito sin fecha/hora = el usuario rechaza el flujo de nombre, abortar sin cancelar reserva existente.
+      if (
+        parseStrictYesNoAnswer(userMessage) === "NO" &&
+        !extractDateFromMessage(userMessage) &&
+        !extractTimeFromMessage(userMessage)
+      ) {
+        clearBookingStrictStateMeta(sessionId);
+        const rejectFlowReply = "Entendido, no reservo nada. ¿En qué más puedo ayudarte?";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", rejectFlowReply);
+        return rejectFlowReply;
+      }
+
       const fullNameCaptureGlobalAction =
         globalInterruptIntent?.action || (parseStrictCancel(userMessage) ? "CANCEL_BOOKING" : "");
 
@@ -2273,6 +2329,31 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       sessionService.addMessage(sessionId, "user", userMessage);
       sessionService.addMessage(sessionId, "assistant", confirmNameReply);
       return confirmNameReply;
+      }
+    }
+
+    // Nombre explícito sin flujo de nombre activo y sin nombre registrado:
+    // interceptar determinísticamente para evitar que la IA use contexto histórico residual.
+    if (
+      !forcedActionFromState &&
+      !sessionMeta.awaitingFullNameForBooking &&
+      !sessionMeta.awaitingBookingClientNameConfirmation &&
+      !knownName &&
+      earlyInterpretation.detectedIntent === INTENTS.PROVIDE_NAME
+    ) {
+      const nameCandidate = extractFullNameFromMessage(userMessage);
+      if (nameCandidate && isValidClientName(nameCandidate)) {
+        sessionService.updateMeta(sessionId, {
+          awaitingBookingClientNameConfirmation: true,
+          pendingBookingClientNameCandidate: nameCandidate,
+          concreteAnswerRequestedAt: Date.now(),
+        });
+        const confirmNameReply =
+          `Entonces tu nombre es *${nameCandidate}*, ¿verdad?\n` +
+          "Respondé únicamente *SI* o *NO*.";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", confirmNameReply);
+        return confirmNameReply;
       }
     }
 

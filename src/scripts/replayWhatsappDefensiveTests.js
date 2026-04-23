@@ -113,6 +113,8 @@ const parseArgs = () => {
   return options;
 };
 
+const isValidObjectId = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
+
 const hasBookingIntent = (text = "") =>
   /(quiero reservar|reservame|resérvame|anotame|agendame|haceme la reserva|hace la reserva)/i.test(
     String(text || ""),
@@ -286,6 +288,13 @@ const summarizeReply = (replyText = "") => {
 
 const run = async () => {
   const options = parseArgs();
+
+  if (options.companyId && !isValidObjectId(options.companyId)) {
+    console.error(
+      `❌ companyId inválido: "${options.companyId}" no es un ObjectId de 24 caracteres hexadecimales.`,
+    );
+    process.exit(1);
+  }
 
   if (!fs.existsSync(options.file)) {
     console.error(`❌ No existe archivo de casos: ${options.file}`);

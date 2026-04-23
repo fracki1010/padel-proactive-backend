@@ -24,7 +24,20 @@ const hasInvalidTimeInput = (rawText = "") => {
   return candidates.some((candidate) => !parseTime(candidate));
 };
 
+const hasCompactInvalidTime = (rawText = "") => {
+  const text = String(rawText || "");
+  const compact4 = text.match(/\b\d{4}\b/g) || [];
+  if (compact4.some((m) => {
+    const h = Math.floor(Number(m) / 100);
+    const min = Number(m) % 100;
+    return h > 23 || min > 59;
+  })) return true;
+  if (/\b\d{3}\b/.test(text)) return true;
+  return false;
+};
+
 module.exports = {
   parseTime,
   hasInvalidTimeInput,
+  hasCompactInvalidTime,
 };

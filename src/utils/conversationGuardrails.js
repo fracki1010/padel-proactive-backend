@@ -33,7 +33,7 @@ const isEquivalentConfirmation = (value = "", extra = []) => {
   }
 
   if (defaults.has(text)) return true;
-  return /^(si|dale|ok|confirmar|confirmo|listo)\b/.test(text);
+  return /^(dale|ok|confirmar|confirmo|listo)\b/.test(text);
 };
 
 const parseGlobalInterruptIntent = (value = "") => {
@@ -64,7 +64,7 @@ const parseGlobalInterruptIntent = (value = "") => {
     return { action: "CHECK_AVAILABILITY" };
   }
 
-  if (/\b(cancelar|cancelame|cancela|anular|anula|dar de baja)\b/.test(text)) {
+  if (/\b(cancelar|cancelo|cancelame|cancela|anular|anulo|anulado|anulada|anula|dar de baja)\b/.test(text)) {
     return { action: "CANCEL_BOOKING" };
   }
 
