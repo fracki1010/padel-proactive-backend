@@ -7,23 +7,23 @@ const TimeSlot = require("../models/timeSlot.model");
 const Booking = require("../models/booking.model");
 const ClubClosure = require("../models/clubClosure.model");
 const ClientAccount = require("../models/clientAccount.model");
+const OtpVerification = require("../models/otpVerification.model");
+const User = require("../models/user.model");
 const {
   materializeFixedBookingsForDate,
 } = require("../services/fixedTurnsMaterialization.service");
+const {
+  COMMAND_TYPES,
+  enqueueWhatsappCommand,
+} = require("../services/whatsappCommandQueue.service");
+const {
+  normalizeCanonicalClientPhone,
+} = require("../utils/identityNormalization");
 
 const JWT_SECRET = process.env.JWT_SECRET;
+const OTP_TTL_MINUTES = 10;
 
-const verifyFirebaseIdToken = async (idToken) => {
-  const apiKey = process.env.FIREBASE_API_KEY;
-  if (!apiKey) throw new Error("FIREBASE_API_KEY no configurado en el backend");
-  const { data } = await axios.post(
-    `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`,
-    { idToken },
-  );
-  const user = data?.users?.[0];
-  if (!user) throw new Error("Token de Google inválido");
-  return { email: user.email, name: user.displayName || "", photo: user.photoUrl || "" };
-};
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
 const toIsoDateOnly = (value) => {
   const date = value instanceof Date ? value : new Date(value);
@@ -43,6 +43,48 @@ const resolveCompany = async (slug) => {
   if (!slug) return null;
   return Company.findOne({ slug: slug.toLowerCase(), isActive: true });
 };
+
+const signClientToken = (client, companyId) =>
+  jwt.sign(
+    { id: client._id, email: client.email, companyId, type: "client" },
+    JWT_SECRET,
+    { expiresIn: "30d" },
+  );
+
+const clientPayload = (client) => ({
+  id: client._id,
+  name: client.name,
+  email: client.email,
+  phone: client.phone,
+});
+
+// Combina countryCode + localNumber y normaliza a solo dígitos
+const buildNormalizedPhone = (countryCode = "", localNumber = "") => {
+  const raw = `${countryCode}${localNumber}`;
+  return normalizeCanonicalClientPhone(raw);
+};
+
+const maskPhone = (digits = "") => {
+  if (digits.length < 4) return "****";
+  return `${"*".repeat(digits.length - 4)}${digits.slice(-4)}`;
+};
+
+const generateOtp = () =>
+  String(Math.floor(100000 + Math.random() * 900000));
+
+const verifyFirebaseIdToken = async (idToken) => {
+  const apiKey = process.env.FIREBASE_API_KEY;
+  if (!apiKey) throw new Error("FIREBASE_API_KEY no configurado en el backend");
+  const { data } = await axios.post(
+    `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`,
+    { idToken },
+  );
+  const user = data?.users?.[0];
+  if (!user) throw new Error("Token de Google inválido");
+  return { email: user.email, name: user.displayName || "", photo: user.photoUrl || "" };
+};
+
+// ─── Endpoints públicos ──────────────────────────────────────────────────────
 
 // GET /api/public/:slug
 const getClubInfo = async (req, res) => {
@@ -65,7 +107,7 @@ const getClubInfo = async (req, res) => {
         slots,
       },
     });
-  } catch (err) {
+  } catch {
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -88,12 +130,7 @@ const getAvailability = async (req, res) => {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
     }
 
-    // Verificar cierre del club
-    const closure = await ClubClosure.findOne({
-      companyId: company._id,
-      date: searchDate,
-    });
-
+    const closure = await ClubClosure.findOne({ companyId: company._id, date: searchDate });
     if (closure) {
       return res.json({
         success: true,
@@ -102,15 +139,12 @@ const getAvailability = async (req, res) => {
           closureReason: closure.reason || "El club está cerrado ese día",
           courts: [],
           slots: [],
-          bookings: [],
+          availability: [],
         },
       });
     }
 
-    await materializeFixedBookingsForDate({
-      companyId: company._id,
-      searchDate,
-    });
+    await materializeFixedBookingsForDate({ companyId: company._id, searchDate });
 
     const [courts, slots, bookings] = await Promise.all([
       Court.find({ companyId: company._id, isActive: true }).sort({ name: 1 }),
@@ -136,16 +170,78 @@ const getAvailability = async (req, res) => {
 
     return res.json({
       success: true,
-      data: {
-        closed: false,
-        courts,
-        slots,
-        availability,
-      },
+      data: { closed: false, courts, slots, availability },
     });
-  } catch (err) {
+  } catch {
     return res.status(500).json({ success: false, error: "Error interno" });
   }
+};
+
+// POST /api/public/:slug/auth/send-otp
+const sendOtp = async (req, res) => {
+  try {
+    const company = await resolveCompany(req.params.slug);
+    if (!company) {
+      return res.status(404).json({ success: false, error: "Club no encontrado" });
+    }
+
+    const { countryCode, localNumber } = req.body;
+    if (!countryCode || !localNumber) {
+      return res.status(400).json({ success: false, error: "Código de país y número requeridos" });
+    }
+
+    const phone = buildNormalizedPhone(countryCode, localNumber);
+    if (!phone || phone.length < 7) {
+      return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
+    }
+
+    const code = generateOtp();
+    const expiresAt = new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000);
+
+    // Eliminar OTPs previos para ese número
+    await OtpVerification.deleteMany({ companyId: company._id, phone });
+
+    await OtpVerification.create({ companyId: company._id, phone, code, expiresAt });
+
+    // Enviar por WhatsApp
+    try {
+      await enqueueWhatsappCommand({
+        companyId: company._id,
+        type: COMMAND_TYPES.SEND_MESSAGE,
+        payload: {
+          to: `${phone}@c.us`,
+          message:
+            `🎾 *${company.name}* — Verificación de cuenta\n\n` +
+            `Tu código es: *${code}*\n\n` +
+            `Válido por ${OTP_TTL_MINUTES} minutos. No lo compartas con nadie.`,
+        },
+        requestedBy: "portal",
+      });
+    } catch (wpErr) {
+      // Si WhatsApp falla igual devolvemos success; en dev se puede loguear el código
+      console.warn("[sendOtp] No se pudo encolar mensaje WhatsApp:", wpErr?.message);
+    }
+
+    return res.json({
+      success: true,
+      data: { masked: maskPhone(phone) },
+    });
+  } catch {
+    return res.status(500).json({ success: false, error: "Error interno" });
+  }
+};
+
+// Función interna reutilizable para verificar OTP
+const checkOtp = async (companyId, phone, code) => {
+  const otp = await OtpVerification.findOne({
+    companyId,
+    phone,
+    used: false,
+    expiresAt: { $gt: new Date() },
+  });
+  if (!otp) return { valid: false, reason: "Código inválido o expirado" };
+  if (otp.code !== String(code)) return { valid: false, reason: "Código incorrecto" };
+  return { valid: true, otp };
 };
 
 // POST /api/public/:slug/auth/register
@@ -156,52 +252,63 @@ const registerClient = async (req, res) => {
       return res.status(404).json({ success: false, error: "Club no encontrado" });
     }
 
-    const { name, email, phone, password } = req.body;
+    const { name, email, password, countryCode, localNumber, otp } = req.body;
+
     if (!name || !email || !password) {
       return res.status(400).json({ success: false, error: "Nombre, email y contraseña son requeridos" });
     }
-
+    if (!countryCode || !localNumber) {
+      return res.status(400).json({ success: false, error: "Teléfono requerido" });
+    }
+    if (!otp) {
+      return res.status(400).json({ success: false, error: "Código de verificación requerido" });
+    }
     if (password.length < 6) {
       return res.status(400).json({ success: false, error: "La contraseña debe tener al menos 6 caracteres" });
     }
 
-    const existing = await ClientAccount.findOne({
-      companyId: company._id,
-      email: email.toLowerCase().trim(),
-    });
+    const phone = buildNormalizedPhone(countryCode, localNumber);
+    if (!phone || phone.length < 7) {
+      return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
+    }
 
-    if (existing) {
+    const otpCheck = await checkOtp(company._id, phone, otp);
+    if (!otpCheck.valid) {
+      return res.status(400).json({ success: false, error: otpCheck.reason });
+    }
+
+    const emailNorm = email.toLowerCase().trim();
+    const [emailTaken, phoneTaken] = await Promise.all([
+      ClientAccount.findOne({ companyId: company._id, email: emailNorm }),
+      ClientAccount.findOne({ companyId: company._id, phone }),
+    ]);
+
+    if (emailTaken) {
       return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese email" });
     }
+    if (phoneTaken) {
+      return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
+    }
+
+    await otpCheck.otp.updateOne({ used: true });
 
     const passwordHash = await bcrypt.hash(password, 10);
     const client = await ClientAccount.create({
       companyId: company._id,
       name: name.trim(),
-      email: email.toLowerCase().trim(),
-      phone: phone.trim(),
+      email: emailNorm,
+      phone,
       passwordHash,
     });
-
-    const token = jwt.sign(
-      {
-        id: client._id,
-        email: client.email,
-        companyId: company._id,
-        type: "client",
-      },
-      JWT_SECRET,
-      { expiresIn: "30d" },
-    );
 
     return res.status(201).json({
       success: true,
       data: {
-        token,
-        client: { id: client._id, name: client.name, email: client.email, phone: client.phone },
+        token: signClientToken(client, company._id),
+        client: clientPayload(client),
       },
     });
-  } catch (err) {
+  } catch {
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -234,25 +341,120 @@ const loginClient = async (req, res) => {
       return res.status(401).json({ success: false, error: "Email o contraseña incorrectos" });
     }
 
-    const token = jwt.sign(
-      {
-        id: client._id,
-        email: client.email,
-        companyId: company._id,
-        type: "client",
-      },
-      JWT_SECRET,
-      { expiresIn: "30d" },
-    );
-
     return res.json({
       success: true,
       data: {
-        token,
-        client: { id: client._id, name: client.name, email: client.email, phone: client.phone },
+        token: signClientToken(client, company._id),
+        client: clientPayload(client),
       },
     });
-  } catch (err) {
+  } catch {
+    return res.status(500).json({ success: false, error: "Error interno" });
+  }
+};
+
+// POST /api/public/:slug/auth/google
+const googleAuth = async (req, res) => {
+  try {
+    const company = await resolveCompany(req.params.slug);
+    if (!company) {
+      return res.status(404).json({ success: false, error: "Club no encontrado" });
+    }
+
+    const { idToken, countryCode, localNumber, otp } = req.body;
+    if (!idToken) {
+      return res.status(400).json({ success: false, error: "idToken requerido" });
+    }
+
+    let googleUser;
+    try {
+      googleUser = await verifyFirebaseIdToken(idToken);
+    } catch {
+      return res.status(401).json({ success: false, error: "Token de Google inválido" });
+    }
+
+    const { email, name } = googleUser;
+    if (!email) {
+      return res.status(400).json({ success: false, error: "La cuenta de Google no tiene email" });
+    }
+
+    const emailNorm = email.toLowerCase();
+
+    let client = await ClientAccount.findOne({ companyId: company._id, email: emailNorm });
+    const isNew = !client;
+
+    if (isNew) {
+      // Cuenta nueva — necesita teléfono verificado
+      if (!countryCode || !localNumber || !otp) {
+        return res.status(200).json({
+          success: true,
+          data: { needsPhone: true, name, email: emailNorm },
+        });
+      }
+
+      const phone = buildNormalizedPhone(countryCode, localNumber);
+      if (!phone || phone.length < 7) {
+        return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
+      }
+
+      const otpCheck = await checkOtp(company._id, phone, otp);
+      if (!otpCheck.valid) {
+        return res.status(400).json({ success: false, error: otpCheck.reason });
+      }
+
+      const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone });
+      if (phoneTaken) {
+        return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
+      }
+
+      await otpCheck.otp.updateOne({ used: true });
+
+      client = await ClientAccount.create({
+        companyId: company._id,
+        name: name || emailNorm.split("@")[0],
+        email: emailNorm,
+        phone,
+        passwordHash: await bcrypt.hash(Math.random().toString(36), 10),
+        googleAuth: true,
+      });
+    } else if (!client.phone && countryCode && localNumber && otp) {
+      // Cuenta existente sin teléfono — verificar y actualizar
+      const phone = buildNormalizedPhone(countryCode, localNumber);
+      const otpCheck = await checkOtp(company._id, phone, otp);
+      if (!otpCheck.valid) {
+        return res.status(400).json({ success: false, error: otpCheck.reason });
+      }
+      const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone, _id: { $ne: client._id } });
+      if (phoneTaken) {
+        return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
+      }
+      await otpCheck.otp.updateOne({ used: true });
+      client.phone = phone;
+      await client.save();
+    } else if (!client.phone) {
+      // Cuenta sin teléfono, no vino OTP todavía
+      return res.status(200).json({
+        success: true,
+        data: {
+          needsPhone: true,
+          name: client.name,
+          email: client.email,
+          // token temporal sin phone para que pueda llamar send-otp autenticado
+          token: signClientToken(client, company._id),
+        },
+      });
+    }
+
+    return res.status(isNew ? 201 : 200).json({
+      success: true,
+      data: {
+        token: signClientToken(client, company._id),
+        client: clientPayload(client),
+        isNew,
+        needsPhone: false,
+      },
+    });
+  } catch {
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -264,11 +466,55 @@ const getMe = async (req, res) => {
     if (!client || !client.isActive) {
       return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
     }
-    return res.json({
-      success: true,
-      data: { id: client._id, name: client.name, email: client.email, phone: client.phone },
+    return res.json({ success: true, data: clientPayload(client) });
+  } catch {
+    return res.status(500).json({ success: false, error: "Error interno" });
+  }
+};
+
+// PUT /api/public/:slug/auth/me/phone  (requiere protectClient)
+const updatePhone = async (req, res) => {
+  try {
+    const company = await resolveCompany(req.params.slug);
+    if (!company) {
+      return res.status(404).json({ success: false, error: "Club no encontrado" });
+    }
+
+    const { countryCode, localNumber, otp } = req.body;
+    if (!countryCode || !localNumber || !otp) {
+      return res.status(400).json({ success: false, error: "Teléfono y código de verificación requeridos" });
+    }
+
+    const phone = buildNormalizedPhone(countryCode, localNumber);
+    if (!phone || phone.length < 7) {
+      return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
+    }
+
+    const otpCheck = await checkOtp(company._id, phone, otp);
+    if (!otpCheck.valid) {
+      return res.status(400).json({ success: false, error: otpCheck.reason });
+    }
+
+    const phoneTaken = await ClientAccount.findOne({
+      companyId: company._id,
+      phone,
+      _id: { $ne: req.clientUser.id },
     });
-  } catch (err) {
+    if (phoneTaken) {
+      return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
+    }
+
+    await otpCheck.otp.updateOne({ used: true });
+
+    const client = await ClientAccount.findByIdAndUpdate(
+      req.clientUser.id,
+      { phone },
+      { new: true },
+    );
+    if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
+
+    return res.json({ success: true, data: clientPayload(client) });
+  } catch {
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -295,19 +541,37 @@ const createClientBooking = async (req, res) => {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
     }
 
-    // Verificar cierre del club
     const closure = await ClubClosure.findOne({ companyId: company._id, date: searchDate });
     if (closure) {
       return res.status(409).json({ success: false, error: "El club está cerrado ese día" });
     }
 
-    const [court, slot] = await Promise.all([
+    const [court, slot, client] = await Promise.all([
       Court.findOne({ _id: courtId, companyId: company._id, isActive: true }),
       TimeSlot.findOne({ _id: slotId, companyId: company._id, isActive: true }),
+      ClientAccount.findById(req.clientUser.id),
     ]);
 
     if (!court) return res.status(404).json({ success: false, error: "Cancha no encontrada" });
     if (!slot) return res.status(404).json({ success: false, error: "Turno no encontrado" });
+    if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
+
+    if (!client.phone) {
+      return res.status(400).json({ success: false, error: "Debés verificar tu teléfono antes de reservar" });
+    }
+
+    // Chequear si el cliente está suspendido en el sistema (por WhatsApp/admin)
+    const suspendedUser = await User.findOne({
+      companyId: company._id,
+      phoneNumber: client.phone,
+      isSuspended: true,
+    });
+    if (suspendedUser) {
+      return res.status(403).json({
+        success: false,
+        error: "Tu cuenta está suspendida. Comunicate con el club para más información.",
+      });
+    }
 
     await materializeFixedBookingsForDate({ companyId: company._id, searchDate });
 
@@ -318,13 +582,9 @@ const createClientBooking = async (req, res) => {
       timeSlot: slot._id,
       status: { $nin: ["cancelado"] },
     });
-
     if (existing) {
       return res.status(409).json({ success: false, error: "Ese turno ya está reservado" });
     }
-
-    const client = await ClientAccount.findById(req.clientUser.id);
-    if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
 
     const booking = await Booking.create({
       companyId: company._id,
@@ -344,10 +604,7 @@ const createClientBooking = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      data: {
-        ...populated.toObject(),
-        date: toIsoDateOnly(populated.date),
-      },
+      data: { ...populated.toObject(), date: toIsoDateOnly(populated.date) },
     });
   } catch (err) {
     if (err.code === 11000) {
@@ -372,9 +629,13 @@ const getMyBookings = async (req, res) => {
     const client = await ClientAccount.findById(req.clientUser.id);
     if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
 
+    if (!client.phone) {
+      return res.json({ success: true, data: [] });
+    }
+
     const bookings = await Booking.find({
       companyId: company._id,
-      clientPhone: client.phone,
+      clientPhone: client.phone, // phone ya normalizado, matchea directo
       status: { $nin: ["cancelado"] },
       date: { $gte: new Date(new Date().setUTCHours(0, 0, 0, 0)) },
     })
@@ -386,7 +647,7 @@ const getMyBookings = async (req, res) => {
       success: true,
       data: bookings.map((b) => ({ ...b.toObject(), date: toIsoDateOnly(b.date) })),
     });
-  } catch (err) {
+  } catch {
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -411,7 +672,6 @@ const cancelMyBooking = async (req, res) => {
     if (!booking) {
       return res.status(404).json({ success: false, error: "Reserva no encontrada" });
     }
-
     if (booking.status === "cancelado") {
       return res.status(409).json({ success: false, error: "La reserva ya está cancelada" });
     }
@@ -420,103 +680,7 @@ const cancelMyBooking = async (req, res) => {
     await booking.save();
 
     return res.json({ success: true });
-  } catch (err) {
-    return res.status(500).json({ success: false, error: "Error interno" });
-  }
-};
-
-// POST /api/public/:slug/auth/google
-const googleAuth = async (req, res) => {
-  try {
-    const company = await resolveCompany(req.params.slug);
-    if (!company) {
-      return res.status(404).json({ success: false, error: "Club no encontrado" });
-    }
-
-    const { idToken, phone } = req.body;
-    if (!idToken) {
-      return res.status(400).json({ success: false, error: "idToken requerido" });
-    }
-
-    let googleUser;
-    try {
-      googleUser = await verifyFirebaseIdToken(idToken);
-    } catch {
-      return res.status(401).json({ success: false, error: "Token de Google inválido" });
-    }
-
-    const { email, name } = googleUser;
-    if (!email) {
-      return res.status(400).json({ success: false, error: "La cuenta de Google no tiene email" });
-    }
-
-    let client = await ClientAccount.findOne({
-      companyId: company._id,
-      email: email.toLowerCase(),
-    });
-
-    const isNew = !client;
-
-    if (isNew) {
-      // Cuenta nueva: crear con los datos de Google
-      client = await ClientAccount.create({
-        companyId: company._id,
-        name: name || email.split("@")[0],
-        email: email.toLowerCase(),
-        phone: phone?.trim() || "",
-        // Sin password — solo Google auth
-        passwordHash: await bcrypt.hash(Math.random().toString(36), 10),
-        googleAuth: true,
-      });
-    } else if (phone && !client.phone) {
-      // Cuenta existente sin teléfono: actualizar
-      client.phone = phone.trim();
-      await client.save();
-    }
-
-    const needsPhone = !client.phone;
-
-    const token = jwt.sign(
-      { id: client._id, email: client.email, companyId: company._id, type: "client" },
-      JWT_SECRET,
-      { expiresIn: "30d" },
-    );
-
-    return res.status(isNew ? 201 : 200).json({
-      success: true,
-      data: {
-        token,
-        client: { id: client._id, name: client.name, email: client.email, phone: client.phone },
-        isNew,
-        needsPhone,
-      },
-    });
-  } catch (err) {
-    return res.status(500).json({ success: false, error: "Error interno" });
-  }
-};
-
-// PUT /api/public/:slug/auth/me/phone  (requiere protectClient)
-const updatePhone = async (req, res) => {
-  try {
-    const { phone } = req.body;
-    if (!phone?.trim()) {
-      return res.status(400).json({ success: false, error: "Teléfono requerido" });
-    }
-
-    const client = await ClientAccount.findByIdAndUpdate(
-      req.clientUser.id,
-      { phone: phone.trim() },
-      { new: true },
-    );
-
-    if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
-
-    return res.json({
-      success: true,
-      data: { id: client._id, name: client.name, email: client.email, phone: client.phone },
-    });
-  } catch (err) {
+  } catch {
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -524,11 +688,12 @@ const updatePhone = async (req, res) => {
 module.exports = {
   getClubInfo,
   getAvailability,
+  sendOtp,
   registerClient,
   loginClient,
+  googleAuth,
   getMe,
   updatePhone,
-  googleAuth,
   createClientBooking,
   getMyBookings,
   cancelMyBooking,

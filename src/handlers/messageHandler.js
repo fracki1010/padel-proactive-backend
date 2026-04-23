@@ -795,6 +795,16 @@ const buildAvailabilityResponse = async ({
   const dayPeriod = extractDayPeriodFromMessage(userMessage);
   const periodLabel = getDayPeriodLabel(dayPeriod);
   const prefix = modePrefix ? `${modePrefix}\n` : "";
+
+  const todayIso = getTodayIso(new Date(), "America/Argentina/Buenos_Aires");
+  if (requestedDate && requestedDate < todayIso) {
+    return {
+      replyText: `${prefix}⚠️ Esa fecha ya pasó. Decime una fecha futura.`,
+      pendingBookingOffer: null,
+      rejectedBookingAttempt: null,
+    };
+  }
+
   const requestedCourtsCount = extractRequestedCourtsCount(userMessage);
   const needsMultipleCourts = requestedCourtsCount >= 2;
 
