@@ -42,5 +42,10 @@ const clientAccountSchema = new mongoose.Schema(
 );
 
 clientAccountSchema.index({ companyId: 1, email: 1 }, { unique: true });
+// Solo indexa documentos con phone no vacío; permite múltiples cuentas sin teléfono
+clientAccountSchema.index(
+  { companyId: 1, phone: 1 },
+  { unique: true, partialFilterExpression: { phone: { $gt: "" } } },
+);
 
 module.exports = mongoose.model("ClientAccount", clientAccountSchema);

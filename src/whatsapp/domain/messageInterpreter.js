@@ -37,6 +37,13 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
     if (personName.isValid) return INTENTS.PROVIDE_NAME;
   }
 
+  if (
+    /\b(cancelar|cancelo|cancelame|anular|anulo|anulado|anulada|dar de baja)\b/.test(normalized) &&
+    /\b(reservar|quiero reservar|anotame|agendame|haceme la reserva|hace la reserva)\b/.test(normalized)
+  ) {
+    return INTENTS.UNKNOWN;
+  }
+
   if (/\b(cancelar|cancelo|cancelame|anular|anulo|anulado|anulada|dar de baja)\b/.test(normalized)) {
     return INTENTS.CANCEL_BOOKING;
   }
