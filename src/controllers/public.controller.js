@@ -1,5 +1,6 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const axios = require("axios");
 const Company = require("../models/company.model");
 const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
@@ -11,6 +12,18 @@ const {
 } = require("../services/fixedTurnsMaterialization.service");
 
 const JWT_SECRET = process.env.JWT_SECRET;
+
+const verifyFirebaseIdToken = async (idToken) => {
+  const apiKey = process.env.FIREBASE_API_KEY;
+  if (!apiKey) throw new Error("FIREBASE_API_KEY no configurado en el backend");
+  const { data } = await axios.post(
+    `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`,
+    { idToken },
+  );
+  const user = data?.users?.[0];
+  if (!user) throw new Error("Token de Google inválido");
+  return { email: user.email, name: user.displayName || "", photo: user.photoUrl || "" };
+};
 
 const toIsoDateOnly = (value) => {
   const date = value instanceof Date ? value : new Date(value);
@@ -144,8 +157,8 @@ const registerClient = async (req, res) => {
     }
 
     const { name, email, phone, password } = req.body;
-    if (!name || !email || !phone || !password) {
-      return res.status(400).json({ success: false, error: "Todos los campos son requeridos" });
+    if (!name || !email || !password) {
+      return res.status(400).json({ success: false, error: "Nombre, email y contraseña son requeridos" });
     }
 
     if (password.length < 6) {
@@ -412,12 +425,110 @@ const cancelMyBooking = async (req, res) => {
   }
 };
 
+// POST /api/public/:slug/auth/google
+const googleAuth = async (req, res) => {
+  try {
+    const company = await resolveCompany(req.params.slug);
+    if (!company) {
+      return res.status(404).json({ success: false, error: "Club no encontrado" });
+    }
+
+    const { idToken, phone } = req.body;
+    if (!idToken) {
+      return res.status(400).json({ success: false, error: "idToken requerido" });
+    }
+
+    let googleUser;
+    try {
+      googleUser = await verifyFirebaseIdToken(idToken);
+    } catch {
+      return res.status(401).json({ success: false, error: "Token de Google inválido" });
+    }
+
+    const { email, name } = googleUser;
+    if (!email) {
+      return res.status(400).json({ success: false, error: "La cuenta de Google no tiene email" });
+    }
+
+    let client = await ClientAccount.findOne({
+      companyId: company._id,
+      email: email.toLowerCase(),
+    });
+
+    const isNew = !client;
+
+    if (isNew) {
+      // Cuenta nueva: crear con los datos de Google
+      client = await ClientAccount.create({
+        companyId: company._id,
+        name: name || email.split("@")[0],
+        email: email.toLowerCase(),
+        phone: phone?.trim() || "",
+        // Sin password — solo Google auth
+        passwordHash: await bcrypt.hash(Math.random().toString(36), 10),
+        googleAuth: true,
+      });
+    } else if (phone && !client.phone) {
+      // Cuenta existente sin teléfono: actualizar
+      client.phone = phone.trim();
+      await client.save();
+    }
+
+    const needsPhone = !client.phone;
+
+    const token = jwt.sign(
+      { id: client._id, email: client.email, companyId: company._id, type: "client" },
+      JWT_SECRET,
+      { expiresIn: "30d" },
+    );
+
+    return res.status(isNew ? 201 : 200).json({
+      success: true,
+      data: {
+        token,
+        client: { id: client._id, name: client.name, email: client.email, phone: client.phone },
+        isNew,
+        needsPhone,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: "Error interno" });
+  }
+};
+
+// PUT /api/public/:slug/auth/me/phone  (requiere protectClient)
+const updatePhone = async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone?.trim()) {
+      return res.status(400).json({ success: false, error: "Teléfono requerido" });
+    }
+
+    const client = await ClientAccount.findByIdAndUpdate(
+      req.clientUser.id,
+      { phone: phone.trim() },
+      { new: true },
+    );
+
+    if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
+
+    return res.json({
+      success: true,
+      data: { id: client._id, name: client.name, email: client.email, phone: client.phone },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: "Error interno" });
+  }
+};
+
 module.exports = {
   getClubInfo,
   getAvailability,
   registerClient,
   loginClient,
   getMe,
+  updatePhone,
+  googleAuth,
   createClientBooking,
   getMyBookings,
   cancelMyBooking,
