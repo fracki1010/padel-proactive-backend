@@ -195,7 +195,7 @@ const getAvailability = async (req, res) => {
   }
 };
 
-const findOrCreateLinkedUser = async (companyId, phone, name, resolveWhatsappId = false) => {
+const findOrCreateLinkedUser = async (companyId, phone, name, resolveWhatsappId = false, origin = "sistema") => {
   const existing = await User.findOne({ companyId, phoneNumber: phoneMatchQuery(phone) });
   if (existing) {
     if (resolveWhatsappId) {
@@ -214,6 +214,7 @@ const findOrCreateLinkedUser = async (companyId, phone, name, resolveWhatsappId 
     whatsappId: realId || `${phone}@c.us`,
     name,
     phoneNumber: phone,
+    accountOrigin: origin,
   });
 };
 
@@ -236,9 +237,9 @@ const sendOtp = async (req, res) => {
     }
 
     if (googleFlow) {
-      const googleAccount = await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone), googleAuth: true });
-      if (googleAccount) {
-        return res.status(409).json({ success: false, error: "Ya existe una cuenta de Google vinculada a ese número" });
+      const existingUser = await User.findOne({ companyId: company._id, phoneNumber: phoneMatchQuery(phone) });
+      if (existingUser?.accountOrigin === "google") {
+        return res.status(409).json({ success: false, error: "Este número ya está vinculado a una cuenta de Google" });
       }
     } else {
       const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone) });
@@ -443,7 +444,7 @@ const googleAuth = async (req, res) => {
 
     if (isNew) {
       // Cuenta nueva — necesita teléfono verificado
-      if (!countryCode || !localNumber || !otp) {
+      if (!countryCode || !localNumber) {
         return res.status(200).json({
           success: true,
           data: { needsPhone: true, name, email: emailNorm },
@@ -455,28 +456,35 @@ const googleAuth = async (req, res) => {
         return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
       }
 
+      if (!otp) {
+        return res.status(400).json({ success: false, error: "Código de verificación requerido" });
+      }
+
       const otpCheck = await checkOtp(company._id, phone, otp);
       if (!otpCheck.valid) {
         return res.status(400).json({ success: false, error: otpCheck.reason });
       }
+      await otpCheck.otp.updateOne({ used: true });
 
       const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone) });
       if (phoneTaken) {
         return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
       }
 
-      await otpCheck.otp.updateOne({ used: true });
+      // El nombre se preserva del perfil existente (whatsapp/sistema); si es nuevo, se usa el de Google
+      const existingUserForPhone = await User.findOne({ companyId: company._id, phoneNumber: phoneMatchQuery(phone) });
+      const clientName = existingUserForPhone?.name || name || emailNorm.split("@")[0];
 
       client = await ClientAccount.create({
         companyId: company._id,
-        name: name || emailNorm.split("@")[0],
+        name: clientName,
         email: emailNorm,
         phone,
         passwordHash: await bcrypt.hash(Math.random().toString(36), 10),
         googleAuth: true,
       });
 
-      const linkedUser = await findOrCreateLinkedUser(company._id, phone, client.name, true);
+      const linkedUser = await findOrCreateLinkedUser(company._id, phone, clientName, true, "google");
       client.linkedUserId = linkedUser._id;
       await client.save();
     } else if (!client.phone && countryCode && localNumber && otp) {

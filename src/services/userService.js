@@ -14,22 +14,28 @@ const getUserByWhatsappId = async (whatsappId, options = {}) => {
 };
 
 // Crear o Actualizar usuario
-// Si cambia el nombre, lo actualizamos.
+// El nombre solo se guarda la primera vez; una vez registrado no puede cambiarse por WhatsApp.
 const saveOrUpdateUser = async (whatsappId, name, options = {}) => {
   try {
     const companyId = options.companyId || null;
     const cleanPhone = await getNumberByUser(whatsappId, companyId);
 
+    const existingUser = await User.findOne({ whatsappId, companyId }).lean();
+    const resolvedName = existingUser?.name ? existingUser.name : name;
+
     const user = await User.findOneAndUpdate(
-      { whatsappId, companyId }, // Filtro
+      { whatsappId, companyId },
       {
-        companyId,
-        whatsappId,
-        name,
-        phoneNumber: cleanPhone,
-        lastInteraction: new Date(),
+        $set: {
+          companyId,
+          whatsappId,
+          name: resolvedName,
+          phoneNumber: cleanPhone,
+          lastInteraction: new Date(),
+        },
+        $setOnInsert: { accountOrigin: "whatsapp" },
       },
-      { upsert: true, returnDocument: "after" }, // Upsert: Si no existe, crea. Si existe, actualiza.
+      { upsert: true, returnDocument: "after" },
     );
     return user;
   } catch (error) {
