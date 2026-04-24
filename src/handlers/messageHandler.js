@@ -1618,7 +1618,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           await sendAdminNotification(
             "attendance_declined",
             "Cliente indicó que no asistirá",
-            `Cliente: ${attendanceBooking.clientName}\nTeléfono: ${canonicalClientPhone}\nFecha: ${getFormattedDate(
+            `Cliente: ${attendanceBooking.clientName}\nTeléfono: ${stripPhoneForClientDisplay(canonicalClientPhone)}\nFecha: ${getFormattedDate(
               new Date(attendanceBooking.date).toISOString().slice(0, 10),
             )}\nHora: ${attendanceBooking?.timeSlot?.startTime || "N/D"}\nReserva ID: ${attendanceBooking._id}\n\nEl turno NO fue cancelado automáticamente. Requiere gestión del administrador.`,
             { bookingId: attendanceBooking._id, companyId },
@@ -2800,7 +2800,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         await sendAdminNotification(
           "fixed_turn_request",
           "Solicitud de Turno Fijo",
-          `Cliente: ${requester}\nTeléfono: ${number}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${summary}`,
+          `Cliente: ${requester}\nTeléfono: ${stripPhoneForClientDisplay(number)}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${summary}`,
           { companyId, source: "whatsapp-fixed-turn" },
           { companyId },
         );
@@ -2876,7 +2876,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           await sendAdminNotification(
             "fixed_turn_request",
             "Solicitud de Turno Fijo",
-            `Cliente: ${requester}\nTeléfono: ${number}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${userMessage}`,
+            `Cliente: ${requester}\nTeléfono: ${stripPhoneForClientDisplay(number)}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${userMessage}`,
             { companyId, source: "whatsapp-fixed-turn-fallback" },
             { companyId },
           );
@@ -2939,7 +2939,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         await sendAdminNotification(
           "fixed_turn_request",
           "Solicitud de Turno Fijo",
-          `Cliente: ${requester}\nTeléfono: ${number}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${userMessage}`,
+          `Cliente: ${requester}\nTeléfono: ${stripPhoneForClientDisplay(number)}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${userMessage}`,
           { companyId, source: "whatsapp-fixed-turn-fallback" },
           { companyId },
         );

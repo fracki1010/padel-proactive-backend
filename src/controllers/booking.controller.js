@@ -1,6 +1,7 @@
 const Booking = require("../models/booking.model");
 const TimeSlot = require("../models/timeSlot.model");
 const Court = require("../models/court.model");
+const User = require("../models/user.model");
 const mongoose = require("mongoose");
 const { sendAdminNotification } = require("../services/notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
