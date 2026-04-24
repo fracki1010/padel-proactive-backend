@@ -19,6 +19,7 @@ const {
 const {
   normalizeCanonicalClientPhone,
 } = require("../utils/identityNormalization");
+const { getWhatsappIdByPhone } = require("../utils/getWhatsappIdByPhone");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const OTP_TTL_MINUTES = 10;
@@ -177,12 +178,23 @@ const getAvailability = async (req, res) => {
   }
 };
 
-const findOrCreateLinkedUser = async (companyId, phone, name) => {
+const findOrCreateLinkedUser = async (companyId, phone, name, resolveWhatsappId = false) => {
   const existing = await User.findOne({ companyId, phoneNumber: phone });
-  if (existing) return existing;
+  if (existing) {
+    if (resolveWhatsappId) {
+      const realId = await getWhatsappIdByPhone(phone, companyId);
+      if (realId && realId !== existing.whatsappId) {
+        existing.whatsappId = realId;
+        await existing.save();
+      }
+    }
+    return existing;
+  }
+
+  const realId = resolveWhatsappId ? await getWhatsappIdByPhone(phone, companyId) : null;
   return await User.create({
     companyId,
-    whatsappId: `${phone}@c.us`,
+    whatsappId: realId || `${phone}@c.us`,
     name,
     phoneNumber: phone,
   });
@@ -196,7 +208,7 @@ const sendOtp = async (req, res) => {
       return res.status(404).json({ success: false, error: "Club no encontrado" });
     }
 
-    const { countryCode, localNumber } = req.body;
+    const { countryCode, localNumber, googleFlow } = req.body;
     if (!countryCode || !localNumber) {
       return res.status(400).json({ success: false, error: "Código de país y número requeridos" });
     }
@@ -206,10 +218,16 @@ const sendOtp = async (req, res) => {
       return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
     }
 
-    const rawPhone = `${countryCode}${localNumber}`;
-    const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone: rawPhone });
-    if (phoneTaken) {
-      return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
+    if (googleFlow) {
+      const googleAccount = await ClientAccount.findOne({ companyId: company._id, phone, googleAuth: true });
+      if (googleAccount) {
+        return res.status(409).json({ success: false, error: "Ya existe una cuenta de Google vinculada a ese número" });
+      }
+    } else {
+      const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone });
+      if (phoneTaken) {
+        return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
+      }
     }
 
     const code = generateOtp();
@@ -441,7 +459,7 @@ const googleAuth = async (req, res) => {
         googleAuth: true,
       });
 
-      const linkedUser = await findOrCreateLinkedUser(company._id, phone, client.name);
+      const linkedUser = await findOrCreateLinkedUser(company._id, phone, client.name, true);
       client.linkedUserId = linkedUser._id;
       await client.save();
     } else if (!client.phone && countryCode && localNumber && otp) {
@@ -457,7 +475,7 @@ const googleAuth = async (req, res) => {
       }
       await otpCheck.otp.updateOne({ used: true });
       client.phone = phone;
-      const linkedUser = await findOrCreateLinkedUser(company._id, phone, client.name);
+      const linkedUser = await findOrCreateLinkedUser(company._id, phone, client.name, true);
       client.linkedUserId = linkedUser._id;
       await client.save();
     } else if (!client.phone) {
