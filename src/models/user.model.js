@@ -61,6 +61,11 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    accountOrigin: {
+      type: String,
+      enum: ["whatsapp", "sistema", "google"],
+      default: "sistema",
+    },
   },
   {
     timestamps: true,
