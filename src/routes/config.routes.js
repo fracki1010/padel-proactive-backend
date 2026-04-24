@@ -616,6 +616,28 @@ const updateWhatsappConfig = async (req, res) => {
 router.put("/whatsapp", updateWhatsappConfig);
 router.patch("/whatsapp", updateWhatsappConfig);
 
+// POST /api/config/whatsapp/reset-session
+router.post("/whatsapp/reset-session", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const { command } = await enqueueWhatsappCommand({
+      companyId,
+      type: COMMAND_TYPES.RESET_SESSION,
+      payload: {},
+      requestedBy: req.user?._id || null,
+    });
+    return res.status(200).json({
+      success: true,
+      data: {
+        commandId: command._id,
+        message: "Sesión de WhatsApp reiniciada. Se generará un nuevo QR.",
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET /api/config/notifications/reminders
 router.get("/notifications/reminders", async (req, res) => {
   try {

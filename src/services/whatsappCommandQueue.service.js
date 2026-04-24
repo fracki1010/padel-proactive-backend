@@ -4,6 +4,7 @@ const COMMAND_TYPES = {
   SET_ENABLED: "set_enabled",
   SEND_MESSAGE: "send_message",
   RESTART_CLIENT: "restart_client",
+  RESET_SESSION: "reset_session",
   LIST_GROUPS: "list_groups",
   NOTIFY_CANCELLATION_GROUP: "notify_cancellation_group",
 };
