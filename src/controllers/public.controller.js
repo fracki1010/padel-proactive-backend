@@ -215,11 +215,10 @@ const sendOtp = async (req, res) => {
             `Tu código es: *${code}*\n\n` +
             `Válido por ${OTP_TTL_MINUTES} minutos. No lo compartas con nadie.`,
         },
-        requestedBy: "portal",
+        requestedBy: null,
       });
     } catch (wpErr) {
-      // Si WhatsApp falla igual devolvemos success; en dev se puede loguear el código
-      console.warn("[sendOtp] No se pudo encolar mensaje WhatsApp:", wpErr?.message);
+      console.error("[sendOtp] No se pudo encolar mensaje WhatsApp:", wpErr?.message, "| phone:", phone, "| code:", code);
     }
 
     return res.json({
