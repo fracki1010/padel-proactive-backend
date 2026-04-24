@@ -58,6 +58,16 @@ const matchBookingsByClient = ({ bookings = [], client = {} } = {}) =>
 const findMatchingBookingsWithAudit = (bookings = [], requestIdentity = {}) =>
   matchBookingsByIdentity(requestIdentity, bookings);
 
+// Strips country prefix and mobile 9 for displaying admin phone to clients.
+// "569XXXXXXXX" → "XXXXXXXX", "56XXXXXXXX" → "XXXXXXXX"
+const stripPhoneForClientDisplay = (rawPhone = "") => {
+  const digits = String(rawPhone || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("569")) return digits.slice(3);
+  if (digits.startsWith("56")) return digits.slice(2);
+  return digits;
+};
+
 module.exports = {
   normalizePhone,
   toE164,
@@ -71,4 +81,5 @@ module.exports = {
   matchClientIdentity,
   matchBookingsByClient,
   findMatchingBookingsWithAudit,
+  stripPhoneForClientDisplay,
 };
