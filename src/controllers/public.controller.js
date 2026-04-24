@@ -498,23 +498,25 @@ const googleAuth = async (req, res) => {
         return res.status(400).json({ success: false, error: otpCheck.reason });
       }
       const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone), _id: { $ne: client._id } });
-      if (phoneTaken) {
-        return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
+      if (phoneTaken?.googleAuth) {
+        return res.status(409).json({ success: false, error: "Ya existe una cuenta de Google con ese teléfono" });
       }
       await otpCheck.otp.updateOne({ used: true });
-      client.phone = phone;
-      const linkedUser = await findOrCreateLinkedUser(company._id, phone, client.name, true);
-      client.linkedUserId = linkedUser._id;
+      // Si hay otra cuenta con ese teléfono (email/contraseña), no tomar el número
+      // pero sí vincular al mismo User
+      if (!phoneTaken) client.phone = phone;
+      const linkedUserId = phoneTaken?.linkedUserId
+        ?? (await findOrCreateLinkedUser(company._id, phone, client.name, true))._id;
+      client.linkedUserId = linkedUserId;
       await client.save();
-    } else if (!client.phone) {
-      // Cuenta sin teléfono, no vino OTP todavía
+    } else if (!client.phone && !client.linkedUserId) {
+      // Cuenta sin teléfono ni vínculo aún — pedir teléfono
       return res.status(200).json({
         success: true,
         data: {
           needsPhone: true,
           name: client.name,
           email: client.email,
-          // token temporal sin phone para que pueda llamar send-otp autenticado
           token: signClientToken(client, company._id),
         },
       });
