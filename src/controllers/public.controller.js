@@ -467,25 +467,28 @@ const googleAuth = async (req, res) => {
       await otpCheck.otp.updateOne({ used: true });
 
       const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone) });
-      if (phoneTaken) {
-        return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
+      if (phoneTaken?.googleAuth) {
+        return res.status(409).json({ success: false, error: "Ya existe una cuenta de Google con ese teléfono" });
       }
 
-      // El nombre se preserva del perfil existente (whatsapp/sistema); si es nuevo, se usa el de Google
+      // El nombre se preserva del perfil existente (User o ClientAccount por teléfono); fallback al de Google
       const existingUserForPhone = await User.findOne({ companyId: company._id, phoneNumber: phoneMatchQuery(phone) });
-      const clientName = existingUserForPhone?.name || name || emailNorm.split("@")[0];
+      const clientName = existingUserForPhone?.name || phoneTaken?.name || name || emailNorm.split("@")[0];
 
+      // Si ya hay un ClientAccount con ese teléfono (email/contraseña), la cuenta Google
+      // se crea sin teléfono para respetar la unicidad, pero se vincula al mismo User
       client = await ClientAccount.create({
         companyId: company._id,
         name: clientName,
         email: emailNorm,
-        phone,
+        ...(phoneTaken ? {} : { phone }),
         passwordHash: await bcrypt.hash(Math.random().toString(36), 10),
         googleAuth: true,
       });
 
-      const linkedUser = await findOrCreateLinkedUser(company._id, phone, clientName, true, "google");
-      client.linkedUserId = linkedUser._id;
+      const linkedUserId = phoneTaken?.linkedUserId
+        ?? (await findOrCreateLinkedUser(company._id, phone, clientName, true, "google"))._id;
+      client.linkedUserId = linkedUserId;
       await client.save();
     } else if (!client.phone && countryCode && localNumber && otp) {
       // Cuenta existente sin teléfono — verificar y actualizar
