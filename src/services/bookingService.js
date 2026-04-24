@@ -21,6 +21,7 @@ const {
 const {
   normalizeCanonicalClientPhone,
   toE164,
+  stripPhoneForClientDisplay,
 } = require("../utils/identityNormalization");
 const {
   normalizeClientIdentity,
@@ -733,7 +734,7 @@ const cancelBooking = async ({
     await sendAdminNotification(
       "booking_cancelled",
       `Turno Cancelado${suspendedNote}`,
-      `Cliente: ${booking.clientName}\nTeléfono: ${normalizedClientPhone}\nFecha: ${formatBookingDateShort(booking.date)}\nHora: ${slot.startTime}\nPenalizaciones: ${PENALTY_SYSTEM_ENABLED ? `${newPenalties}/${PENALTY_LIMIT}` : "desactivadas"}`,
+      `Cliente: ${booking.clientName}\nTeléfono: ${stripPhoneForClientDisplay(normalizedClientPhone)}\nFecha: ${formatBookingDateShort(booking.date)}\nHora: ${slot.startTime}\nPenalizaciones: ${PENALTY_SYSTEM_ENABLED ? `${newPenalties}/${PENALTY_LIMIT}` : "desactivadas"}`,
       { bookingId: booking._id, companyId },
       { companyId },
     );

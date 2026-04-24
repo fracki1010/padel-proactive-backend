@@ -58,13 +58,20 @@ const matchBookingsByClient = ({ bookings = [], client = {} } = {}) =>
 const findMatchingBookingsWithAudit = (bookings = [], requestIdentity = {}) =>
   matchBookingsByIdentity(requestIdentity, bookings);
 
-// Strips country prefix and mobile 9 for displaying admin phone to clients.
-// "569XXXXXXXX" → "XXXXXXXX", "56XXXXXXXX" → "XXXXXXXX"
+// Country codes sorted longest-first to avoid partial matches (e.g. "598" before "56").
+const COUNTRY_CODES = ["598", "595", "591", "54", "56", "55", "52", "34", "1"];
+
+// Strips country code and leading mobile "9" for displaying admin phone to clients.
+// "5492622517447" → "2622517447", "569XXXXXXXX" → "XXXXXXXX"
 const stripPhoneForClientDisplay = (rawPhone = "") => {
   const digits = String(rawPhone || "").replace(/\D/g, "");
   if (!digits) return "";
-  if (digits.startsWith("569")) return digits.slice(3);
-  if (digits.startsWith("56")) return digits.slice(2);
+  for (const code of COUNTRY_CODES) {
+    if (digits.startsWith(code)) {
+      const local = digits.slice(code.length);
+      return local.startsWith("9") ? local.slice(1) : local;
+    }
+  }
   return digits;
 };
 
