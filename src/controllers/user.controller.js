@@ -169,15 +169,30 @@ const updateUser = async (req, res) => {
 const deleteUser = async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
+
     const user = await User.findOneAndDelete({
       _id: req.params.id,
       ...companyScope(req, companyId),
     });
-    if (!user) {
+
+    if (user) {
+      // Eliminar también el ClientAccount vinculado si existe
+      await ClientAccount.deleteOne({ linkedUserId: user._id });
+      return res.status(200).json({ success: true, data: {} });
+    }
+
+    // Si no era un User, intentar eliminar un ClientAccount desvinculado (socios de Google sin WhatsApp)
+    const account = await ClientAccount.findOneAndDelete({
+      _id: req.params.id,
+      ...companyScope(req, companyId),
+    });
+
+    if (!account) {
       return res
         .status(404)
         .json({ success: false, error: "Usuario no encontrado" });
     }
+
     res.status(200).json({ success: true, data: {} });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
