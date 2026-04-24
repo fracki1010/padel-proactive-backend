@@ -59,10 +59,27 @@ const clientPayload = (client) => ({
   phone: client.phone,
 });
 
-// Combina countryCode + localNumber y normaliza a solo dígitos
+// Argentina: insertar el 9 entre el código de país (54) y el número de área si no está presente
+const canonicalizePhone = (digits = "") => {
+  if (digits.startsWith("54") && !digits.startsWith("549") && digits.length >= 12) {
+    return "549" + digits.slice(2);
+  }
+  return digits;
+};
+
+// Combina countryCode + localNumber, normaliza a solo dígitos y canoniza formato argentino
 const buildNormalizedPhone = (countryCode = "", localNumber = "") => {
   const raw = `${countryCode}${localNumber}`;
-  return normalizeCanonicalClientPhone(raw);
+  return canonicalizePhone(normalizeCanonicalClientPhone(raw));
+};
+
+// Query MongoDB que matchea un teléfono en ambos formatos (con y sin el 9 argentino)
+// para compatibilidad con registros guardados antes de la canonización
+const phoneMatchQuery = (phone = "") => {
+  if (phone.startsWith("549") && phone.length >= 13) {
+    return { $in: [phone, "54" + phone.slice(3)] };
+  }
+  return phone;
 };
 
 const maskPhone = (digits = "") => {
@@ -179,7 +196,7 @@ const getAvailability = async (req, res) => {
 };
 
 const findOrCreateLinkedUser = async (companyId, phone, name, resolveWhatsappId = false) => {
-  const existing = await User.findOne({ companyId, phoneNumber: phone });
+  const existing = await User.findOne({ companyId, phoneNumber: phoneMatchQuery(phone) });
   if (existing) {
     if (resolveWhatsappId) {
       const realId = await getWhatsappIdByPhone(phone, companyId);
@@ -219,12 +236,12 @@ const sendOtp = async (req, res) => {
     }
 
     if (googleFlow) {
-      const googleAccount = await ClientAccount.findOne({ companyId: company._id, phone, googleAuth: true });
+      const googleAccount = await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone), googleAuth: true });
       if (googleAccount) {
         return res.status(409).json({ success: false, error: "Ya existe una cuenta de Google vinculada a ese número" });
       }
     } else {
-      const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone });
+      const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone) });
       if (phoneTaken) {
         return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
       }
@@ -272,7 +289,7 @@ const sendOtp = async (req, res) => {
 const checkOtp = async (companyId, phone, code) => {
   const otp = await OtpVerification.findOne({
     companyId,
-    phone,
+    phone: phoneMatchQuery(phone),
     used: false,
     expiresAt: { $gt: new Date() },
   });
@@ -317,7 +334,7 @@ const registerClient = async (req, res) => {
     const emailNorm = email.toLowerCase().trim();
     const [emailTaken, phoneTaken] = await Promise.all([
       ClientAccount.findOne({ companyId: company._id, email: emailNorm }),
-      ClientAccount.findOne({ companyId: company._id, phone }),
+      ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone) }),
     ]);
 
     if (emailTaken) {
@@ -443,7 +460,7 @@ const googleAuth = async (req, res) => {
         return res.status(400).json({ success: false, error: otpCheck.reason });
       }
 
-      const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone });
+      const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone) });
       if (phoneTaken) {
         return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
       }
@@ -469,7 +486,7 @@ const googleAuth = async (req, res) => {
       if (!otpCheck.valid) {
         return res.status(400).json({ success: false, error: otpCheck.reason });
       }
-      const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone, _id: { $ne: client._id } });
+      const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone), _id: { $ne: client._id } });
       if (phoneTaken) {
         return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
       }
@@ -544,7 +561,7 @@ const updatePhone = async (req, res) => {
 
     const phoneTaken = await ClientAccount.findOne({
       companyId: company._id,
-      phone,
+      phone: phoneMatchQuery(phone),
       _id: { $ne: req.clientUser.id },
     });
     if (phoneTaken) {
