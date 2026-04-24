@@ -83,12 +83,13 @@ const createCommandRecord = async ({ companyId, type, payload, requestedBy }) =>
 const enqueueRedisJob = async (command) => {
   const queue = getRedisQueue();
   if (!queue) {
+    console.error(`[WhatsAppQueue] Redis queue no disponible: ${redisQueueUnavailableReason}`);
     throw new Error(
       redisQueueUnavailableReason ||
         "Redis queue no disponible para WhatsApp command queue.",
     );
   }
-
+  console.log(`[WhatsAppQueue] Encolando en Redis → commandId=${command._id} type=${command.type}`);
   await queue.add(
     "whatsapp-command",
     {
@@ -150,12 +151,15 @@ const enqueueWhatsappCommand = async ({
     requestedBy,
   });
 
+  console.log(`[WhatsAppQueue] queueDriver=${queueDriver} allowMongoFallback=${allowMongoFallback} commandId=${command._id}`);
   if (queueDriver === QUEUE_DRIVERS.REDIS) {
     try {
       await enqueueRedisJob(command);
+      console.log(`[WhatsAppQueue] Job Redis encolado OK → commandId=${command._id}`);
     } catch (error) {
       const allowRuntimeFallback =
         allowMongoFallback || String(process.env.NODE_ENV || "").trim() === "test";
+      console.error(`[WhatsAppQueue] Error encolando en Redis: ${error?.message} | allowRuntimeFallback=${allowRuntimeFallback}`);
       if (allowRuntimeFallback) {
         console.warn(
           `[WhatsAppCommandQueue] Redis no disponible, se mantiene comando en Mongo queue. reason=${error?.message || error}`,
