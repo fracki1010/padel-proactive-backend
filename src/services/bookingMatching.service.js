@@ -62,10 +62,15 @@ const matchBookingsByClient = (requestIdentityInput, bookings = []) => {
   const byWhatsapp = audits.filter((a) => a.byWhatsapp).map((a) => a.booking);
   const byPhone = audits.filter((a) => a.byPhone).map((a) => a.booking);
 
+  // Unión de ambos: reservas del portal (sin clientWhatsappId) solo matchean por teléfono
+  // y quedan excluidas si solo usamos byWhatsapp. Deduplicamos por _id.
+  const waIds = new Set(byWhatsapp.map((b) => String(b._id)));
+  const matchedBookings = [...byWhatsapp, ...byPhone.filter((b) => !waIds.has(String(b._id)))];
+
   return {
     requestIdentity,
-    matchedBookings: byWhatsapp.length ? byWhatsapp : byPhone,
-    strategy: byWhatsapp.length ? "whatsapp" : byPhone.length ? "phone" : "no_match",
+    matchedBookings,
+    strategy: byWhatsapp.length && byPhone.length ? "both" : byWhatsapp.length ? "whatsapp" : byPhone.length ? "phone" : "no_match",
     audits,
   };
 };
