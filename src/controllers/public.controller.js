@@ -204,12 +204,14 @@ const sendOtp = async (req, res) => {
     await OtpVerification.create({ companyId: company._id, phone, code, expiresAt });
 
     // Enviar por WhatsApp
+    const waTo = `${phone}@c.us`;
+    console.log(`[sendOtp] Intentando encolar WhatsApp → to=${waTo} code=${code}`);
     try {
-      await enqueueWhatsappCommand({
+      const result = await enqueueWhatsappCommand({
         companyId: company._id,
         type: COMMAND_TYPES.SEND_MESSAGE,
         payload: {
-          to: `${phone}@c.us`,
+          to: waTo,
           message:
             `🎾 *${company.name}* — Verificación de cuenta\n\n` +
             `Tu código es: *${code}*\n\n` +
@@ -217,8 +219,9 @@ const sendOtp = async (req, res) => {
         },
         requestedBy: null,
       });
+      console.log(`[sendOtp] Comando encolado OK → commandId=${result?.command?._id} deduplicated=${result?.deduplicated} fallback=${result?.fallback || "none"}`);
     } catch (wpErr) {
-      console.error("[sendOtp] No se pudo encolar mensaje WhatsApp:", wpErr?.message, "| phone:", phone, "| code:", code);
+      console.error(`[sendOtp] ERROR al encolar WhatsApp: ${wpErr?.message} | to=${waTo} | code=${code}`);
     }
 
     return res.json({
