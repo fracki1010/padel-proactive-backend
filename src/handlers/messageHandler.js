@@ -15,6 +15,7 @@ const { getFormattedDate } = require("../utils/getFormattedDate");
 const { getNumberByUser } = require("../utils/getNumberByUser");
 const {
   normalizeCanonicalClientPhone,
+  stripPhoneForClientDisplay,
 } = require("../utils/identityNormalization");
 const {
   isEquivalentConfirmation,
@@ -2774,7 +2775,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
               "⚠️ No encontré ningún turno tuyo para esa fecha y hora. ¿Me podés confirmar los datos?";
           else if (cancelResult.error === "CANCELLATION_BLOCKED_WINDOW") {
             const lockHours = Number(cancelResult?.data?.cancellationLockHours || 0);
-            const contactPhone = String(cancelResult?.data?.contactPhone || "").trim();
+            const contactPhone = stripPhoneForClientDisplay(cancelResult?.data?.contactPhone || "");
             const phoneSuffix = contactPhone
               ? ` al *${contactPhone}*`
               : " con el admin del club";
