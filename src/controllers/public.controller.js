@@ -195,6 +195,14 @@ const getAvailability = async (req, res) => {
   }
 };
 
+// Devuelve el teléfono del cliente: propio si tiene, o el del User vinculado
+const resolveClientPhone = async (client) => {
+  if (client.phone) return client.phone;
+  if (!client.linkedUserId) return null;
+  const user = await User.findById(client.linkedUserId).lean();
+  return user?.phoneNumber || null;
+};
+
 const findOrCreateLinkedUser = async (companyId, phone, name, resolveWhatsappId = false, origin = "sistema") => {
   const existing = await User.findOne({ companyId, phoneNumber: phoneMatchQuery(phone) });
   if (existing) {
@@ -633,14 +641,15 @@ const createClientBooking = async (req, res) => {
     if (!slot) return res.status(404).json({ success: false, error: "Turno no encontrado" });
     if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
 
-    if (!client.phone) {
+    const clientPhone = await resolveClientPhone(client);
+    if (!clientPhone) {
       return res.status(400).json({ success: false, error: "Debés verificar tu teléfono antes de reservar" });
     }
 
     // Chequear si el cliente está suspendido en el sistema (por WhatsApp/admin)
     const suspendedUser = await User.findOne({
       companyId: company._id,
-      phoneNumber: client.phone,
+      phoneNumber: clientPhone,
       isSuspended: true,
     });
     if (suspendedUser) {
@@ -669,7 +678,7 @@ const createClientBooking = async (req, res) => {
       date: searchDate,
       timeSlot: slot._id,
       clientName: client.name,
-      clientPhone: client.phone,
+      clientPhone,
       status: "reservado",
       paymentStatus: "pendiente",
       finalPrice: slot.price || 0,
@@ -706,13 +715,14 @@ const getMyBookings = async (req, res) => {
     const client = await ClientAccount.findById(req.clientUser.id);
     if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
 
-    if (!client.phone) {
+    const clientPhone = await resolveClientPhone(client);
+    if (!clientPhone) {
       return res.json({ success: true, data: [] });
     }
 
     const bookings = await Booking.find({
       companyId: company._id,
-      clientPhone: client.phone, // phone ya normalizado, matchea directo
+      clientPhone: phoneMatchQuery(clientPhone),
       status: { $nin: ["cancelado"] },
       date: { $gte: new Date(new Date().setUTCHours(0, 0, 0, 0)) },
     })
@@ -740,10 +750,11 @@ const cancelMyBooking = async (req, res) => {
     const client = await ClientAccount.findById(req.clientUser.id);
     if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
 
+    const clientPhone = await resolveClientPhone(client);
     const booking = await Booking.findOne({
       _id: req.params.id,
       companyId: company._id,
-      clientPhone: client.phone,
+      clientPhone: phoneMatchQuery(clientPhone),
     });
 
     if (!booking) {
