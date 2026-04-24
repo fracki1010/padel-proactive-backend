@@ -35,6 +35,11 @@ const clientAccountSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    linkedUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
   },
   {
     timestamps: true,

@@ -177,6 +177,17 @@ const getAvailability = async (req, res) => {
   }
 };
 
+const findOrCreateLinkedUser = async (companyId, phone, name) => {
+  const existing = await User.findOne({ companyId, phoneNumber: phone });
+  if (existing) return existing;
+  return await User.create({
+    companyId,
+    whatsappId: `${phone}@c.us`,
+    name,
+    phoneNumber: phone,
+  });
+};
+
 // POST /api/public/:slug/auth/send-otp
 const sendOtp = async (req, res) => {
   try {
@@ -193,6 +204,12 @@ const sendOtp = async (req, res) => {
     const phone = buildNormalizedPhone(countryCode, localNumber);
     if (!phone || phone.length < 7) {
       return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
+    }
+
+    const rawPhone = `${countryCode}${localNumber}`;
+    const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone: rawPhone });
+    if (phoneTaken) {
+      return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
     }
 
     const code = generateOtp();
@@ -302,6 +319,10 @@ const registerClient = async (req, res) => {
       phone,
       passwordHash,
     });
+
+    const linkedUser = await findOrCreateLinkedUser(company._id, phone, name.trim());
+    client.linkedUserId = linkedUser._id;
+    await client.save();
 
     return res.status(201).json({
       success: true,
@@ -419,6 +440,10 @@ const googleAuth = async (req, res) => {
         passwordHash: await bcrypt.hash(Math.random().toString(36), 10),
         googleAuth: true,
       });
+
+      const linkedUser = await findOrCreateLinkedUser(company._id, phone, client.name);
+      client.linkedUserId = linkedUser._id;
+      await client.save();
     } else if (!client.phone && countryCode && localNumber && otp) {
       // Cuenta existente sin teléfono — verificar y actualizar
       const phone = buildNormalizedPhone(countryCode, localNumber);
@@ -432,6 +457,8 @@ const googleAuth = async (req, res) => {
       }
       await otpCheck.otp.updateOne({ used: true });
       client.phone = phone;
+      const linkedUser = await findOrCreateLinkedUser(company._id, phone, client.name);
+      client.linkedUserId = linkedUser._id;
       await client.save();
     } else if (!client.phone) {
       // Cuenta sin teléfono, no vino OTP todavía
