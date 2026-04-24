@@ -1,4 +1,5 @@
 const User = require("../models/user.model");
+const ClientAccount = require("../models/clientAccount.model");
 const Booking = require("../models/booking.model");
 const {
   materializeFixedBookingsInRange,
@@ -49,12 +50,37 @@ const getUsers = async (req, res) => {
     const companyId = resolveCompanyId(req);
     const trustedClientConfirmationCount =
       await getTrustedClientConfirmationCount(companyId);
-    const users = await User.find(companyScope(req, companyId)).sort({ name: 1 });
+
+    const [users, unlinkedAccounts] = await Promise.all([
+      User.find(companyScope(req, companyId)).sort({ name: 1 }),
+      ClientAccount.find({
+        ...companyScope(req, companyId),
+        linkedUserId: null,
+      }),
+    ]);
+
+    const accountsAsUsers = unlinkedAccounts.map((acc) => ({
+      _id: acc._id,
+      companyId: acc.companyId,
+      name: acc.name,
+      phoneNumber: acc.phone || "",
+      email: acc.email,
+      fixedTurns: [],
+      penalties: 0,
+      isSuspended: false,
+      attendanceConfirmedCount: 0,
+      isClientAccount: true,
+    }));
+
+    const combined = [...users, ...accountsAsUsers].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+
     res.status(200).json({
       success: true,
-      count: users.length,
-      data: users.map((user) =>
-        enrichUserWithReliability(user, trustedClientConfirmationCount),
+      count: combined.length,
+      data: combined.map((u) =>
+        enrichUserWithReliability(u, trustedClientConfirmationCount),
       ),
     });
   } catch (error) {
