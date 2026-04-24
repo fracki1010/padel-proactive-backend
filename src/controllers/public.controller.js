@@ -12,6 +12,8 @@ const User = require("../models/user.model");
 const {
   materializeFixedBookingsForDate,
 } = require("../services/fixedTurnsMaterialization.service");
+const { getCancellationContactPhone } = require("../services/bookingService");
+const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
@@ -20,8 +22,33 @@ const {
   normalizeCanonicalClientPhone,
 } = require("../utils/identityNormalization");
 const { getWhatsappIdByPhone } = require("../utils/getWhatsappIdByPhone");
+const { getCancellationLockHours } = require("../services/appConfig.service");
 
 const JWT_SECRET = process.env.JWT_SECRET;
+
+const TIMEZONE = "America/Argentina/Buenos_Aires";
+
+const getMinutesUntilSlotStart = (dateStr, timeStr) => {
+  const [year, month, day] = String(dateStr).split("-").map(Number);
+  const [hour, minute] = String(timeStr).split(":").map(Number);
+
+  const nowInTz = new Intl.DateTimeFormat("en-GB", {
+    timeZone: TIMEZONE, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date());
+  const nowH = Number(nowInTz.find((p) => p.type === "hour")?.value || 0);
+  const nowM = Number(nowInTz.find((p) => p.type === "minute")?.value || 0);
+  const nowMinutes = nowH * 60 + nowM;
+
+  const todayInTz = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  const [ty, tm, td] = todayInTz.split("-").map(Number);
+  const todayUtc = Date.UTC(ty, tm - 1, td);
+  const targetUtc = Date.UTC(year, month - 1, day);
+  const daysDiff = (targetUtc - todayUtc) / (24 * 60 * 60 * 1000);
+
+  return daysDiff * 24 * 60 + hour * 60 + minute - nowMinutes;
+};
 const OTP_TTL_MINUTES = 10;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -112,9 +139,10 @@ const getClubInfo = async (req, res) => {
       return res.status(404).json({ success: false, error: "Club no encontrado" });
     }
 
-    const [courts, slots] = await Promise.all([
+    const [courts, slots, cancellationLockHours] = await Promise.all([
       Court.find({ companyId: company._id, isActive: true }).sort({ name: 1 }),
       TimeSlot.find({ companyId: company._id, isActive: true }).sort({ order: 1, startTime: 1 }),
+      getCancellationLockHours(company._id),
     ]);
 
     return res.json({
@@ -123,6 +151,7 @@ const getClubInfo = async (req, res) => {
         club: { name: company.name, address: company.address },
         courts,
         slots,
+        cancellationLockHours,
       },
     });
   } catch {
@@ -764,8 +793,63 @@ const cancelMyBooking = async (req, res) => {
       return res.status(409).json({ success: false, error: "La reserva ya está cancelada" });
     }
 
+    const slot = await TimeSlot.findById(booking.timeSlot).lean();
+    const cancellationLockHours = await getCancellationLockHours(company._id);
+    if (cancellationLockHours > 0 && slot) {
+      const dateStr = toIsoDateOnly(booking.date);
+      const minutesUntilStart = getMinutesUntilSlotStart(dateStr, slot.startTime);
+      if (minutesUntilStart < cancellationLockHours * 60) {
+        return res.status(409).json({
+          success: false,
+          error: `No podés cancelar con menos de ${cancellationLockHours} hora${cancellationLockHours !== 1 ? "s" : ""} de anticipación`,
+          code: "CANCELLATION_BLOCKED_WINDOW",
+          data: { cancellationLockHours },
+        });
+      }
+    }
+
     booking.status = "cancelado";
     await booking.save();
+
+    // Notificar al admin por WhatsApp
+    const [adminPhone, courtDoc] = await Promise.all([
+      getCancellationContactPhone(company._id),
+      Court.findById(booking.court).lean(),
+    ]);
+
+    if (adminPhone) {
+      const dateStr = formatBookingDateShort(booking.date);
+      const timeStr = slot?.startTime || "";
+      const courtName = courtDoc?.name || "";
+      const message =
+        `❌ *Turno cancelado desde el portal*\n\n` +
+        `👤 Cliente: ${booking.clientName}\n` +
+        `📅 Fecha: ${dateStr}\n` +
+        `🕐 Hora: ${timeStr}\n` +
+        `🎾 Cancha: ${courtName}`;
+
+      enqueueWhatsappCommand({
+        companyId: company._id,
+        type: COMMAND_TYPES.SEND_MESSAGE,
+        payload: { to: `${adminPhone}@c.us`, message },
+        requestedBy: null,
+      }).catch((err) => {
+        console.error("[cancelMyBooking] Error enviando WhatsApp al admin:", err?.message);
+      });
+    }
+
+    // Notificar al grupo de cancelaciones si está configurado
+    enqueueWhatsappCommand({
+      companyId: company._id,
+      type: COMMAND_TYPES.NOTIFY_CANCELLATION_GROUP,
+      payload: {
+        booking: { date: booking.date, timeSlot: { startTime: slot?.startTime || "" } },
+        time: slot?.startTime || "",
+        cancelledBy: "cliente (portal)",
+      },
+    }).catch((err) => {
+      console.error("[cancelMyBooking] Error notificando grupo:", err?.message);
+    });
 
     return res.json({ success: true });
   } catch {
