@@ -787,4 +787,5 @@ module.exports = {
   cancelBooking,
   hasActiveBookingForClient,
   getActiveBookingsForClient,
+  getCancellationContactPhone,
 };
