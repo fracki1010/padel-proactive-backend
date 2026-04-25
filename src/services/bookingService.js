@@ -743,6 +743,11 @@ const cancelBooking = async ({
     );
 
     try {
+      let cancellationCourtName = null;
+      if (booking?.court) {
+        const courtDoc = await Court.findById(booking.court).select("name").lean();
+        cancellationCourtName = courtDoc?.name || null;
+      }
       await enqueueWhatsappCommand({
         companyId,
         type: COMMAND_TYPES.NOTIFY_CANCELLATION_GROUP,
@@ -754,6 +759,7 @@ const cancelBooking = async ({
             },
           },
           time: slot.startTime,
+          courtName: cancellationCourtName,
           cancelledBy: "cliente (WhatsApp)",
         },
       });

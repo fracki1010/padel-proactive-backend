@@ -940,6 +940,7 @@ const cancelMyBooking = async (req, res) => {
       payload: {
         booking: { date: booking.date, timeSlot: { startTime: slot?.startTime || "" } },
         time: slot?.startTime || "",
+        courtName: courtDoc?.name || null,
         cancelledBy: "cliente (portal)",
       },
     }).catch((err) => {
