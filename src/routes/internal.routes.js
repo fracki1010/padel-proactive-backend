@@ -11,7 +11,7 @@ const router = express.Router();
 
 const isInternalTokenValid = (req) => {
   const expectedToken = String(process.env.BACKEND_INTERNAL_TOKEN || "").trim();
-  if (!expectedToken) return true;
+  if (!expectedToken) return false;
   const receivedToken = String(req.headers["x-internal-token"] || "").trim();
   return receivedToken === expectedToken;
 };
