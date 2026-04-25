@@ -187,6 +187,15 @@ const deleteUser = async (req, res) => {
     if (user) {
       // Eliminar también el ClientAccount vinculado si existe
       await ClientAccount.deleteOne({ linkedUserId: user._id });
+      // Eliminar solo los turnos fijos futuros materializados del usuario
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      await Booking.deleteMany({
+        companyId: user.companyId,
+        clientWhatsappId: user.whatsappId,
+        isFixed: true,
+        date: { $gte: today },
+      });
       return res.status(200).json({ success: true, data: {} });
     }
 
