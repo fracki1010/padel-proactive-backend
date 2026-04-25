@@ -160,7 +160,7 @@ const getClubInfo = async (req, res) => {
     return res.json({
       success: true,
       data: {
-        club: { name: company.name, address: company.address },
+        club: { name: company.name, address: company.address, coverImage: company.coverImage || "" },
         courts,
         slots,
         cancellationLockHours,

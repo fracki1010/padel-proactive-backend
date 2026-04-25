@@ -21,6 +21,11 @@ const companySchema = new mongoose.Schema(
       default: "",
       maxlength: 240,
     },
+    coverImage: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     isActive: {
       type: Boolean,
       default: true,

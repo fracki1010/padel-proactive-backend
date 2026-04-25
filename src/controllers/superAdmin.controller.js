@@ -82,15 +82,19 @@ const updateCompany = async (req, res) => {
     const nextAddress = Object.prototype.hasOwnProperty.call(payload, "address")
       ? normalizeAddress(payload.address)
       : null;
+    const nextCoverImage = Object.prototype.hasOwnProperty.call(payload, "coverImage")
+      ? String(payload.coverImage || "").trim()
+      : null;
 
     const hasName = nextName !== null;
     const hasSlug = nextSlugRaw !== null;
     const hasAddress = nextAddress !== null;
+    const hasCoverImage = nextCoverImage !== null;
 
-    if (!hasName && !hasSlug && !hasAddress) {
+    if (!hasName && !hasSlug && !hasAddress && !hasCoverImage) {
       return res.status(400).json({
         success: false,
-        error: "Debés enviar al menos uno de estos campos: name, slug, address.",
+        error: "Debés enviar al menos uno de estos campos: name, slug, address, coverImage.",
       });
     }
 
@@ -102,42 +106,47 @@ const updateCompany = async (req, res) => {
     }
 
     const updates = {};
-    const finalName = hasName ? nextName : company.name;
-    let finalSlug = hasSlug ? normalizeSlug(nextSlugRaw) : company.slug;
 
-    if (hasName && !nextName) {
-      return res.status(400).json({
-        success: false,
-        error: "El nombre de la empresa no puede quedar vacío.",
-      });
+    if (hasName || hasSlug) {
+      const finalName = hasName ? nextName : company.name;
+      let finalSlug = hasSlug ? normalizeSlug(nextSlugRaw) : company.slug;
+
+      if (hasName && !nextName) {
+        return res.status(400).json({
+          success: false,
+          error: "El nombre de la empresa no puede quedar vacío.",
+        });
+      }
+
+      if (!finalSlug && finalName) {
+        finalSlug = normalizeSlug(finalName);
+      }
+
+      if (!finalSlug) {
+        return res.status(400).json({
+          success: false,
+          error: "No se pudo generar un slug válido para la empresa.",
+        });
+      }
+
+      const duplicate = await Company.findOne({
+        _id: { $ne: id },
+        $or: [{ name: finalName }, { slug: finalSlug }],
+      }).lean();
+
+      if (duplicate) {
+        return res.status(400).json({
+          success: false,
+          error: "Ya existe una empresa con ese nombre o slug.",
+        });
+      }
+
+      updates.name = finalName;
+      updates.slug = finalSlug;
     }
 
-    if (!finalSlug && finalName) {
-      finalSlug = normalizeSlug(finalName);
-    }
-
-    if (!finalSlug) {
-      return res.status(400).json({
-        success: false,
-        error: "No se pudo generar un slug válido para la empresa.",
-      });
-    }
-
-    if (hasName) updates.name = finalName;
-    if (hasSlug || (hasName && !hasSlug)) updates.slug = finalSlug;
     if (hasAddress) updates.address = nextAddress;
-
-    const duplicate = await Company.findOne({
-      _id: { $ne: id },
-      $or: [{ name: finalName }, { slug: finalSlug }],
-    }).lean();
-
-    if (duplicate) {
-      return res.status(400).json({
-        success: false,
-        error: "Ya existe una empresa con ese nombre o slug.",
-      });
-    }
+    if (hasCoverImage) updates.coverImage = nextCoverImage;
 
     const updated = await Company.findByIdAndUpdate(id, { $set: updates }, { returnDocument: "after" });
     return res.status(200).json({ success: true, data: updated });
