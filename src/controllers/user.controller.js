@@ -7,6 +7,9 @@ const {
 const {
   getTrustedClientConfirmationCount,
 } = require("../services/appConfig.service");
+const {
+  getWhatsappIdByPhone,
+} = require("../utils/getWhatsappIdByPhone");
 const toIsoDateOnly = (value) => {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value || "");
@@ -117,8 +120,14 @@ const getUserById = async (req, res) => {
 const createUser = async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
+
+    const resolvedWhatsappId =
+      req.body.whatsappId ||
+      (await getWhatsappIdByPhone(req.body.phoneNumber, companyId));
+
     const user = await User.create({
       ...req.body,
+      whatsappId: resolvedWhatsappId,
       ...companyScope(req, companyId),
     });
 
