@@ -33,6 +33,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "firebase-admin": "^13.8.0",
     "groq-sdk": "^0.37.0",
     "ioredis": "^5.7.0",
     "jsonwebtoken": "^9.0.3",
