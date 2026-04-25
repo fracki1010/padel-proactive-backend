@@ -236,7 +236,7 @@ const createBooking = async (req, res) => {
       await sendAdminNotification(
         "new_booking",
         "Nuevo Turno Reservado",
-        `Cliente: ${newBooking.clientName}\nFecha: ${formatBookingDateShort(newBooking.date)}\nHora: ${newBooking.timeSlot.startTime}\nCancha: ${newBooking.court.name}`,
+        `Cliente: ${newBooking.clientName}\nFecha: ${formatBookingDateShort(newBooking.date)}\nHora: ${newBooking.timeSlot?.startTime || "N/D"}\nCancha: ${newBooking.court?.name || "N/D"}`,
         { bookingId: newBooking._id, companyId },
         { companyId },
       );
@@ -253,8 +253,8 @@ const createBooking = async (req, res) => {
       const clientMessage =
         `Hola ${newBooking.clientName}, tu turno ya quedó reservado.\n` +
         `Fecha: ${formatBookingDateShort(newBooking.date)}\n` +
-        `Hora: ${newBooking.timeSlot.startTime}\n` +
-        `Cancha: ${newBooking.court.name}`;
+        `Hora: ${newBooking.timeSlot?.startTime || "N/D"}\n` +
+        `Cancha: ${newBooking.court?.name || "N/D"}`;
 
       try {
         await enqueueWhatsappCommand({
@@ -315,7 +315,6 @@ const updateBooking = async (req, res) => {
     const { id } = req.params;
     const companyId = resolveCompanyId(req);
     const scope = companyScope(req, companyId);
-    console.log(`Actualizando reserva ${id}:`, req.body);
 
     const previousBooking = await Booking.findOne({ _id: id, ...scope }).populate([
       "court",
@@ -342,6 +341,10 @@ const updateBooking = async (req, res) => {
       { $set: updateData },
       { returnDocument: "after", runValidators: true },
     ).populate(["court", "timeSlot"]);
+
+    if (!updatedBooking) {
+      return res.status(404).json({ success: false, error: "Reserva no encontrada" });
+    }
 
     const wasCancelledBefore = previousBooking.status === "cancelado";
     const isCancelledNow = updatedBooking.status === "cancelado";

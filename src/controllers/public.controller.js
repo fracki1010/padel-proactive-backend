@@ -166,7 +166,8 @@ const getClubInfo = async (req, res) => {
         cancellationLockHours,
       },
     });
-  } catch {
+  } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -231,7 +232,8 @@ const getAvailability = async (req, res) => {
       success: true,
       data: { closed: false, courts, slots, availability },
     });
-  } catch {
+  } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -330,7 +332,8 @@ const sendOtp = async (req, res) => {
       success: true,
       data: { masked: maskPhone(phone) },
     });
-  } catch {
+  } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -394,8 +397,6 @@ const registerClient = async (req, res) => {
       return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
     }
 
-    await otpCheck.otp.updateOne({ used: true });
-
     const passwordHash = await bcrypt.hash(password, 10);
     const client = await ClientAccount.create({
       companyId: company._id,
@@ -404,6 +405,10 @@ const registerClient = async (req, res) => {
       phone,
       passwordHash,
     });
+
+    // Marcar OTP como usado después de crear la cuenta para que el usuario
+    // pueda reintentar si el servidor cae entre ambas operaciones.
+    await otpCheck.otp.updateOne({ used: true });
 
     const linkedUser = await findOrCreateLinkedUser(company._id, phone, name.trim());
     client.linkedUserId = linkedUser._id;
@@ -416,7 +421,8 @@ const registerClient = async (req, res) => {
         client: clientPayload(client),
       },
     });
-  } catch {
+  } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -456,7 +462,8 @@ const loginClient = async (req, res) => {
         client: clientPayload(client),
       },
     });
-  } catch {
+  } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -616,7 +623,8 @@ const googleAuth = async (req, res) => {
         needsPhone: false,
       },
     });
-  } catch {
+  } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -629,7 +637,8 @@ const getMe = async (req, res) => {
       return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
     }
     return res.json({ success: true, data: clientPayload(client) });
-  } catch {
+  } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -676,7 +685,8 @@ const updatePhone = async (req, res) => {
     if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
 
     return res.json({ success: true, data: clientPayload(client) });
-  } catch {
+  } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -794,6 +804,7 @@ const createClientBooking = async (req, res) => {
       data: { ...populated.toObject(), date: toIsoDateOnly(populated.date) },
     });
   } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -846,7 +857,8 @@ const getMyBookings = async (req, res) => {
         history: history.map(fmt),
       },
     });
-  } catch {
+  } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
@@ -935,7 +947,8 @@ const cancelMyBooking = async (req, res) => {
     });
 
     return res.json({ success: true });
-  } catch {
+  } catch (err) {
+    console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
