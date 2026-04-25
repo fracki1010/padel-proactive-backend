@@ -826,7 +826,7 @@ const getMyBookings = async (req, res) => {
 
     const clientPhone = await resolveClientPhone(client);
     if (!clientPhone) {
-      return res.json({ success: true, data: [] });
+      return res.json({ success: true, data: { upcoming: [], history: [] } });
     }
 
     const todayStart = todayUtcMidnightInTimezone(TIMEZONE);
