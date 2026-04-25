@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const path = require("path");
 const chatRoutes = require("./routes/chatRoutes");
 const bookingRoutes = require("./routes/booking.routes");
 const authRoutes = require("./routes/auth.routes");
@@ -56,6 +57,9 @@ app.use(
   })
 );
 app.use(express.json());
+
+// Archivos estáticos
+app.use("/uploads", express.static(path.join(__dirname, "../../uploads")));
 
 // Rutas
 app.use("/api/auth", authRoutes);

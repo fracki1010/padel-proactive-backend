@@ -239,10 +239,43 @@ const updateMyCompany = async (req, res) => {
   }
 };
 
+const uploadCoverImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: "No se recibió ninguna imagen." });
+    }
+
+    const companyId = req.user?.role === "super_admin" && req.body?.companyId
+      ? req.body.companyId
+      : req.user?.companyId;
+
+    if (!companyId) {
+      return res.status(403).json({ success: false, error: "No tenés una empresa asignada." });
+    }
+
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({ success: false, error: "Empresa no encontrada." });
+    }
+
+    const baseUrl = process.env.BACKEND_BASE_URL ||
+      `${req.protocol}://${req.get("host")}`;
+    const coverImage = `${baseUrl}/uploads/cover-images/${req.file.filename}`;
+
+    company.coverImage = coverImage;
+    await company.save();
+
+    return res.status(200).json({ success: true, data: { coverImage } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 module.exports = {
   login,
   register,
   me,
   updateProfile,
   updateMyCompany,
+  uploadCoverImage,
 };
