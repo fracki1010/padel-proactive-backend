@@ -1,6 +1,6 @@
 require("dotenv").config();
 
-const REQUIRED_ENV_VARS = ["MONGODB_URI", "JWT_SECRET"];
+const REQUIRED_ENV_VARS = ["MONGODB_URI", "JWT_SECRET", "BACKEND_INTERNAL_TOKEN"];
 const missingVars = REQUIRED_ENV_VARS.filter((v) => !process.env[v]);
 if (missingVars.length > 0) {
   console.error(`❌ Variables de entorno requeridas faltantes: ${missingVars.join(", ")}`);
