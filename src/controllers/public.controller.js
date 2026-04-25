@@ -701,17 +701,41 @@ const createClientBooking = async (req, res) => {
       return res.status(409).json({ success: false, error: "Ese turno ya está reservado" });
     }
 
-    const booking = await Booking.create({
-      companyId: company._id,
-      court: court._id,
-      date: searchDate,
-      timeSlot: slot._id,
+    const bookingFields = {
       clientName: client.name,
       clientPhone,
       status: "reservado",
       paymentStatus: "pendiente",
       finalPrice: slot.price || 0,
-    });
+      isFixed: false,
+    };
+
+    let booking;
+    try {
+      booking = await Booking.create({
+        companyId: company._id,
+        court: court._id,
+        date: searchDate,
+        timeSlot: slot._id,
+        ...bookingFields,
+      });
+    } catch (createErr) {
+      if (createErr.code !== 11000) throw createErr;
+
+      // El índice único incluye el doc cancelado — reusar ese documento
+      const cancelled = await Booking.findOne({
+        companyId: company._id,
+        court: court._id,
+        date: searchDate,
+        timeSlot: slot._id,
+        status: "cancelado",
+      });
+      if (!cancelled) {
+        return res.status(409).json({ success: false, error: "Ese turno ya está reservado" });
+      }
+      cancelled.set(bookingFields);
+      booking = await cancelled.save();
+    }
 
     const populated = await Booking.findById(booking._id)
       .populate("court")
@@ -722,9 +746,6 @@ const createClientBooking = async (req, res) => {
       data: { ...populated.toObject(), date: toIsoDateOnly(populated.date) },
     });
   } catch (err) {
-    if (err.code === 11000) {
-      return res.status(409).json({ success: false, error: "Ese turno ya está reservado" });
-    }
     return res.status(500).json({ success: false, error: "Error interno" });
   }
 };
