@@ -9,3 +9,4 @@ node_modules
 
 ./wwebjs_auth/*
 ./wwebjs_cache/*firebase-service-account.json
+firebase-service-account.json
