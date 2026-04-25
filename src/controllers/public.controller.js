@@ -782,19 +782,33 @@ const getMyBookings = async (req, res) => {
       return res.json({ success: true, data: [] });
     }
 
-    const bookings = await Booking.find({
-      companyId: company._id,
-      clientPhone: phoneMatchQuery(clientPhone),
-      status: { $nin: ["cancelado"] },
-      date: { $gte: todayUtcMidnightInTimezone(TIMEZONE) },
-    })
-      .populate("court")
-      .populate("timeSlot")
-      .sort({ date: 1 });
+    const todayStart = todayUtcMidnightInTimezone(TIMEZONE);
+    const historyFrom = new Date(todayStart);
+    historyFrom.setUTCDate(historyFrom.getUTCDate() - 60); // últimos 60 días
+
+    const [upcoming, history] = await Promise.all([
+      Booking.find({
+        companyId: company._id,
+        clientPhone: phoneMatchQuery(clientPhone),
+        status: { $nin: ["cancelado"] },
+        date: { $gte: todayStart },
+      }).populate("court").populate("timeSlot").sort({ date: 1 }),
+
+      Booking.find({
+        companyId: company._id,
+        clientPhone: phoneMatchQuery(clientPhone),
+        date: { $gte: historyFrom, $lt: todayStart },
+      }).populate("court").populate("timeSlot").sort({ date: -1 }).limit(30),
+    ]);
+
+    const fmt = (b) => ({ ...b.toObject(), date: toIsoDateOnly(b.date) });
 
     return res.json({
       success: true,
-      data: bookings.map((b) => ({ ...b.toObject(), date: toIsoDateOnly(b.date) })),
+      data: {
+        upcoming: upcoming.map(fmt),
+        history: history.map(fmt),
+      },
     });
   } catch {
     return res.status(500).json({ success: false, error: "Error interno" });
