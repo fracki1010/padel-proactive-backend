@@ -36,7 +36,8 @@
     "groq-sdk": "^0.37.0",
     "ioredis": "^5.7.0",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.1.1"
+    "mongoose": "^9.1.1",
+    "multer": "^2.1.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"
