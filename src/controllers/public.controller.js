@@ -28,6 +28,18 @@ const JWT_SECRET = process.env.JWT_SECRET;
 
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 
+// Devuelve la medianoche UTC del día actual en la timezone dada
+const todayUtcMidnightInTimezone = (timeZone) => {
+  const localDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const [y, m, d] = localDate.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+};
+
 const getMinutesUntilSlotStart = (dateStr, timeStr) => {
   const [year, month, day] = String(dateStr).split("-").map(Number);
   const [hour, minute] = String(timeStr).split(":").map(Number);
@@ -774,7 +786,7 @@ const getMyBookings = async (req, res) => {
       companyId: company._id,
       clientPhone: phoneMatchQuery(clientPhone),
       status: { $nin: ["cancelado"] },
-      date: { $gte: new Date(new Date().setUTCHours(0, 0, 0, 0)) },
+      date: { $gte: todayUtcMidnightInTimezone(TIMEZONE) },
     })
       .populate("court")
       .populate("timeSlot")
