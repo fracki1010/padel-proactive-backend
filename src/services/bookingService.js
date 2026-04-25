@@ -470,7 +470,7 @@ const getActiveBookingsForClient = async ({
     const individualData = individualBookings.map((booking) => ({
       type: "individual",
       bookingId: booking._id,
-      date: getDatePartsInTimezone(new Date(booking.date)),
+      date: new Date(booking.date).toISOString().slice(0, 10),
       courtName: booking?.court?.name || "Cancha",
       startTime: booking?.timeSlot?.startTime || "",
       endTime: booking?.timeSlot?.endTime || "",
@@ -662,7 +662,7 @@ const cancelBooking = async ({
       );
       booking = matching.matchedBookings[0] || null;
       if (booking?.timeSlot?.startTime) {
-        resolvedDateStr = getDatePartsInTimezone(new Date(booking.date));
+        resolvedDateStr = new Date(booking.date).toISOString().slice(0, 10);
         resolvedTimeStr = String(booking.timeSlot.startTime || "");
       }
       if (booking?.timeSlot?._id) {
@@ -678,7 +678,7 @@ const cancelBooking = async ({
       slot = await TimeSlot.findOne({ _id: booking.timeSlot, ...scope });
     }
     if (!resolvedDateStr) {
-      resolvedDateStr = getDatePartsInTimezone(new Date(booking.date));
+      resolvedDateStr = new Date(booking.date).toISOString().slice(0, 10);
     }
     if (!resolvedTimeStr) {
       resolvedTimeStr = String(slot?.startTime || "");
