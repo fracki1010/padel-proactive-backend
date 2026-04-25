@@ -1,6 +1,9 @@
 require("dotenv").config();
 const connectDB = require("./src/config/database");
+const { initFirebaseAdmin } = require("./src/lib/firebaseAdmin");
 const app = require("./src/app");
+
+initFirebaseAdmin();
 const {
   startAttendanceConfirmationMonitor,
 } = require("./src/services/attendanceConfirmation.service");

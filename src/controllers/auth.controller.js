@@ -258,10 +258,22 @@ const uploadCoverImage = async (req, res) => {
       return res.status(404).json({ success: false, error: "Empresa no encontrada." });
     }
 
-    const baseUrl = process.env.BACKEND_BASE_URL ||
-      `${req.protocol}://${req.get("host")}`;
-    const coverImage = `${baseUrl}/uploads/cover-images/${req.file.filename}`;
+    const { getStorageBucket } = require("../lib/firebaseAdmin");
+    const bucket = getStorageBucket();
+    if (!bucket) {
+      return res.status(503).json({ success: false, error: "Almacenamiento de imágenes no configurado." });
+    }
 
+    const ext = (req.file.originalname.split(".").pop() || "jpg").toLowerCase();
+    const filename = `cover-images/${companyId}/${Date.now()}.${ext}`;
+    const fileRef = bucket.file(filename);
+
+    await fileRef.save(req.file.buffer, {
+      metadata: { contentType: req.file.mimetype },
+      public: true,
+    });
+
+    const coverImage = `https://storage.googleapis.com/${bucket.name}/${filename}`;
     company.coverImage = coverImage;
     await company.save();
 
