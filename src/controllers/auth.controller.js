@@ -273,7 +273,7 @@ const uploadCoverImage = async (req, res) => {
     company.coverImage = result.secure_url;
     await company.save();
 
-    return res.status(200).json({ success: true, data: { coverImage } });
+    return res.status(200).json({ success: true, data: { coverImage: result.secure_url } });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
