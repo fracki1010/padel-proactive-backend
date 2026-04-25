@@ -199,9 +199,12 @@ const createNewBooking = async ({
 
     // 2.0 Límite diario por cliente: máximo N reservas activas por día
     // Los turnos fijos no cuentan — son recurrentes acordados, no reservas nuevas del día
+    const dailyLimitIdentityFilter = canonicalClientId
+      ? { $or: [{ clientPhone: normalizedClientPhone }, { canonicalClientId }] }
+      : { clientPhone: normalizedClientPhone };
     const clientDailyBookingsCount = await Booking.countDocuments({
       ...scope,
-      clientPhone: normalizedClientPhone,
+      ...dailyLimitIdentityFilter,
       date: bookingDate,
       status: { $ne: "cancelado" },
       isFixed: { $ne: true },

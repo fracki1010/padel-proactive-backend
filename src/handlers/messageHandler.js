@@ -1980,7 +1980,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           timeStr: pendingBookingOffer.timeStr,
           clientName: requestedClientName,
           clientPhone: canonicalClientPhone,
-            clientWhatsappId: chatId,
+          clientWhatsappId: chatId,
+          allowSameClientSameSlot: pendingBookingOffer.allowSameClientSameSlot || false,
         });
 
         const bookingReply = buildBookingReplyText(
@@ -2062,6 +2063,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             dateStr: singleDraft.dateStr,
             timeStr: singleDraft.timeStr,
             createdAt: Date.now(),
+            allowSameClientSameSlot: true,
           },
           lastRejectedBookingAttempt: null,
           awaitingExtraBookingConfirmation: false,
