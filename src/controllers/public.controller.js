@@ -160,7 +160,7 @@ const getClubInfo = async (req, res) => {
     return res.json({
       success: true,
       data: {
-        club: { name: company.name, address: company.address, coverImage: company.coverImage || "" },
+        club: { name: company.name, address: company.address, coverImage: company.coverImage || "", companyId: company._id.toString() },
         courts,
         slots,
         cancellationLockHours,
@@ -492,6 +492,42 @@ const googleAuth = async (req, res) => {
     const isNew = !client;
 
     if (isNew) {
+      // ¿Ya existe una cuenta Google verificada con este email en otro club?
+      const existingElsewhere = await ClientAccount.findOne({
+        email: emailNorm,
+        googleAuth: true,
+        companyId: { $ne: company._id },
+      }).lean();
+
+      if (existingElsewhere) {
+        // Auto-crear sin pedir teléfono nuevamente
+        const sourcePhone = existingElsewhere.phone || "";
+        const phoneTaken = sourcePhone
+          ? await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(sourcePhone) })
+          : null;
+
+        client = await ClientAccount.create({
+          companyId: company._id,
+          name: existingElsewhere.name,
+          email: emailNorm,
+          ...(sourcePhone && !phoneTaken ? { phone: sourcePhone } : {}),
+          passwordHash: await bcrypt.hash(Math.random().toString(36), 10),
+          googleAuth: true,
+        });
+
+        if (sourcePhone) {
+          const linkedUserId = phoneTaken?.linkedUserId
+            ?? (await findOrCreateLinkedUser(company._id, sourcePhone, existingElsewhere.name, false, "google"))._id;
+          client.linkedUserId = linkedUserId;
+          await client.save();
+        }
+
+        return res.status(200).json({
+          success: true,
+          data: { token: signClientToken(client, company._id), client: clientPayload(client) },
+        });
+      }
+
       // Cuenta nueva — necesita teléfono verificado
       if (!countryCode || !localNumber) {
         return res.status(200).json({
