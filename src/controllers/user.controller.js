@@ -127,6 +127,8 @@ const createUser = async (req, res) => {
 
     const user = await User.create({
       ...req.body,
+      name: (req.body.name || "").trim(),
+      phoneNumber: (req.body.phoneNumber || "").trim(),
       whatsappId: resolvedWhatsappId,
       ...companyScope(req, companyId),
     });

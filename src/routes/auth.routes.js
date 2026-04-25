@@ -10,6 +10,10 @@ const {
   uploadCoverImage,
 } = require("../controllers/auth.controller");
 const { protect } = require("../middleware/auth.middleware");
+const { createRateLimiter } = require("../middleware/rateLimit.middleware");
+
+// 5 intentos de login por IP cada 15 minutos
+const loginRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 5 });
 
 const coverUpload = multer({
   storage: multer.memoryStorage(),
@@ -20,7 +24,7 @@ const coverUpload = multer({
   },
 });
 
-router.post("/login", login);
+router.post("/login", loginRateLimit, login);
 router.get("/me", protect, me);
 router.put("/profile", protect, updateProfile);
 router.put("/company", protect, updateMyCompany);

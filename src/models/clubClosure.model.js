@@ -37,4 +37,6 @@ const clubClosureSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+clubClosureSchema.index({ companyId: 1, startDate: 1, endDate: 1 });
+
 module.exports = mongoose.model("ClubClosure", clubClosureSchema);

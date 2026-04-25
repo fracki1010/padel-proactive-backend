@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const chatRoutes = require("./routes/chatRoutes");
 const bookingRoutes = require("./routes/booking.routes");
 const authRoutes = require("./routes/auth.routes");
@@ -32,6 +33,7 @@ const chatRateLimit = createRateLimiter({
 });
 
 // Middlewares
+app.use(helmet());
 app.use(
   cors({
     origin(origin, callback) {

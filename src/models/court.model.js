@@ -35,5 +35,7 @@ const courtSchema = new mongoose.Schema({
   timestamps: true
 });
 
+courtSchema.index({ companyId: 1, isActive: 1 });
+
 module.exports = mongoose.model('Court', courtSchema);
 module.exports.COURT_TYPES = COURT_TYPES;

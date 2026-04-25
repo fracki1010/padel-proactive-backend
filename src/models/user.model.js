@@ -73,5 +73,6 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ companyId: 1, whatsappId: 1 }, { unique: true });
+userSchema.index({ companyId: 1, phoneNumber: 1 });
 
 module.exports = mongoose.model("User", userSchema);
