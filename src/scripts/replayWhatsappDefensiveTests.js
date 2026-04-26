@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 require("dotenv").config();
 
+// En modo QA no necesitamos Redis. Si falla, la cola cae a MongoDB silenciosamente.
+// Debe setearse ANTES de cargar whatsappCommandQueue.service (lo lee al inicializarse).
+process.env.WHATSAPP_ALLOW_MONGO_FALLBACK = "true";
+
 const fs = require("fs");
 const path = require("path");
 const connectDB = require("../config/database");
