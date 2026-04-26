@@ -86,16 +86,30 @@ const extractCandidate = (text = "") => {
   const raw = normalizeSpaces(text);
   if (!raw) return "";
 
-  const explicitMatchers = [
+  // First: explicit "mi nombre es / soy / me llamo" prefix (exact spelling)
+  const explicitMatch = raw.match(
     /(?:^|\b)(?:mi\s+nombre\s+es|soy|me\s+llamo)\s*[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ]*\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ].+)$/i,
-    /^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ\-\s']+)$/,
-  ];
+  );
+  if (explicitMatch?.[1]) {
+    return normalizeSpaces(explicitMatch[1]);
+  }
 
-  for (const matcher of explicitMatchers) {
-    const match = raw.match(matcher);
-    if (match?.[1]) {
-      return normalizeSpaces(match[1]);
-    }
+  // Second: strip approximate prefix variants before the plain-name fallback regex.
+  // Handles typos like "mi nmbre es Juan Perez" and cases where the URL stripper
+  // removes the name leaving only "mi nombre es" (N-13, N-15).
+  const APPROX_PREFIX = /^(?:mi\s+\S+\s+es|me\s+\S+o)\s*/i;
+  const withoutApproxPrefix = raw.replace(APPROX_PREFIX, "");
+  // Prefix consumed the whole string → no actual name content
+  if (withoutApproxPrefix !== raw && !withoutApproxPrefix) {
+    return "";
+  }
+  const textForFallback = withoutApproxPrefix !== raw ? withoutApproxPrefix : raw;
+
+  const plainNameMatch = textForFallback.match(
+    /^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ\-\s']+)$/,
+  );
+  if (plainNameMatch?.[1]) {
+    return normalizeSpaces(plainNameMatch[1]);
   }
 
   return raw;
