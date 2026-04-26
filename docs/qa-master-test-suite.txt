@@ -34,7 +34,8 @@
 
 === [S-02](*) Smoke: reserva completa, cliente nuevo ===
 # Flujo mínimo sin nombre conocido — el más importante de todos
-➡️  [S-02.1] USER: quiero reservar hoy a las 20
+# Usa "mañana a las 10" para evitar que el slot expire si el test corre de noche
+➡️  [S-02.1] USER: quiero reservar mañana a las 10
 ⬅️  [S-02.1] BOT: [PASS] pide nombre completo
 ➡️  [S-02.2] USER: mi nombre es Franco Galdame
 ⬅️  [S-02.2] BOT: [PASS] "Entonces tu nombre es *Franco Galdame*, ¿verdad?" + pide SI/NO
@@ -44,7 +45,7 @@
 ⬅️  [S-02.4] BOT: [PASS] turno creado ✅
 
 === [S-03](*) Smoke: consulta disponibilidad + reserva ===
-➡️  [S-03.1] USER: tenes hoy a las 20
+➡️  [S-03.1] USER: tenes mañana a las 10
 ⬅️  [S-03.1] BOT: [ANY] muestra disponibilidad o dice que está libre / ocupado
 ➡️  [S-03.2] USER: reservame ese
 ⬅️  [S-03.2] BOT: [PASS] pide nombre completo o muestra resumen (si cliente conocido)
@@ -58,17 +59,17 @@
 ⬅️  [S-05.1] BOT: [PASS] "No encontré ningún turno" / "¿Me podés confirmar los datos?"
 
 === [S-06](*) Smoke: flujo completo — reservar + listar + cancelar ===
-➡️  [S-06.1] USER: quiero reservar hoy 20
+➡️  [S-06.1] USER: quiero reservar mañana 10
 ⬅️  [S-06.1] BOT: pide nombre
 ➡️  [S-06.2] USER: Franco Galdame
 ⬅️  [S-06.2] BOT: confirma nombre
 ➡️  [S-06.3] USER: SI
 ⬅️  [S-06.3] BOT: resumen + pide confirmar
 ➡️  [S-06.4] USER: CONFIRMAR RESERVA
-⬅️  [S-06.4] BOT: turno creado ✅
+⬅️  [S-06.4] BOT: [PASS] turno creado ✅
 ➡️  [S-06.5] USER: mis reservas
 ⬅️  [S-06.5] BOT: [PASS] lista el turno recién creado
-➡️  [S-06.6] USER: quiero cancelar hoy 20
+➡️  [S-06.6] USER: quiero cancelar mañana 10
 ⬅️  [S-06.6] BOT: [PASS] turno cancelado ✅ o pide confirmación de cancelación
 
 
@@ -77,14 +78,16 @@
 # ════════════════════════════════════════════════════════════
 
 === [K-01](*) Cliente conocido salta captura de nombre ===
-# Precondición: el número ya tiene nombre registrado en BD (ej: "Lucía Torres")
+# SETUP: createUser name="Lucia Torres"
+# El runner pre-siembra el usuario antes de enviar los mensajes
 # El bot NO debe pedir nombre — debe ir directo al resumen
 ➡️  [K-01.1] USER: quiero reservar mañana 19
 ⬅️  [K-01.1] BOT: [PASS] resumen con nombre de la BD + pide CONFIRMAR RESERVA
 
 === [K-02] Cliente conocido puede confirmar sin pasar por AWAITING_NAME ===
-➡️  [K-02.1] USER: quiero reservar hoy 21
-⬅️  [K-02.1] BOT: resumen
+# SETUP: createUser name="Lucia Torres"
+➡️  [K-02.1] USER: quiero reservar mañana 21
+⬅️  [K-02.1] BOT: [PASS] resumen con nombre (no pide nombre)
 ➡️  [K-02.2] USER: CONFIRMAR RESERVA
 ⬅️  [K-02.2] BOT: [PASS] turno creado (sin haber pedido nombre)
 
