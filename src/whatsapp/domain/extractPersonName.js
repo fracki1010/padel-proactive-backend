@@ -23,7 +23,7 @@ const suspiciousPayloadPatterns = [
 ];
 
 const nonNameCommandPatterns = [
-  /\b(reservar|reserva|turno|cancha|hora|disponibilidad|cancelar|confirmar|admin)\b/i,
+  /\b(reservar|turno|cancha|hora|disponibilidad|admin)\b/i,
   /\b(hoy|manana|pasado manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/i,
   /\b(como|que|quien|donde|cuando|cuanto|cual|por que)\b/i,
   /\b(contame|decime|dime|mostrame|explicame|ayudame|necesito|quiero saber|decis|sabes)\b/i,

@@ -37,6 +37,21 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
     if (personName.isValid) return INTENTS.PROVIDE_NAME;
   }
 
+  // Explicit name-intro phrases take priority over cancel/confirm/booking keywords.
+  // "mi nombre es Cancelar Diaz" must be a name attempt, not CANCEL_BOOKING.
+  // "mi nombre es Confirmar Perez" must be a name attempt, not CONFIRM.
+  // Exception: if the content after the prefix also contains booking verb phrases,
+  // it's a multi-intent message — let the AI handle it.
+  const nameIntroMatch = text.match(/\b(?:mi\s+nombre\s+es|me\s+llamo|soy)\s+(.+)/i);
+  if (nameIntroMatch) {
+    const afterPrefixNorm = normalizeSpanishText(nameIntroMatch[1]);
+    const hasBookingVerb =
+      /\b(?:reservar|quiero\s+reservar|anotame|agendame|haceme\s+la\s+reserva)\b/.test(afterPrefixNorm);
+    if (!hasBookingVerb) {
+      return INTENTS.PROVIDE_NAME;
+    }
+  }
+
   if (
     /\b(cancelar|cancelo|cancelame|anular|anulo|anulado|anulada|dar de baja)\b/.test(normalized) &&
     /\b(reservar|quiero reservar|anotame|agendame|haceme la reserva|hace la reserva)\b/.test(normalized)
@@ -60,23 +75,8 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
   }
 
   // CONFIRM antes de CREATE_BOOKING: "confirmar reserva" debe ser CONFIRM, no CREATE_BOOKING
-  // Bug original: "reserva" en CREATE_BOOKING disparaba antes que el check de CONFIRM
   if (/\b(si|ok|dale|confirmar|confirmado|confirmo|listo|confirmar reserva|confirmar turno)\b/.test(normalized)) {
     return INTENTS.CONFIRM;
-  }
-
-  // Explicit name-intro phrases take priority over booking keywords.
-  // "mi nombre es Juan Reserva" must be handled as a name attempt, not a booking.
-  // Exception: if the content after the prefix also contains booking verb phrases,
-  // it's a multi-intent message — let the AI handle it.
-  const nameIntroMatch = text.match(/\b(?:mi\s+nombre\s+es|me\s+llamo|soy)\s+(.+)/i);
-  if (nameIntroMatch) {
-    const afterPrefixNorm = normalizeSpanishText(nameIntroMatch[1]);
-    const hasBookingVerb =
-      /\b(?:reservar|quiero\s+reservar|anotame|agendame|haceme\s+la\s+reserva)\b/.test(afterPrefixNorm);
-    if (!hasBookingVerb) {
-      return INTENTS.PROVIDE_NAME;
-    }
   }
 
   if (/\b(reservar|reserva|quiero reservar|anotame|agendame|haceme la reserva|hace la reserva)\b/.test(normalized)) {

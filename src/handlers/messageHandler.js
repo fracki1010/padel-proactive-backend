@@ -27,6 +27,7 @@ const {
 } = require("../utils/stateTransitionHandler");
 const {
   hasInvalidTimeInput,
+  hasCompactInvalidTime,
   parseTime,
 } = require("../utils/timeParser");
 const {
@@ -223,7 +224,7 @@ const inferFallbackAction = (rawText) => {
     /tenes|tenes|hay|queda|quedan|disponible|libre|algo\s+para/.test(text);
   const date = extractDateFromMessage(text);
   const time = extractTimeFromMessage(text);
-  const invalidTimeInMessage = hasInvalidTimeInput(rawText);
+  const invalidTimeInMessage = hasInvalidTimeInput(rawText) || hasCompactInvalidTime(rawText);
 
   if (invalidTimeInMessage) {
     return {
@@ -409,7 +410,6 @@ const isPlaceholderName = (value = "") => {
     .replace(/\s+/g, " ")
     .trim();
   const placeholders = new Set([
-    "juan perez",
     "cliente",
     "cliente desconocido",
     "nombre apellido",
@@ -2371,7 +2371,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
       // Name attempt detected but invalid — reject explicitly instead of falling through to AI.
       const nameAttempt = extractPersonName(stripUrlsFromText(userMessage));
-      if (nameAttempt.candidate) {
+      if (nameAttempt.candidate && !nameAttempt.isValid) {
         const invalidNameReply =
           nameAttempt.reason === "missing_last_name"
             ? "Necesito tu *nombre completo*, incluí también el apellido (ej: *Juan Pérez*)."
