@@ -2744,6 +2744,14 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           parsedData.time || extractTimeFromMessage(userMessage),
         );
 
+        if (hasInvalidTimeInput(userMessage) || hasCompactInvalidTime(userMessage)) {
+          replyText =
+            "⚠️ La hora no es válida. Decime una hora en formato *HH:mm* entre *00:00* y *23:59*.";
+          sessionService.addMessage(sessionId, "user", userMessage);
+          sessionService.addMessage(sessionId, "assistant", replyText);
+          return replyText;
+        }
+
         if (!requestedDate && !requestedTime) {
           replyText =
             "Para cancelar tu turno, indicame la *fecha y hora* (ej: *mañana 20:00* o *viernes 18:30*).";
