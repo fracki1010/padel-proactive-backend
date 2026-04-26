@@ -11,6 +11,7 @@ const connectDB = require("../config/database");
 const { closeDB } = require("../config/database");
 const sessionService = require("../services/sessionService");
 const groqService = require("../services/groqService");
+const userService = require("../services/userService");
 const { handleIncomingMessage } = require("../handlers/messageHandler");
 
 const DEFAULT_FILE = path.join(
@@ -134,6 +135,16 @@ const parseSectionsNewFormat = (rawText) => {
         title: majorMatch[2].replace(/[═=]/g, "").trim(),
         blocks: [],
       };
+      continue;
+    }
+
+    // SETUP directive inside a block: # SETUP: createUser name="X"
+    if (line.startsWith("# SETUP:") && currentBlock) {
+      const setupMatch = line.match(/^#\s*SETUP:\s*(.+)$/);
+      if (setupMatch) {
+        if (!currentBlock.setup) currentBlock.setup = [];
+        currentBlock.setup.push(setupMatch[1].trim());
+      }
       continue;
     }
 
@@ -343,6 +354,22 @@ const runBlock = async (block, chatId, companyId, delayMs, sectionAudit) => {
     ? color(C.bold + C.yellow, `[${block.id}](*) ${block.title}`)
     : color(C.cyan, `[${block.id}] ${block.title}`);
   process.stdout.write(`\n  ${label}\n`);
+
+  // Execute SETUP directives before messages (e.g., pre-seed a known user)
+  if (Array.isArray(block.setup) && block.setup.length > 0) {
+    for (const directive of block.setup) {
+      const createUserMatch = directive.match(/^createUser\s+name="([^"]+)"/i);
+      if (createUserMatch) {
+        const name = createUserMatch[1];
+        try {
+          await userService.saveOrUpdateUser(chatId, name, { companyId: companyId || null });
+          process.stdout.write(color(C.gray, `    🔧 SETUP: usuario pre-sembrado "${name}"\n`));
+        } catch (e) {
+          process.stdout.write(color(C.red, `    ❌ SETUP FAIL createUser "${name}": ${e?.message || e}\n`));
+        }
+      }
+    }
+  }
 
   for (let i = 0; i < block.messages.length; i += 1) {
     const userMessage = String(block.messages[i] || "");
