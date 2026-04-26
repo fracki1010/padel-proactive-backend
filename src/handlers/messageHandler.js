@@ -2368,6 +2368,18 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         sessionService.addMessage(sessionId, "assistant", confirmNameReply);
         return confirmNameReply;
       }
+
+      // Name attempt detected but invalid — reject explicitly instead of falling through to AI.
+      const nameAttempt = extractPersonName(stripUrlsFromText(userMessage));
+      if (nameAttempt.candidate) {
+        const invalidNameReply =
+          nameAttempt.reason === "missing_last_name"
+            ? "Necesito tu *nombre completo*, incluí también el apellido (ej: *Juan Pérez*)."
+            : "Ese nombre no es válido. Enviame tu *nombre y apellido* completos (ej: *Juan Pérez*).";
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", invalidNameReply);
+        return invalidNameReply;
+      }
     }
 
     // 2. Historial

@@ -65,6 +65,20 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
     return INTENTS.CONFIRM;
   }
 
+  // Explicit name-intro phrases take priority over booking keywords.
+  // "mi nombre es Juan Reserva" must be handled as a name attempt, not a booking.
+  // Exception: if the content after the prefix also contains booking verb phrases,
+  // it's a multi-intent message — let the AI handle it.
+  const nameIntroMatch = text.match(/\b(?:mi\s+nombre\s+es|me\s+llamo|soy)\s+(.+)/i);
+  if (nameIntroMatch) {
+    const afterPrefixNorm = normalizeSpanishText(nameIntroMatch[1]);
+    const hasBookingVerb =
+      /\b(?:reservar|quiero\s+reservar|anotame|agendame|haceme\s+la\s+reserva)\b/.test(afterPrefixNorm);
+    if (!hasBookingVerb) {
+      return INTENTS.PROVIDE_NAME;
+    }
+  }
+
   if (/\b(reservar|reserva|quiero reservar|anotame|agendame|haceme la reserva|hace la reserva)\b/.test(normalized)) {
     return INTENTS.CREATE_BOOKING;
   }
