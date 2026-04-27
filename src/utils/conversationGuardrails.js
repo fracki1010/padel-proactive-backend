@@ -49,7 +49,7 @@ const parseGlobalInterruptIntent = (value = "") => {
   }
 
   if (
-    /(hablar con admin|hablar con administrador|quiero hablar con admin|quiero hablar con administrador|pasame con admin|pasame con administrador)/.test(
+    /(hablar con(?: un)? admin(?:istrador)?|quiero hablar con(?: un)? admin(?:istrador)?|pasame con(?: un)? admin(?:istrador)?)/.test(
       text,
     )
   ) {
