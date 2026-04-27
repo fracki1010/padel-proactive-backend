@@ -33,8 +33,15 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
 
   // State-aware: en AWAITING_NAME priorizar extracción de nombre antes que confirmar/rechazar
   if (currentState === "AWAITING_NAME") {
-    const personName = extractPersonName(text);
-    if (personName.isValid) return INTENTS.PROVIDE_NAME;
+    const norm = normalizeSpanishText(text);
+    const hasNameIntro = /^(mi\s+\S+\s+es|me\s+\S+o|soy)\s/i.test(text);
+    // Skip name extraction when message starts with an operational keyword (no name intro prefix)
+    // so "CONFIRMAR RESERVA" → CONFIRM, "cancelar" → CANCEL_BOOKING, not a name capture
+    const startsWithOp = /^(confirmar|cancelar|si|no|ok|dale|listo|anular)\b/.test(norm);
+    if (!startsWithOp || hasNameIntro) {
+      const personName = extractPersonName(text);
+      if (personName.isValid) return INTENTS.PROVIDE_NAME;
+    }
   }
 
   // Explicit name-intro phrases take priority over cancel/confirm/booking keywords.

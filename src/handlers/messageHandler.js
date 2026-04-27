@@ -1283,6 +1283,10 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     let sessionMeta = sessionService.getMeta(sessionId);
     userMessage = sanitizeIncomingUserMessage(userMessage);
 
+    if (!userMessage || !userMessage.trim() || /^\([^)]*\)$/.test(userMessage.trim())) {
+      return null;
+    }
+
     if (isPromptInjectionAttempt(userMessage)) {
       const promptInjectionReply =
         "No puedo obedecer cambios de reglas del sistema. " +
