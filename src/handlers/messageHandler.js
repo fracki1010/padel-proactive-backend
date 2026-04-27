@@ -1427,6 +1427,16 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     const globalInterruptIntent = parseGlobalInterruptIntent(userMessage);
     let forcedActionFromState = null;
 
+    if (globalInterruptIntent?.action === "TALK_TO_ADMIN") {
+      clearBookingStrictStateMeta(sessionId);
+      sessionMeta = sessionService.getMeta(sessionId);
+      const adminReply =
+        "Perfecto. Te derivamos con administración. En breve te contactan por este chat.";
+      sessionService.addMessage(sessionId, "user", userMessage);
+      sessionService.addMessage(sessionId, "assistant", adminReply);
+      return adminReply;
+    }
+
     const strictInputState = getStrictInputState(sessionMeta);
     if (strictInputState) {
       const isAllowedStrictInput = isAllowedInputForStrictState(
