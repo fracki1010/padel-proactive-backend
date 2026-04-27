@@ -34,6 +34,14 @@ const nonNameCommandPatterns = [
 const TOKEN_REGEX = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[\-'][A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)*$/;
 const ALLOWED_CONNECTORS = new Set(["de", "del", "la", "las", "los", "da", "do", "di", "y"]);
 
+// Exact operational phrases that must never be captured as names
+const OPERATIONAL_PHRASES = new Set([
+  "confirmar reserva",
+  "confirmar turno",
+  "cancelar reserva",
+  "cancelar turno",
+]);
+
 const hasDigits = (value = "") => /\d/.test(String(value || ""));
 
 const tokenizeName = (value = "") =>
@@ -112,7 +120,13 @@ const extractCandidate = (text = "") => {
     return normalizeSpaces(plainNameMatch[1]);
   }
 
-  return raw;
+  // Only treat raw as candidate if it starts with a letter; otherwise
+  // cleanCandidate could strip leading punctuation (e.g. parentheses) and
+  // produce a spuriously valid name like "Varios Espacios" from "(varios espacios)".
+  if (/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(raw)) {
+    return raw;
+  }
+  return "";
 };
 
 const validateCandidate = ({ rawText = "", candidate = "" }) => {
@@ -126,6 +140,9 @@ const validateCandidate = ({ rawText = "", candidate = "" }) => {
   }
 
   const normalizedClean = normalizeSpanishText(clean);
+  if (OPERATIONAL_PHRASES.has(normalizedClean)) {
+    return { ok: false, reason: "operational_phrase" };
+  }
   if (nonNameCommandPatterns.some((pattern) => pattern.test(normalizedClean))) {
     return { ok: false, reason: "mixed_with_commands" };
   }
