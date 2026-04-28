@@ -2041,12 +2041,60 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       sessionMeta.pendingCourtTypeSelection?.dateStr &&
       sessionMeta.pendingCourtTypeSelection?.timeStr
     ) {
+      // Interrupciones globales: limpiar la selección pendiente y dejar que el flujo normal la resuelva
+      const courtInterruptAction = globalInterruptIntent?.action;
+      if (courtInterruptAction === "RESET_FLOW") {
+        sessionService.updateMeta(sessionId, { pendingCourtTypeSelection: null });
+        sessionService.clearHistory(sessionId);
+        const resetReply =
+          "Reinicié la conversación.\n" +
+          "Decime si querés *consultar disponibilidad*, *reservar* o *cancelar*.";
+        sessionService.addMessage(sessionId, "assistant", resetReply);
+        return resetReply;
+      }
+      if (
+        courtInterruptAction === "LIST_ACTIVE_BOOKINGS" ||
+        courtInterruptAction === "CANCEL_BOOKING" ||
+        courtInterruptAction === "CHECK_AVAILABILITY" ||
+        courtInterruptAction === "CREATE_BOOKING"
+      ) {
+        sessionService.updateMeta(sessionId, { pendingCourtTypeSelection: null });
+        sessionMeta = sessionService.getMeta(sessionId);
+        if (courtInterruptAction === "LIST_ACTIVE_BOOKINGS") {
+          forcedActionFromState = { action: "LIST_ACTIVE_BOOKINGS", source: "court_selection_interrupt" };
+        } else if (courtInterruptAction === "CHECK_AVAILABILITY") {
+          forcedActionFromState = {
+            action: "CHECK_AVAILABILITY",
+            date: extractDateFromMessage(userMessage) || getTodayIsoArgentina(),
+            time: normalizeTimeString(extractTimeFromMessage(userMessage)),
+            source: "court_selection_interrupt",
+          };
+        } else if (courtInterruptAction === "CANCEL_BOOKING") {
+          forcedActionFromState = {
+            action: "CANCEL_BOOKING",
+            date: extractDateFromMessage(userMessage),
+            time: normalizeTimeString(extractTimeFromMessage(userMessage)),
+            source: "court_selection_interrupt",
+          };
+        } else {
+          forcedActionFromState = {
+            action: "CREATE_BOOKING",
+            date: extractDateFromMessage(userMessage),
+            time: normalizeTimeString(extractTimeFromMessage(userMessage)),
+            courtName: "INDIFERENTE",
+            source: "court_selection_interrupt",
+          };
+        }
+        // Fall through: forcedActionFromState will be picked up below
+      } else {
       const { COURT_TYPES } = require("../models/court.model");
       const normalizedMsg = normalizeSpanishText(userMessage);
       const selectedCourtType = COURT_TYPES.find((ct) =>
         normalizedMsg.includes(normalizeSpanishText(ct))
       );
-      const isIndiferente = /\b(cualquiera|indiferente|primera disponible|da igual|lo mismo)\b/.test(normalizedMsg);
+      const isIndiferente =
+        /\b(cualquiera|indiferente|primera disponible|da igual|lo mismo)\b/.test(normalizedMsg) ||
+        isEquivalentConfirmation(userMessage);
       const isCancel = parseStrictCancel(userMessage);
 
       if (isCancel) {
@@ -2113,6 +2161,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         sessionService.addMessage(sessionId, "assistant", invalidCourtTypeReply);
         return invalidCourtTypeReply;
       }
+      } // end else (no global interrupt)
     }
 
     if (sessionMeta.awaitingBookingClientNameConfirmation) {
