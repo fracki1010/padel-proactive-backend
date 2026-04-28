@@ -13,7 +13,7 @@ const assert = require("node:assert/strict");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
-const BASE_URL = `http://localhost:${process.env.PORT || 3000}`;
+const BASE_URL = `http://127.0.0.1:${process.env.PORT || 3000}`;
 const JWT_SECRET = process.env.JWT_SECRET;
 const COMPANY_ID = process.env.WA_TEST_COMPANY_ID || "69cc81a5a0653b59e22357c7";
 const SLUG = "club-principal";
