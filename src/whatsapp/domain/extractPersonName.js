@@ -40,6 +40,9 @@ const OPERATIONAL_PHRASES = new Set([
   "confirmar turno",
   "cancelar reserva",
   "cancelar turno",
+  "confirm booking",
+  "cancel booking",
+  "confirm reservation",
 ]);
 
 const hasDigits = (value = "") => /\d/.test(String(value || ""));

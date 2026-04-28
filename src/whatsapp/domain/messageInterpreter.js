@@ -37,7 +37,7 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
     const hasNameIntro = /^(mi\s+\S+\s+es|me\s+\S+o|soy)\s/i.test(text);
     // Skip name extraction when message starts with an operational keyword (no name intro prefix)
     // so "CONFIRMAR RESERVA" → CONFIRM, "cancelar" → CANCEL_BOOKING, not a name capture
-    const startsWithOp = /^(confirmar|cancelar|si|no|ok|dale|listo|anular)\b/.test(norm);
+    const startsWithOp = /^(confirmar|cancelar|si|no|ok|dale|listo|anular|confirm|cancel|yes|book|reserve)\b/.test(norm);
     if (!startsWithOp || hasNameIntro) {
       const personName = extractPersonName(text);
       if (personName.isValid) return INTENTS.PROVIDE_NAME;
