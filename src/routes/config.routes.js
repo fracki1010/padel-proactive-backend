@@ -1091,14 +1091,17 @@ router.delete("/club-closures/:id", async (req, res) => {
   }
 });
 
-// ── Digest Backgrounds ──────────────────────────────────────────────────────
+// ── Company Images (Cloudinary) ─────────────────────────────────────────────
 
 const multer = require("multer");
-const DigestBackground = require("../models/digestBackground.model");
+const CompanyImage = require("../models/companyImage.model");
+const Company = require("../models/company.model");
+const { uploadBuffer, cloudinary, configured: cloudinaryConfigured } = require("../lib/cloudinary");
 
 const MAX_BACKGROUNDS = 6;
 const MAX_SIZE_BYTES = 2 * 1024 * 1024;
 const ALLOWED_MIME = ["image/jpeg", "image/png", "image/webp"];
+const ALLOWED_TYPES = ["portal_cover", "digest_background"];
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -1109,93 +1112,79 @@ const upload = multer({
   },
 });
 
-// GET /api/config/digest-backgrounds
-router.get("/digest-backgrounds", async (req, res) => {
+// GET /api/config/company-images?type=digest_background
+router.get("/company-images", async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
-    const backgrounds = await DigestBackground.find(
-      { companyId: companyId || null },
-      { data: 0 },
-    ).sort({ order: 1 });
-
-    return res.status(200).json({
-      success: true,
-      data: backgrounds.map((b) => ({
-        _id: b._id,
-        order: b.order,
-        mimeType: b.mimeType,
-        url: `/api/config/digest-backgrounds/${b._id}/image`,
-      })),
-    });
+    const typeFilter = ALLOWED_TYPES.includes(req.query.type) ? req.query.type : null;
+    const filter = { companyId: companyId || null, ...(typeFilter ? { type: typeFilter } : {}) };
+    const images = await CompanyImage.find(filter, { cloudinaryPublicId: 0 }).sort({ type: 1, order: 1 });
+    return res.status(200).json({ success: true, data: images });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// GET /api/config/digest-backgrounds/:id/image
-router.get("/digest-backgrounds/:id/image", async (req, res) => {
+// POST /api/config/company-images  (multipart: file, type, order?)
+router.post("/company-images", upload.single("file"), async (req, res) => {
   try {
-    const companyId = resolveCompanyId(req);
-    const bg = await DigestBackground.findOne({
-      _id: req.params.id,
-      companyId: companyId || null,
-    });
-    if (!bg) return res.status(404).json({ success: false, error: "No encontrado." });
+    if (!cloudinaryConfigured) {
+      return res.status(503).json({ success: false, error: "Cloudinary no está configurado." });
+    }
 
-    res.set("Content-Type", bg.mimeType);
-    res.set("Cache-Control", "private, max-age=86400");
-    return res.send(bg.data);
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// POST /api/config/digest-backgrounds  (multipart: file + order)
-router.post("/digest-backgrounds", upload.single("file"), async (req, res) => {
-  try {
     const companyId = resolveCompanyId(req);
 
     if (!req.file) {
       return res.status(400).json({ success: false, error: "No se recibió ningún archivo." });
     }
 
-    const order = Number(req.body.order);
-    if (!Number.isInteger(order) || order < 1 || order > MAX_BACKGROUNDS) {
-      return res.status(400).json({
-        success: false,
-        error: `El orden debe ser un número entre 1 y ${MAX_BACKGROUNDS}.`,
-      });
+    const type = req.body.type;
+    if (!ALLOWED_TYPES.includes(type)) {
+      return res.status(400).json({ success: false, error: "El tipo debe ser 'portal_cover' o 'digest_background'." });
     }
 
-    const existing = await DigestBackground.countDocuments({ companyId: companyId || null });
-    const slot = await DigestBackground.findOne({ companyId: companyId || null, order });
-
-    if (!slot && existing >= MAX_BACKGROUNDS) {
-      return res.status(400).json({
-        success: false,
-        error: `Máximo ${MAX_BACKGROUNDS} imágenes de fondo permitidas.`,
-      });
+    const order = type === "digest_background" ? Number(req.body.order) : 1;
+    if (type === "digest_background" && (!Number.isInteger(order) || order < 1 || order > MAX_BACKGROUNDS)) {
+      return res.status(400).json({ success: false, error: `El orden debe ser entre 1 y ${MAX_BACKGROUNDS}.` });
     }
 
-    const saved = await DigestBackground.findOneAndUpdate(
-      { companyId: companyId || null, order },
-      {
-        companyId: companyId || null,
-        order,
-        data: req.file.buffer,
-        mimeType: req.file.mimetype,
-      },
+    if (type === "digest_background") {
+      const existing = await CompanyImage.countDocuments({ companyId: companyId || null, type: "digest_background" });
+      const slot = await CompanyImage.findOne({ companyId: companyId || null, type: "digest_background", order });
+      if (!slot && existing >= MAX_BACKGROUNDS) {
+        return res.status(400).json({ success: false, error: `Máximo ${MAX_BACKGROUNDS} imágenes de fondo permitidas.` });
+      }
+    }
+
+    // Delete previous Cloudinary asset for this slot if it exists
+    const prevImage = await CompanyImage.findOne({ companyId: companyId || null, type, order });
+    if (prevImage?.cloudinaryPublicId) {
+      try { await cloudinary.uploader.destroy(prevImage.cloudinaryPublicId); } catch (_) {}
+    }
+
+    const folder = `padel-proactive/${companyId || "global"}/${type}`;
+    const uploadResult = await uploadBuffer(req.file.buffer, {
+      folder,
+      resource_type: "image",
+      transformation: type === "digest_background"
+        ? [{ width: 1200, height: 675, crop: "fill" }]
+        : [{ width: 1200, crop: "limit" }],
+    });
+
+    const saved = await CompanyImage.findOneAndUpdate(
+      { companyId: companyId || null, type, order },
+      { companyId: companyId || null, type, order, cloudinaryPublicId: uploadResult.public_id, url: uploadResult.secure_url },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
 
+    // Keep company.coverImage in sync for portal_cover
+    if (type === "portal_cover" && companyId) {
+      await Company.findByIdAndUpdate(companyId, { coverImage: uploadResult.secure_url });
+    }
+
     return res.status(200).json({
       success: true,
-      data: {
-        _id: saved._id,
-        order: saved.order,
-        mimeType: saved.mimeType,
-        url: `/api/config/digest-backgrounds/${saved._id}/image`,
-      },
+      data: { _id: saved._id, type: saved.type, order: saved.order, url: saved.url },
     });
   } catch (error) {
     if (error?.code === "LIMIT_FILE_SIZE") {
@@ -1205,15 +1194,17 @@ router.post("/digest-backgrounds", upload.single("file"), async (req, res) => {
   }
 });
 
-// DELETE /api/config/digest-backgrounds/:id
-router.delete("/digest-backgrounds/:id", async (req, res) => {
+// DELETE /api/config/company-images/:id
+router.delete("/company-images/:id", async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
-    const deleted = await DigestBackground.findOneAndDelete({
-      _id: req.params.id,
-      companyId: companyId || null,
-    });
-    if (!deleted) return res.status(404).json({ success: false, error: "No encontrado." });
+    const image = await CompanyImage.findOneAndDelete({ _id: req.params.id, companyId: companyId || null });
+    if (!image) return res.status(404).json({ success: false, error: "No encontrado." });
+
+    if (image.cloudinaryPublicId) {
+      try { await cloudinary.uploader.destroy(image.cloudinaryPublicId); } catch (_) {}
+    }
+
     return res.status(200).json({ success: true, data: { _id: req.params.id } });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
