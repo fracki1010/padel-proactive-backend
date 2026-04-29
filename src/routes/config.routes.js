@@ -554,6 +554,9 @@ const updateWhatsappConfig = async (req, res) => {
           savedConfig.dailyAvailabilityDigestHour ||
             DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
         ),
+        dailyAvailabilityDigestFormat: String(
+          savedConfig.dailyAvailabilityDigestFormat || "text",
+        ),
       };
     }
 
