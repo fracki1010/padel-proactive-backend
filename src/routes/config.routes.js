@@ -97,6 +97,7 @@ const buildWhatsappConfigResponse = async (companyId) => {
     dailyAvailabilityDigestHour: cancellationGroup.dailyAvailabilityDigestHour,
     dailyGroupAvailabilityHour: cancellationGroup.dailyAvailabilityDigestHour,
     groupDailyAvailabilityDigestHour: cancellationGroup.dailyAvailabilityDigestHour,
+    dailyAvailabilityDigestFormat: cancellationGroup.dailyAvailabilityDigestFormat || "text",
   };
 };
 
@@ -450,6 +451,11 @@ const updateWhatsappConfig = async (req, res) => {
       body.dailyGroupAvailabilityHour,
       body.groupDailyAvailabilityDigestHour,
     ]);
+    const dailyAvailabilityDigestFormatCandidate =
+      body.dailyAvailabilityDigestFormat === "image" ||
+      body.dailyAvailabilityDigestFormat === "text"
+        ? body.dailyAvailabilityDigestFormat
+        : null;
     const oneHourReminderEnabledCandidate = firstBoolean([
       body.oneHourReminderEnabled,
       body.oneHourBeforeEnabled,
@@ -477,7 +483,8 @@ const updateWhatsappConfig = async (req, res) => {
       typeof cancellationGroupNameCandidate === "string";
     const hasDailyAvailabilityDigestUpdate =
       typeof dailyAvailabilityDigestEnabledCandidate === "boolean" ||
-      typeof dailyAvailabilityDigestHourCandidate === "string";
+      typeof dailyAvailabilityDigestHourCandidate === "string" ||
+      dailyAvailabilityDigestFormatCandidate !== null;
     const hasOneHourReminderUpdate =
       typeof oneHourReminderEnabledCandidate === "boolean";
 
@@ -577,6 +584,10 @@ const updateWhatsappConfig = async (req, res) => {
             typeof dailyAvailabilityDigestHourCandidate === "string"
               ? dailyAvailabilityDigestHourCandidate.trim()
               : cancellationGroup.dailyAvailabilityDigestHour,
+          format:
+            dailyAvailabilityDigestFormatCandidate !== null
+              ? dailyAvailabilityDigestFormatCandidate
+              : cancellationGroup.dailyAvailabilityDigestFormat,
         },
         companyId,
       );
@@ -586,6 +597,9 @@ const updateWhatsappConfig = async (req, res) => {
       cancellationGroup.dailyAvailabilityDigestHour = String(
         savedDigestConfig.dailyAvailabilityDigestHour ||
           DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
+      );
+      cancellationGroup.dailyAvailabilityDigestFormat = String(
+        savedDigestConfig.dailyAvailabilityDigestFormat || "text",
       );
     }
 

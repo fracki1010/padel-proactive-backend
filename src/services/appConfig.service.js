@@ -288,6 +288,11 @@ const setOneHourReminderEnabled = async (enabled, companyId = null) => {
   );
 };
 
+const normalizeDailyAvailabilityDigestFormat = (value) => {
+  const v = normalizeString(value);
+  return v === "image" ? "image" : "text";
+};
+
 const getWhatsappCancellationGroupSettings = async (companyId = null) => {
   const config = await ensureAppConfig(companyId);
   return {
@@ -300,6 +305,9 @@ const getWhatsappCancellationGroupSettings = async (companyId = null) => {
     ),
     dailyAvailabilityDigestLastSentDate: normalizeString(
       config.dailyAvailabilityDigestLastSentDate,
+    ),
+    dailyAvailabilityDigestFormat: normalizeDailyAvailabilityDigestFormat(
+      config.dailyAvailabilityDigestFormat,
     ),
   };
 };
@@ -343,6 +351,13 @@ const setDailyAvailabilityDigestStatus = async (settings, companyId = null) => {
           : config.dailyAvailabilityDigestHour,
       )
     : normalizeDailyAvailabilityDigestHour(config.dailyAvailabilityDigestHour);
+  const nextFormat = hasSettingsObject
+    ? normalizeDailyAvailabilityDigestFormat(
+        typeof settings.format === "string"
+          ? settings.format
+          : config.dailyAvailabilityDigestFormat,
+      )
+    : normalizeDailyAvailabilityDigestFormat(config.dailyAvailabilityDigestFormat);
 
   return AppConfig.findOneAndUpdate(
     buildConfigFilter(companyId),
@@ -350,6 +365,7 @@ const setDailyAvailabilityDigestStatus = async (settings, companyId = null) => {
       $set: {
         dailyAvailabilityDigestEnabled: nextEnabled,
         dailyAvailabilityDigestHour: nextHour,
+        dailyAvailabilityDigestFormat: nextFormat,
       },
     },
     { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
