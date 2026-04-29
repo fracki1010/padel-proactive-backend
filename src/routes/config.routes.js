@@ -1091,4 +1091,133 @@ router.delete("/club-closures/:id", async (req, res) => {
   }
 });
 
+// ── Digest Backgrounds ──────────────────────────────────────────────────────
+
+const multer = require("multer");
+const DigestBackground = require("../models/digestBackground.model");
+
+const MAX_BACKGROUNDS = 6;
+const MAX_SIZE_BYTES = 2 * 1024 * 1024;
+const ALLOWED_MIME = ["image/jpeg", "image/png", "image/webp"];
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_SIZE_BYTES },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME.includes(file.mimetype)) return cb(null, true);
+    cb(new Error("Solo se aceptan imágenes JPG, PNG o WebP."));
+  },
+});
+
+// GET /api/config/digest-backgrounds
+router.get("/digest-backgrounds", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const backgrounds = await DigestBackground.find(
+      { companyId: companyId || null },
+      { data: 0 },
+    ).sort({ order: 1 });
+
+    return res.status(200).json({
+      success: true,
+      data: backgrounds.map((b) => ({
+        _id: b._id,
+        order: b.order,
+        mimeType: b.mimeType,
+        url: `/api/config/digest-backgrounds/${b._id}/image`,
+      })),
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/config/digest-backgrounds/:id/image
+router.get("/digest-backgrounds/:id/image", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const bg = await DigestBackground.findOne({
+      _id: req.params.id,
+      companyId: companyId || null,
+    });
+    if (!bg) return res.status(404).json({ success: false, error: "No encontrado." });
+
+    res.set("Content-Type", bg.mimeType);
+    res.set("Cache-Control", "private, max-age=86400");
+    return res.send(bg.data);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/config/digest-backgrounds  (multipart: file + order)
+router.post("/digest-backgrounds", upload.single("file"), async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: "No se recibió ningún archivo." });
+    }
+
+    const order = Number(req.body.order);
+    if (!Number.isInteger(order) || order < 1 || order > MAX_BACKGROUNDS) {
+      return res.status(400).json({
+        success: false,
+        error: `El orden debe ser un número entre 1 y ${MAX_BACKGROUNDS}.`,
+      });
+    }
+
+    const existing = await DigestBackground.countDocuments({ companyId: companyId || null });
+    const slot = await DigestBackground.findOne({ companyId: companyId || null, order });
+
+    if (!slot && existing >= MAX_BACKGROUNDS) {
+      return res.status(400).json({
+        success: false,
+        error: `Máximo ${MAX_BACKGROUNDS} imágenes de fondo permitidas.`,
+      });
+    }
+
+    const saved = await DigestBackground.findOneAndUpdate(
+      { companyId: companyId || null, order },
+      {
+        companyId: companyId || null,
+        order,
+        data: req.file.buffer,
+        mimeType: req.file.mimetype,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        _id: saved._id,
+        order: saved.order,
+        mimeType: saved.mimeType,
+        url: `/api/config/digest-backgrounds/${saved._id}/image`,
+      },
+    });
+  } catch (error) {
+    if (error?.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ success: false, error: "El archivo supera los 2MB." });
+    }
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /api/config/digest-backgrounds/:id
+router.delete("/digest-backgrounds/:id", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const deleted = await DigestBackground.findOneAndDelete({
+      _id: req.params.id,
+      companyId: companyId || null,
+    });
+    if (!deleted) return res.status(404).json({ success: false, error: "No encontrado." });
+    return res.status(200).json({ success: true, data: { _id: req.params.id } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
