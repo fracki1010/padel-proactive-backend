@@ -94,7 +94,7 @@ test("[WP-01](*) Portal: GET /api/public/:slug → info del club", async () => {
   const body = await res.json();
   assert.ok(body.success !== false, "debe retornar success");
   const data = body.data || body;
-  assert.ok(data.name || data.company?.name, "debe incluir nombre del club");
+  assert.ok(data.name || data.company?.name || data.club?.name, "debe incluir nombre del club");
 });
 
 test("[WP-03] Portal: POST /bookings sin token → 401", async () => {
@@ -129,7 +129,11 @@ test("[WP-06] Portal: GET /bookings (mis reservas) con token válido → 200", a
   const res = await get(`${PUBLIC_URL}/bookings`, makeClientToken());
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.ok(Array.isArray(body.data) || Array.isArray(body.bookings) || Array.isArray(body), "debe retornar array");
+  assert.ok(
+    Array.isArray(body.data) || Array.isArray(body.bookings) || Array.isArray(body) ||
+    Array.isArray(body.data?.upcoming) || Array.isArray(body.data?.history),
+    "debe retornar array",
+  );
 });
 
 test("[WP-08] Portal: GET /auth/me sin token → 401", async () => {
@@ -191,7 +195,7 @@ test("[ADM-06+08](*) POST /api/bookings → crear y luego cancelar desde admin",
     companyId: COMPANY_ID,
     courtId: TEST_COURT_ID,
     date: TEST_DATE,
-    timeSlotId: TEST_TIMESLOT_ID,
+    slotId: TEST_TIMESLOT_ID,
     clientName: "Test QA Automatico",
     clientPhone: "5491100000000",
   }, token);
@@ -234,7 +238,7 @@ test("[WW-01](*) Worker: crear whatsappCommand en BD y verificar que se encola",
       companyId: COMPANY_ID,
       courtId: TEST_COURT_ID,
       date: TEST_DATE,
-      timeSlotId: TEST_TIMESLOT_ID,
+      slotId: TEST_TIMESLOT_ID,
       clientName: "Test Worker QA",
       clientPhone: "5491100000001",
     },

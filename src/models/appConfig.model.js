@@ -86,6 +86,12 @@ const appConfigSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    dailyAvailabilityDigestFormat: {
+      type: String,
+      default: "text",
+      enum: ["text", "image"],
+      trim: true,
+    },
   },
   {
     timestamps: true,
