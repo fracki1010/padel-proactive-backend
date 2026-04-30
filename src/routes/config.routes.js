@@ -1119,17 +1119,28 @@ const { uploadBuffer, cloudinary, configured: cloudinaryConfigured } = require("
 
 const MAX_BACKGROUNDS = 6;
 const MAX_SIZE_BYTES = 10 * 1024 * 1024;
-const ALLOWED_MIME = ["image/jpeg", "image/png", "image/webp"];
 const ALLOWED_TYPES = ["portal_cover", "digest_background"];
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_SIZE_BYTES },
   fileFilter: (_req, file, cb) => {
-    if (ALLOWED_MIME.includes(file.mimetype)) return cb(null, true);
-    cb(new Error("Solo se aceptan imágenes JPG, PNG o WebP."));
+    // Aceptar cualquier imagen — Cloudinary convierte HEIC/HEIF automáticamente
+    if (file.mimetype.startsWith("image/")) return cb(null, true);
+    cb(new Error("El archivo debe ser una imagen."));
   },
 });
+
+// Wrapper que captura errores de multer y los devuelve como JSON en vez de colgar
+const uploadSingle = (fieldName) => (req, res, next) => {
+  upload.single(fieldName)(req, res, (err) => {
+    if (!err) return next();
+    const msg = err.code === "LIMIT_FILE_SIZE"
+      ? "El archivo supera los 10MB."
+      : (err.message || "Error al procesar el archivo.");
+    return res.status(400).json({ success: false, error: msg });
+  });
+};
 
 // GET /api/config/company-images?type=digest_background
 router.get("/company-images", async (req, res) => {
@@ -1145,7 +1156,7 @@ router.get("/company-images", async (req, res) => {
 });
 
 // POST /api/config/company-images  (multipart: file, type, order?)
-router.post("/company-images", upload.single("file"), async (req, res) => {
+router.post("/company-images", uploadSingle("file"), async (req, res) => {
   try {
     if (!cloudinaryConfigured) {
       return res.status(503).json({ success: false, error: "Cloudinary no está configurado." });
@@ -1206,9 +1217,6 @@ router.post("/company-images", upload.single("file"), async (req, res) => {
       data: { _id: saved._id, type: saved.type, order: saved.order, url: saved.url },
     });
   } catch (error) {
-    if (error?.code === "LIMIT_FILE_SIZE") {
-      return res.status(400).json({ success: false, error: "El archivo supera los 10MB." });
-    }
     return res.status(500).json({ success: false, error: error.message });
   }
 });
