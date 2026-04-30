@@ -1133,8 +1133,17 @@ const upload = multer({
 
 // Wrapper que captura errores de multer y los devuelve como JSON en vez de colgar
 const uploadSingle = (fieldName) => (req, res, next) => {
+  console.log(`[upload] ${req.method} ${req.path} — content-type: ${req.headers["content-type"]} content-length: ${req.headers["content-length"]}`);
   upload.single(fieldName)(req, res, (err) => {
-    if (!err) return next();
+    if (!err) {
+      if (req.file) {
+        console.log(`[upload] archivo recibido — name: ${req.file.originalname} mime: ${req.file.mimetype} size: ${req.file.size}`);
+      } else {
+        console.log(`[upload] sin archivo adjunto después de multer`);
+      }
+      return next();
+    }
+    console.error(`[upload] error multer — code: ${err.code} message: ${err.message}`);
     const msg = err.code === "LIMIT_FILE_SIZE"
       ? "El archivo supera los 10MB."
       : (err.message || "Error al procesar el archivo.");
@@ -1158,6 +1167,8 @@ router.get("/company-images", async (req, res) => {
 // POST /api/config/company-images  (multipart: file, type, order?)
 router.post("/company-images", uploadSingle("file"), async (req, res) => {
   try {
+    console.log(`[company-images POST] body.type=${req.body.type} body.order=${req.body.order} cloudinaryConfigured=${cloudinaryConfigured}`);
+
     if (!cloudinaryConfigured) {
       return res.status(503).json({ success: false, error: "Cloudinary no está configurado." });
     }
@@ -1165,16 +1176,19 @@ router.post("/company-images", uploadSingle("file"), async (req, res) => {
     const companyId = resolveCompanyId(req);
 
     if (!req.file) {
+      console.log(`[company-images POST] rechazado — no file`);
       return res.status(400).json({ success: false, error: "No se recibió ningún archivo." });
     }
 
     const type = req.body.type;
     if (!ALLOWED_TYPES.includes(type)) {
+      console.log(`[company-images POST] rechazado — tipo inválido: ${type}`);
       return res.status(400).json({ success: false, error: "El tipo debe ser 'portal_cover' o 'digest_background'." });
     }
 
     const order = type === "digest_background" ? Number(req.body.order) : 1;
     if (type === "digest_background" && (!Number.isInteger(order) || order < 1 || order > MAX_BACKGROUNDS)) {
+      console.log(`[company-images POST] rechazado — orden inválido: ${order}`);
       return res.status(400).json({ success: false, error: `El orden debe ser entre 1 y ${MAX_BACKGROUNDS}.` });
     }
 
@@ -1182,6 +1196,7 @@ router.post("/company-images", uploadSingle("file"), async (req, res) => {
       const existing = await CompanyImage.countDocuments({ companyId: companyId || null, type: "digest_background" });
       const slot = await CompanyImage.findOne({ companyId: companyId || null, type: "digest_background", order });
       if (!slot && existing >= MAX_BACKGROUNDS) {
+        console.log(`[company-images POST] rechazado — límite de fondos alcanzado`);
         return res.status(400).json({ success: false, error: `Máximo ${MAX_BACKGROUNDS} imágenes de fondo permitidas.` });
       }
     }
@@ -1193,6 +1208,7 @@ router.post("/company-images", uploadSingle("file"), async (req, res) => {
     }
 
     const folder = `padel-proactive/${companyId || "global"}/${type}`;
+    console.log(`[company-images POST] iniciando upload a Cloudinary — folder: ${folder} buffer: ${req.file.buffer.length} bytes`);
     const uploadResult = await uploadBuffer(req.file.buffer, {
       folder,
       resource_type: "image",
@@ -1200,6 +1216,7 @@ router.post("/company-images", uploadSingle("file"), async (req, res) => {
         ? [{ width: 1200, height: 675, crop: "fill" }]
         : [{ width: 1200, crop: "limit" }],
     });
+    console.log(`[company-images POST] Cloudinary OK — public_id: ${uploadResult.public_id}`);
 
     const saved = await CompanyImage.findOneAndUpdate(
       { companyId: companyId || null, type, order },
@@ -1212,11 +1229,13 @@ router.post("/company-images", uploadSingle("file"), async (req, res) => {
       await Company.findByIdAndUpdate(companyId, { coverImage: uploadResult.secure_url });
     }
 
+    console.log(`[company-images POST] guardado OK — _id: ${saved._id}`);
     return res.status(200).json({
       success: true,
       data: { _id: saved._id, type: saved.type, order: saved.order, url: saved.url },
     });
   } catch (error) {
+    console.error(`[company-images POST] error inesperado:`, error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
