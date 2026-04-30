@@ -1118,7 +1118,7 @@ const Company = require("../models/company.model");
 const { uploadBuffer, cloudinary, configured: cloudinaryConfigured } = require("../lib/cloudinary");
 
 const MAX_BACKGROUNDS = 6;
-const MAX_SIZE_BYTES = 2 * 1024 * 1024;
+const MAX_SIZE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MIME = ["image/jpeg", "image/png", "image/webp"];
 const ALLOWED_TYPES = ["portal_cover", "digest_background"];
 
@@ -1207,7 +1207,7 @@ router.post("/company-images", upload.single("file"), async (req, res) => {
     });
   } catch (error) {
     if (error?.code === "LIMIT_FILE_SIZE") {
-      return res.status(400).json({ success: false, error: "El archivo supera los 2MB." });
+      return res.status(400).json({ success: false, error: "El archivo supera los 10MB." });
     }
     return res.status(500).json({ success: false, error: error.message });
   }
