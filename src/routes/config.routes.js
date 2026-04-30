@@ -1257,4 +1257,16 @@ router.delete("/company-images/:id", async (req, res) => {
   }
 });
 
+// POST /api/config/client-log — recibe logs del frontend para debug remoto
+router.post("/client-log", (req, res) => {
+  const { level = "log", message = "", data } = req.body || {};
+  const tag = `[client-log][${level.toUpperCase()}]`;
+  if (data !== undefined) {
+    console[level === "error" ? "error" : "log"](`${tag} ${message}`, JSON.stringify(data));
+  } else {
+    console[level === "error" ? "error" : "log"](`${tag} ${message}`);
+  }
+  return res.status(200).json({ ok: true });
+});
+
 module.exports = router;
