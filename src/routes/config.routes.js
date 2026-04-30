@@ -1213,7 +1213,7 @@ router.post("/company-images", uploadSingle("file"), async (req, res) => {
       folder,
       resource_type: "image",
       transformation: type === "digest_background"
-        ? [{ width: 675, height: 1200, crop: "fill" }]
+        ? [{ width: 1200, crop: "limit" }]
         : [{ width: 1200, crop: "limit" }],
     });
     console.log(`[company-images POST] Cloudinary OK — public_id: ${uploadResult.public_id}`);
