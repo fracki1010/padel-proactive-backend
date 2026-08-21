@@ -20,7 +20,22 @@ const saveOrUpdateUser = async (whatsappId, name, options = {}) => {
     const companyId = options.companyId || null;
     const cleanPhone = await getNumberByUser(whatsappId, companyId);
 
-    const existingUser = await User.findOne({ whatsappId, companyId }).lean();
+    let existingUser = await User.findOne({ whatsappId, companyId }).lean();
+
+    // Fallback: if not found by whatsappId, look up by phoneNumber to avoid duplicates
+    if (!existingUser && cleanPhone) {
+      existingUser = await User.findOne({ companyId, phoneNumber: cleanPhone }).lean();
+
+      // If found by phone but has a different whatsappId, update it so future lookups match
+      if (existingUser && existingUser.whatsappId !== whatsappId) {
+        existingUser = await User.findOneAndUpdate(
+          { _id: existingUser._id },
+          { whatsappId },
+          { new: true },
+        ).lean();
+      }
+    }
+
     const resolvedName = existingUser?.name ? existingUser.name : name;
 
     const user = await User.findOneAndUpdate(

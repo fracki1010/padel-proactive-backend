@@ -120,15 +120,31 @@ const getUserById = async (req, res) => {
 const createUser = async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
+    const phoneNumber = (req.body.phoneNumber || "").trim();
+
+    // Prevent duplicate clients: check if a user with this phone already exists
+    if (phoneNumber) {
+      const existingUser = await User.findOne({
+        ...companyScope(req, companyId),
+        phoneNumber,
+      });
+
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          error: "Ya existe un cliente con este número de teléfono",
+        });
+      }
+    }
 
     const resolvedWhatsappId =
       req.body.whatsappId ||
-      (await getWhatsappIdByPhone(req.body.phoneNumber, companyId));
+      (await getWhatsappIdByPhone(phoneNumber, companyId));
 
     const user = await User.create({
       ...req.body,
       name: (req.body.name || "").trim(),
-      phoneNumber: (req.body.phoneNumber || "").trim(),
+      phoneNumber,
       whatsappId: resolvedWhatsappId,
       ...companyScope(req, companyId),
     });
