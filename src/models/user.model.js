@@ -73,6 +73,14 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ companyId: 1, whatsappId: 1 }, { unique: true });
-userSchema.index({ companyId: 1, phoneNumber: 1 });
+// Unique partial index on phoneNumber: prevents duplicate clients per company,
+// but allows multiple users with empty/null phone (e.g. system accounts without phone).
+userSchema.index(
+  { companyId: 1, phoneNumber: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { phoneNumber: { $exists: true, $ne: "" } },
+  },
+);
 
 module.exports = mongoose.model("User", userSchema);
