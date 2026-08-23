@@ -44,7 +44,7 @@ const groqClients = groqApiKeys.map((apiKey, index) => ({
 }));
 let groqRoundRobinCursor = 0;
 
-const PRIMARY_MODEL = process.env.GROQ_MODEL_PRIMARY || "qwen/qwen3.6-27b";
+const PRIMARY_MODEL = process.env.GROQ_MODEL_PRIMARY || "openai/gpt-oss-120b";
 const FALLBACK_MODEL = process.env.GROQ_MODEL_FALLBACK || "openai/gpt-oss-20b";
 const PRIMARY_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 220);
 const FALLBACK_MAX_TOKENS = Number(process.env.GROQ_FALLBACK_MAX_TOKENS || 140);
@@ -264,7 +264,6 @@ const requestChatCompletion = async ({ conversation, model, maxTokens }) => {
         model,
         temperature: 0.1,
         max_tokens: maxTokens,
-        response_format: { type: "json_object" },
       });
 
       groqPoolStats.totalSuccesses += 1;
