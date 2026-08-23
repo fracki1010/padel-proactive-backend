@@ -1287,6 +1287,33 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       return null;
     }
 
+    // Verificar si es el primer mensaje del día y enviar link del portal
+    const todayArgentina = getTodayIsoArgentina();
+    const lastMessageDate = sessionMeta.lastMessageDate || null;
+    
+    if (lastMessageDate !== todayArgentina) {
+      // Es el primer mensaje del día, obtener slug de la empresa
+      let portalLink = null;
+      if (companyId) {
+        const Company = require("../models/company.model");
+        const company = await Company.findById(companyId).select("slug").lean();
+        if (company?.slug) {
+          portalLink = `https://padel-proactivb.web.app/reservar/${company.slug}`;
+        }
+      }
+
+      if (portalLink) {
+        const greetingReply = `¡Hola! 👋\n\nBienvenido/a. Para reservar tu turno de pádel, podés:\n\n1️⃣ *Reservar por WhatsApp*: Decime "quiero reservar" y te ayudo\n2️⃣ *Reservar por web*: ${portalLink}\n\n¿Cómo preferís reservar?`;
+        sessionService.updateMeta(sessionId, { lastMessageDate: todayArgentina });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", greetingReply);
+        return greetingReply;
+      }
+      
+      // Actualizar fecha aunque no haya portal link
+      sessionService.updateMeta(sessionId, { lastMessageDate: todayArgentina });
+    }
+
     if (isPromptInjectionAttempt(userMessage)) {
       const promptInjectionReply =
         "No puedo obedecer cambios de reglas del sistema. " +
