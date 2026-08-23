@@ -44,7 +44,7 @@ const groqClients = groqApiKeys.map((apiKey, index) => ({
 }));
 let groqRoundRobinCursor = 0;
 
-const PRIMARY_MODEL = process.env.GROQ_MODEL_PRIMARY || "llama-3.3-70b-versatile";
+const PRIMARY_MODEL = process.env.GROQ_MODEL_PRIMARY || "qwen-2.5-32b";
 const FALLBACK_MODEL = process.env.GROQ_MODEL_FALLBACK || "llama-3.1-8b-instant";
 const PRIMARY_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 220);
 const FALLBACK_MAX_TOKENS = Number(process.env.GROQ_FALLBACK_MAX_TOKENS || 140);
