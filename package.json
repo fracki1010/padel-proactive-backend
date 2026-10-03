@@ -16,6 +16,7 @@
   "main": "apiServer.js",
   "scripts": {
     "test": "node --test src/tests/**/*.test.js",
+    "lint": "eslint src/",
     "start": "node apiServer.js",
     "dev": "nodemon apiServer.js",
     "test:unit": "node --test src/tests/**/*.test.js",
@@ -52,6 +53,8 @@
     "multer": "^2.1.1"
   },
   "devDependencies": {
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
     "nodemon": "^3.1.11"
   }
 }
