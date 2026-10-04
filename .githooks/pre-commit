@@ -1,0 +1,15 @@
+#!/bin/sh
+# gitleaks pre-commit hook — block commits containing secrets.
+# Warns (does not block) when the gitleaks binary is not installed.
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "gitleaks: warning: gitleaks not installed - skipping staged secret scan" >&2
+  exit 0
+fi
+
+if ! gitleaks protect --staged --redact; then
+  echo "gitleaks: ERROR: secrets detected in staged changes - commit blocked" >&2
+  exit 1
+fi
+
+exit 0
