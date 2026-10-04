@@ -5,6 +5,9 @@ const assert = require('node:assert');
 const shared = require('../routes/config/shared');
 const courtsRouter = require('../routes/config/courts.routes');
 const slotsRouter = require('../routes/config/slots.routes');
+const whatsappRouter = require('../routes/config/whatsapp.routes');
+const notificationsRouter = require('../routes/config/notifications.routes');
+const botAutomationRouter = require('../routes/config/botAutomation.routes');
 
 const paths = (router) =>
   router.stack.filter((layer) => layer.route).map((layer) => layer.route.path);
@@ -44,4 +47,24 @@ test('escapeRegex escapes regex metacharacters', () => {
 test('firstBoolean and firstString pick the first defined candidate', () => {
   assert.strictEqual(shared.firstBoolean([undefined, false, true]), false);
   assert.strictEqual(shared.firstString([undefined, 'x', 'y']), 'x');
+});
+
+test('whatsapp router exposes the /whatsapp paths', () => {
+  const p = paths(whatsappRouter);
+  assert.strictEqual(p.filter((x) => x === '/whatsapp').length, 3);
+  assert.strictEqual(p.filter((x) => x === '/whatsapp/send-digest-now').length, 1);
+  assert.strictEqual(p.filter((x) => x === '/whatsapp/reset-session').length, 1);
+  assert.strictEqual(p.filter((x) => x === '/whatsapp/groups').length, 1);
+  assert.strictEqual(p.filter((x) => x === '/whatsapp/chats').length, 1);
+});
+
+test('notifications router exposes reminders and settings aliases', () => {
+  const p = paths(notificationsRouter);
+  assert.strictEqual(p.filter((x) => x === '/notifications/reminders').length, 3);
+  assert.strictEqual(p.filter((x) => x === '/settings').length, 3);
+});
+
+test('botAutomation router exposes the /bot-automation paths', () => {
+  const p = paths(botAutomationRouter);
+  assert.strictEqual(p.filter((x) => x === '/bot-automation').length, 3);
 });
