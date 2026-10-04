@@ -28,7 +28,6 @@ const {
 const {
   hasInvalidTimeInput,
   hasCompactInvalidTime,
-  parseTime,
 } = require("../utils/timeParser");
 const {
   extractPersonName,
@@ -44,8 +43,41 @@ const {
 const {
   deriveStateFromMeta,
 } = require("../whatsapp/domain/bookingStateMachine");
-const { normalizeHomoglyphs } = require("../utils/normalizeHomoglyphs");
 const { stripUrlsFromText } = require("../utils/stripUrlsFromText");
+const {
+  normalizeSpanishText,
+  normalizeNameText,
+  normalizeLooseText,
+  sanitizeIncomingUserMessage,
+  sanitizeModelOnlyMessage,
+  isPromptInjectionAttempt,
+} = require("../whatsapp/domain/messageSanitization");
+const {
+  getTodayIsoArgentina,
+  normalizeTimeString,
+  isValidIsoDate,
+  addDaysToIsoDate,
+  getArgentinaDateParts,
+  getNextWeekdayIsoDate,
+  extractDateFromMessage,
+  extractTimeFromMessage,
+  formatIsoDateAsDayMonthYear,
+  toMinutes,
+  extractDayPeriodFromMessage,
+  getDayPeriodLabel,
+  filterSlotsByPeriod,
+  formatSlotLines,
+  timeToMinutes,
+  findNearbySlots,
+} = require("../whatsapp/domain/bookingDateTime");
+const {
+  inferFallbackAction,
+  inferDeterministicAction,
+  isAffirmativeBookingReply,
+  isNegativeBookingReply,
+  hasDirectBookingIntent,
+  hasBookingControlKeywords,
+} = require("../whatsapp/domain/intentDetection");
 
 // --- FUNCIÓN HELPER PARA EXTRAER JSON ---
 // Busca cualquier cosa que parezca un objeto JSON {...} dentro del texto
@@ -65,10 +97,6 @@ const extractJSON = (text) => {
     }
     return null;
   }
-};
-
-const getTodayIsoArgentina = () => {
-  return getTodayIso(new Date(), "America/Argentina/Buenos_Aires");
 };
 
 const TRANSACTIONAL_MODE_ENABLED =
@@ -116,257 +144,6 @@ const buildAntiLoopReply = ({ interpretation = {}, sessionMeta = {} } = {}) => {
   return "Te estoy entendiendo, pero para avanzar necesito un dato más concreto.";
 };
 
-const normalizeTimeString = (rawTime) => {
-  return parseTime(rawTime);
-};
-
-const isValidIsoDate = (value) => {
-  if (!value) return false;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return false;
-  const d = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
-};
-
-const normalizeSpanishText = (text = "") =>
-  String(text)
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-
-const addDaysToIsoDate = (isoDate, days) => {
-  const [year, month, day] = isoDate.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + days);
-  const y = date.getUTCFullYear();
-  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(date.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-};
-
-const getArgentinaDateParts = (date = new Date()) => {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Argentina/Buenos_Aires",
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-
-  const year = Number(parts.find((p) => p.type === "year")?.value || 0);
-  const month = Number(parts.find((p) => p.type === "month")?.value || 0);
-  const day = Number(parts.find((p) => p.type === "day")?.value || 0);
-  const weekdayRaw = String(
-    parts.find((p) => p.type === "weekday")?.value || "",
-  ).toLowerCase();
-
-  const weekdayMap = {
-    lun: 1,
-    mar: 2,
-    mie: 3,
-    mié: 3,
-    jue: 4,
-    vie: 5,
-    sab: 6,
-    sáb: 6,
-    dom: 0,
-  };
-
-  return {
-    year,
-    month,
-    day,
-    weekday: weekdayMap[weekdayRaw] ?? 0,
-  };
-};
-
-const getNextWeekdayIsoDate = (targetWeekday, options = {}) => {
-  const includeToday = Boolean(options.includeToday);
-  const today = getArgentinaDateParts();
-  const todayIso = `${today.year}-${String(today.month).padStart(2, "0")}-${String(
-    today.day,
-  ).padStart(2, "0")}`;
-
-  let diff = (targetWeekday - today.weekday + 7) % 7;
-  if (!includeToday && diff === 0) diff = 7;
-  return addDaysToIsoDate(todayIso, diff);
-};
-
-const extractDateFromMessage = (rawText) => {
-  return parseBookingDateTime(rawText, new Date(), "America/Argentina/Buenos_Aires").date;
-};
-
-const extractTimeFromMessage = (rawText) => {
-  return parseBookingDateTime(rawText, new Date(), "America/Argentina/Buenos_Aires").time;
-};
-
-const inferFallbackAction = (rawText) => {
-  const text = normalizeSpanishText(rawText);
-
-  const hasMyBookingsIntent =
-    /(mis\s+reservas|mis\s+turnos|que\s+reservas\s+tengo|que\s+turnos\s+tengo|tengo\s+reservas|tengo\s+turnos|reservas\s+vigentes|turnos\s+vigentes|reserve\s+algun\s+turno|reserve\s+algo|tengo\s+algun\s+turno\s+reservado|me\s+reservaste\s+algo|hay\s+alguna\s+reserva\s+a\s+mi\s+nombre|si\s+reserve\s+algo|si\s+tengo\s+alguna\s+reserva)/.test(
-      text,
-    );
-  if (hasMyBookingsIntent) {
-    return { action: "LIST_ACTIVE_BOOKINGS" };
-  }
-
-  const isFixedTurn =
-    /turno\s*fijo|fijo\s+semanal|semanal|todas\s+las\s+semanas/.test(text);
-  if (isFixedTurn) {
-    return {
-      action: "FIXED_TURN_REQUEST",
-      date: extractDateFromMessage(text),
-      time: extractTimeFromMessage(text),
-    };
-  }
-
-  const hasAvailabilityIntent =
-    /tenes|tenes|hay|queda|quedan|disponible|libre|algo\s+para/.test(text);
-  const date = extractDateFromMessage(text);
-  const time = extractTimeFromMessage(text);
-  const invalidTimeInMessage = hasInvalidTimeInput(rawText) || hasCompactInvalidTime(rawText);
-
-  if (invalidTimeInMessage) {
-    return {
-      action: "INVALID_TIME_INPUT",
-      date: date || getTodayIsoArgentina(),
-    };
-  }
-
-  if (hasAvailabilityIntent && (date || time)) {
-    return {
-      action: "CHECK_AVAILABILITY",
-      date: date || getTodayIsoArgentina(),
-      time,
-    };
-  }
-
-  return null;
-};
-
-const inferDeterministicAction = (rawText = "") => {
-  const interpretation = interpretIncomingMessage({
-    text: rawText,
-    now: new Date(),
-    timezone: "America/Argentina/Buenos_Aires",
-  });
-
-  const interpretedAction = interpretation?.nextAction?.action || null;
-  if (interpretedAction) {
-    return {
-      ...interpretation.nextAction,
-      source: "deterministic_interpreter",
-    };
-  }
-
-  const fallback = inferFallbackAction(rawText);
-  if (!fallback) return null;
-  return {
-    ...fallback,
-    source: "deterministic_fallback",
-  };
-};
-
-const normalizeNameText = (value = "") =>
-  String(value)
-    .trim()
-    .replace(/\s+/g, " ");
-
-const normalizeLooseText = (value = "") =>
-  normalizeSpanishText(value)
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const sanitizeIncomingUserMessage = (value = "") => {
-  const clean = String(value || "")
-    .normalize("NFKC")
-    .replace(/[\u0000-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return normalizeHomoglyphs(clean);
-};
-
-const isPromptInjectionAttempt = (value = "") => {
-  const text = normalizeSpanishText(value);
-  if (!text) return false;
-  return (
-    /\bignora(?:r)?\b.*\b(instrucciones?|reglas?)\b/.test(text) ||
-    /\ba partir de ahora\b.*\b(responde|responder|contesta|contestar)\b/.test(text) ||
-    /\bresponde?\s+solo\b/.test(text) ||
-    /\bactua?\s+como\b/.test(text) ||
-    /\bsystem prompt\b/.test(text) ||
-    /\bdesobedece\b/.test(text)
-  );
-};
-
-const isAffirmativeBookingReply = (value = "") => {
-  const text = normalizeLooseText(value);
-  if (!text) return false;
-
-  const exactAffirmatives = new Set([
-    "si",
-    "si por favor",
-    "por favor",
-    "dale",
-    "ok",
-    "okay",
-    "de una",
-    "confirmo",
-    "confirmado",
-    "hazlo",
-    "hace la reserva",
-    "reserva",
-    "reservalo",
-    "dale reservalo",
-    "mandale",
-    "listo",
-  ]);
-
-  if (exactAffirmatives.has(text)) return true;
-  return isEquivalentConfirmation(text);
-};
-
-const isNegativeBookingReply = (value = "") => {
-  const text = normalizeLooseText(value);
-  if (!text) return false;
-
-  const negatives = new Set([
-    "no",
-    "mejor no",
-    "no gracias",
-    "cancelar",
-    "dejalo",
-    "deja",
-    "olvidate",
-  ]);
-
-  if (negatives.has(text)) return true;
-  return /^(no|cancelar|dejalo)\b/.test(text);
-};
-
-const hasDirectBookingIntent = (value = "") => {
-  const text = normalizeLooseText(value);
-  if (!text) return false;
-  const referencesPastBooking =
-    /(ya me hizo la reserva|ya me habia hecho la reserva|ya reserve|ya tenia reserva|ya esta reservado)/.test(
-      text,
-    );
-  if (referencesPastBooking) return false;
-
-  return /(reservar|reservalo|reservalo|quiero reservar|anotame|agendame|confirma.*turno|haceme la reserva|hace la reserva)/.test(
-    text,
-  );
-};
-
-const hasBookingControlKeywords = (value = "") => {
-  const text = normalizeLooseText(value);
-  if (!text) return false;
-  return /\b(confirmar|cancelar|reserva|reservar|turno|cancha|hora|fecha|hoy|manana|disponibilidad|extra)\b/.test(
-    text,
-  );
-};
-
 const clearBookingStrictStateMeta = (sessionId) =>
   sessionService.updateMeta(sessionId, {
     awaitingFullNameForBooking: false,
@@ -380,22 +157,6 @@ const clearBookingStrictStateMeta = (sessionId) =>
     lastRejectedBookingAttempt: null,
     concreteAnswerRequestedAt: null,
   });
-
-const sanitizeModelOnlyMessage = (value = "") => {
-  const raw = String(value || "").trim();
-  if (!raw) return raw;
-  const normalized = normalizeSpanishText(raw);
-  if (
-    /\breserva\s+confirmada\b/.test(normalized) ||
-    /\bturno\s+(cancelado|anulado)\b/.test(normalized)
-  ) {
-    return (
-      "Para evitar errores, solo confirmo o cancelo turnos cuando tengo " +
-      "fecha, hora y validación del flujo correspondiente."
-    );
-  }
-  return raw;
-};
 
 const isLikelyFullName = (value = "") => {
   const clean = normalizeNameText(value);
@@ -518,12 +279,6 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
 
 const buildSecondBookingConfirmationText = () =>
   "Ya tenés una reserva activa. Para continuar sin errores, respondé *CONFIRMAR EXTRA* o *CANCELAR*.";
-
-const formatIsoDateAsDayMonthYear = (isoDate = "") => {
-  if (!isValidIsoDate(isoDate)) return String(isoDate || "");
-  const [year, month, day] = isoDate.split("-");
-  return `${day}/${month}/${year}`;
-};
 
 const toDraftLabelByIndex = (index) => String.fromCharCode(65 + index);
 
@@ -713,75 +468,6 @@ const buildBookingDraftSummaryReply = async ({
     `Resumen previo (sin reservar todavía):\n\n${lines.join("\n\n")}\n\n` +
     `${confirmLine}`
   );
-};
-
-const toMinutes = (timeStr = "") => {
-  const [h, m] = String(timeStr).split(":").map(Number);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-  return h * 60 + m;
-};
-
-const extractDayPeriodFromMessage = (rawText = "") => {
-  const text = normalizeSpanishText(rawText);
-  if (
-    /\b(?:por|en|de|a)\s+la\s+manana\b/.test(text) ||
-    /\bla\s+manana\b/.test(text)
-  ) {
-    return "MORNING";
-  }
-  if (
-    /\b(?:por|en|de|a)\s+la\s+tarde\b/.test(text) ||
-    /\bla\s+tarde\b/.test(text)
-  ) {
-    return "AFTERNOON";
-  }
-  if (
-    /\b(?:por|en|de|a)\s+la\s+noche\b/.test(text) ||
-    /\bla\s+noche\b/.test(text)
-  ) {
-    return "NIGHT";
-  }
-  return null;
-};
-
-const getDayPeriodLabel = (period) => {
-  if (period === "MORNING") return "mañana";
-  if (period === "AFTERNOON") return "tarde";
-  if (period === "NIGHT") return "noche";
-  return null;
-};
-
-const filterSlotsByPeriod = (slots = [], period = null) => {
-  if (!period) return slots;
-  return slots.filter((slot) => {
-    const minutes = toMinutes(slot.time);
-    if (minutes === null) return false;
-    if (period === "MORNING") return minutes >= 6 * 60 && minutes < 12 * 60;
-    if (period === "AFTERNOON") return minutes >= 12 * 60 && minutes < 19 * 60;
-    if (period === "NIGHT") return minutes >= 19 * 60 && minutes <= 23 * 60 + 59;
-    return true;
-  });
-};
-
-const formatSlotLines = (slot) => {
-  if (slot.courtTypes?.length > 0) {
-    return slot.courtTypes.map((ct) => `• ${slot.time} (${ct.type}) ($${slot.price})`);
-  }
-  return [`• ${slot.time} ($${slot.price})`];
-};
-
-const timeToMinutes = (timeStr = "") => {
-  const [h, m] = String(timeStr).split(":").map(Number);
-  return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
-};
-
-const findNearbySlots = (requestedTime = "", slots = [], windowMinutes = 90) => {
-  const reqMin = timeToMinutes(requestedTime);
-  if (reqMin === null) return [];
-  return slots.filter((s) => {
-    const slotMin = timeToMinutes(s.time);
-    return slotMin !== null && Math.abs(slotMin - reqMin) <= windowMinutes && slotMin !== reqMin;
-  });
 };
 
 const buildAvailabilityResponse = async ({
