@@ -8,9 +8,20 @@ const slotsRouter = require('../routes/config/slots.routes');
 const whatsappRouter = require('../routes/config/whatsapp.routes');
 const notificationsRouter = require('../routes/config/notifications.routes');
 const botAutomationRouter = require('../routes/config/botAutomation.routes');
+const penaltiesRouter = require('../routes/config/penalties.routes');
+const clubClosuresRouter = require('../routes/config/clubClosures.routes');
+const companyImagesRouter = require('../routes/config/companyImages.routes');
+const configRouter = require('../routes/config.routes');
 
 const paths = (router) =>
   router.stack.filter((layer) => layer.route).map((layer) => layer.route.path);
+
+const allPaths = (router) =>
+  router.stack.flatMap((layer) => {
+    if (layer.route) return [layer.route.path];
+    if (layer.handle?.stack) return allPaths(layer.handle);
+    return [];
+  });
 
 test('shared exports the config helpers and regexes', () => {
   assert.strictEqual(typeof shared.resolveCompanyId, 'function');
@@ -67,4 +78,38 @@ test('notifications router exposes reminders and settings aliases', () => {
 test('botAutomation router exposes the /bot-automation paths', () => {
   const p = paths(botAutomationRouter);
   assert.strictEqual(p.filter((x) => x === '/bot-automation').length, 3);
+});
+
+test('penalties router exposes the /penalties paths', () => {
+  const p = paths(penaltiesRouter);
+  assert.strictEqual(p.filter((x) => x === '/penalties').length, 2);
+});
+
+test('clubClosures router exposes the /club-closures CRUD paths', () => {
+  const p = paths(clubClosuresRouter);
+  assert.strictEqual(p.filter((x) => x === '/club-closures').length, 2);
+  assert.strictEqual(p.filter((x) => x === '/club-closures/:id').length, 2);
+});
+
+test('companyImages router exposes image and client-log paths', () => {
+  const p = paths(companyImagesRouter);
+  assert.strictEqual(p.filter((x) => x === '/company-images').length, 2);
+  assert.strictEqual(p.filter((x) => x === '/company-images/:id').length, 1);
+  assert.strictEqual(p.filter((x) => x === '/client-log').length, 1);
+});
+
+test('aggregator mounts every sub-router with byte-identical URL paths', () => {
+  const expected = [
+    ...paths(courtsRouter),
+    ...paths(slotsRouter),
+    ...paths(whatsappRouter),
+    ...paths(notificationsRouter),
+    ...paths(botAutomationRouter),
+    ...paths(penaltiesRouter),
+    ...paths(clubClosuresRouter),
+    ...paths(companyImagesRouter),
+  ].sort();
+  const actual = allPaths(configRouter).sort();
+  assert.strictEqual(actual.length, expected.length);
+  assert.deepStrictEqual(actual, expected);
 });
