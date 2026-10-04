@@ -31,6 +31,11 @@ const {
 } = require("../utils/timeParser");
 const {
   extractPersonName,
+  isLikelyFullName,
+  isPlaceholderName,
+  isNonNameReply,
+  extractFullNameFromMessage,
+  isValidClientName,
 } = require("../whatsapp/domain/extractPersonName");
 const {
   parseBookingDateTime,
@@ -85,6 +90,32 @@ const {
   parseStrictDraftConfirmation,
   extractBookingDraftsFromMessage,
 } = require("../whatsapp/domain/bookingDrafts");
+const {
+  buildAntiLoopReply,
+  buildBookingReplyText,
+  buildSecondBookingConfirmationText,
+  buildActiveBookingsReply,
+} = require("../whatsapp/domain/replyBuilders");
+const {
+  CONCRETE_RESPONSE_TIMEOUT_MS,
+  ALLOWED_AI_ACTIONS,
+  parseAttendanceAnswer,
+  buildAttendanceOptionsOnlyReply,
+  parseStrictYesNoAnswer,
+  parseStrictCancel,
+  parseStrictOfferConfirmation,
+  getStrictInputState,
+  isAllowedInputForStrictState,
+  buildStrictStateInvalidInputReply,
+  isAwaitingConcreteAnswer,
+  enforceStrictQuestionFlowReply,
+} = require("../whatsapp/domain/strictFlow");
+const {
+  fingerprintMessage,
+  enforceIncomingRateLimit,
+  auditSecurityEvent,
+  MAX_SAME_MESSAGE_BEFORE_LOOP_REPLY,
+} = require("../utils/incomingRateLimit");
 
 // --- FUNCIÓN HELPER PARA EXTRAER JSON ---
 // Busca cualquier cosa que parezca un objeto JSON {...} dentro del texto
@@ -110,47 +141,6 @@ const TRANSACTIONAL_MODE_ENABLED =
   String(process.env.WHATSAPP_TRANSACTIONAL_MODE || "true")
     .trim()
     .toLowerCase() !== "false";
-const INCOMING_RATE_WINDOW_MS = Number(
-  process.env.WHATSAPP_BOT_RATE_WINDOW_MS || 60 * 1000,
-);
-const INCOMING_RATE_MAX_MESSAGES = Number(
-  process.env.WHATSAPP_BOT_RATE_MAX_MESSAGES || 14,
-);
-const INCOMING_RATE_MAX_CONTROL_MESSAGES = Number(
-  process.env.WHATSAPP_BOT_RATE_MAX_CONTROL_MESSAGES || 8,
-);
-const incomingRateState = new Map();
-const MAX_SAME_MESSAGE_BEFORE_LOOP_REPLY = 3;
-
-const fingerprintMessage = (value = "") =>
-  normalizeSpanishText(value)
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const buildAntiLoopReply = ({ interpretation = {}, sessionMeta = {} } = {}) => {
-  const missingName = sessionMeta.awaitingFullNameForBooking;
-  const missingConfirmation = sessionMeta.pendingBookingOffer?.dateStr && sessionMeta.pendingBookingOffer?.timeStr;
-  const intent = interpretation?.detectedIntent || INTENTS.UNKNOWN;
-
-  if (missingName) {
-    return "Sigo esperando tu *nombre y apellido* para avanzar con la reserva. Ejemplo: *Juan Pérez*.";
-  }
-  if (missingConfirmation) {
-    return "Para avanzar, decime solo una opción: *CONFIRMAR RESERVA* o *CANCELAR*.";
-  }
-  if (intent === INTENTS.CONFIRM && !missingConfirmation) {
-    return "No tenés ningún turno pendiente de confirmar. ¿Querés reservar uno? Decime *fecha y hora* (ej: hoy 20:00).";
-  }
-  if (intent === INTENTS.CREATE_BOOKING) {
-    return "Entendido. Para reservar sin errores necesito *fecha y hora* (ej: hoy 20:00).";
-  }
-  if (intent === INTENTS.CANCEL_BOOKING) {
-    return "Para cancelar tu turno, pasame la *fecha y hora* (ej: mañana 20:00).";
-  }
-  return "Te estoy entendiendo, pero para avanzar necesito un dato más concreto.";
-};
-
 const clearBookingStrictStateMeta = (sessionId) =>
   sessionService.updateMeta(sessionId, {
     awaitingFullNameForBooking: false,
@@ -164,160 +154,6 @@ const clearBookingStrictStateMeta = (sessionId) =>
     lastRejectedBookingAttempt: null,
     concreteAnswerRequestedAt: null,
   });
-
-const isLikelyFullName = (value = "") => {
-  const clean = normalizeNameText(value);
-  const parts = clean.split(" ").filter(Boolean);
-  if (parts.length < 2) return false;
-  return parts.every((part) => /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}$/.test(part));
-};
-
-const isPlaceholderName = (value = "") => {
-  const normalized = normalizeSpanishText(value)
-    .replace(/[^a-z\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  const placeholders = new Set([
-    "cliente",
-    "cliente desconocido",
-    "nombre apellido",
-    "socio",
-    "invitado",
-  ]);
-  return placeholders.has(normalized);
-};
-
-const isNonNameReply = (value = "") => {
-  const normalized = normalizeSpanishText(value)
-    .replace(/[^a-z\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!normalized) return true;
-
-  const blockedPhrases = [
-    "si",
-    "si por favor",
-    "por favor",
-    "dale",
-    "ok",
-    "okay",
-    "oka",
-    "listo",
-    "de una",
-    "confirmo",
-    "confirmado",
-    "reservalo",
-    "reserva",
-    "hazlo",
-    "hace la reserva",
-    "quiero reservar",
-    "quiero una cancha",
-    "cancelar",
-    "confirmar",
-    "confirmar reserva",
-    "confirmar turno",
-    "confirmar todo",
-    "confirmar extra",
-  ];
-
-  if (blockedPhrases.includes(normalized)) return true;
-  if (
-    /^confirmar(?:\s+(?:reserva|turno|todo|extra|[a-z]))?$/.test(normalized) ||
-    /^(cancelar|cancelo|cancelado)$/.test(normalized)
-  ) {
-    return true;
-  }
-
-  return isEquivalentConfirmation(normalized);
-};
-
-const extractFullNameFromMessage = (rawMessage, _aiCandidate = "") => {
-  const textForName = stripUrlsFromText(rawMessage);
-  const parsed = extractPersonName(textForName);
-  if (!parsed?.isValid) return null;
-  return parsed.value;
-};
-
-const isValidClientName = (value = "") => {
-  if (isPlaceholderName(value)) return false;
-  return Boolean(extractPersonName(value)?.isValid);
-};
-
-const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult) => {
-  if (bookingResult.success) {
-    return (
-      `✅ *¡Reserva Confirmada!* 🎾\n\n` +
-      `👤 *Jugador:* ${requestedClientName}\n` +
-      `📌 *Cancha:* ${bookingResult.data.courtName}${bookingResult.data.courtType ? ` (${bookingResult.data.courtType})` : ""}\n` +
-      `📅 *Fecha:* ${getFormattedDate(requestedDate)}\n` +
-      `⏰ *Hora:* ${bookingResult.data.startTime} - ${bookingResult.data.endTime}\n` +
-      `💰 *Precio:* $${bookingResult.data.price}`
-    );
-  }
-
-  if (bookingResult.error === "BUSY") return "🚫 Ese turno ya está ocupado. ¿Te busco otro?";
-  if (bookingResult.error === "INVALID_TIME") return "⚠️ Ese horario no existe en la grilla.";
-  if (bookingResult.error === "PAST_TIME") {
-    return "⏰ Ese horario ya pasó o ya comenzó. Decime otro turno y te ayudo a reservarlo.";
-  }
-  if (bookingResult.error === "CANCHA_NOT_FOUND") {
-    return "⚠️ No encontré esa cancha. Decime el nombre exacto o te asigno la primera disponible.";
-  }
-  if (bookingResult.error === "SUSPENDED") {
-    return (
-      `🚫 *Tu cuenta está suspendida.*\n\n` +
-      `Has acumulado demasiadas cancelaciones y no podés reservar nuevos turnos por el momento.\n` +
-      `Contactá a la administración del club para regularizar tu situación.`
-    );
-  }
-  if (bookingResult.error === "ALREADY_BOOKED") {
-    return (
-      `ℹ️ Ya tenés una reserva activa para el *${getFormattedDate(requestedDate)}* a las *${bookingResult.data?.startTime || "ese horario"}*.\n\n` +
-      `Si querés otra cancha u otro horario, decime y te ayudo.`
-    );
-  }
-  if (bookingResult.error === "DAILY_LIMIT_REACHED") {
-    const limit = bookingResult?.data?.limit || 0;
-    return `⚠️ Ya alcanzaste el límite de ${limit} reservas para el ${getFormattedDate(requestedDate)}.`;
-  }
-  return "⚠️ Hubo un error técnico al reservar.";
-};
-
-const buildSecondBookingConfirmationText = () =>
-  "Ya tenés una reserva activa. Para continuar sin errores, respondé *CONFIRMAR EXTRA* o *CANCELAR*.";
-
-const DAY_NAMES_ES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
-
-const buildActiveBookingsReply = (bookings = []) => {
-  if (!Array.isArray(bookings) || bookings.length === 0) {
-    return "📭 No encontré reservas vigentes para este número de WhatsApp.";
-  }
-
-  const lines = bookings.map((booking, index) => {
-    const timeText = booking.endTime
-      ? `${booking.startTime} - ${booking.endTime}`
-      : booking.startTime;
-
-    if (booking.type === "fixed") {
-      const dayName = DAY_NAMES_ES[booking.dayOfWeek] || "?";
-      return (
-        `${index + 1}) 📌 ${booking.courtName}\n` +
-        `   🔁 Todos los ${dayName}\n` +
-        `   ⏰ ${timeText}`
-      );
-    }
-
-    const dateText = getFormattedDate(booking.date);
-    return (
-      `${index + 1}) 📅 ${dateText}\n` +
-      `   ⏰ ${timeText}\n` +
-      `   📌 ${booking.courtName}`
-    );
-  });
-
-  return `🎾 *Estas son tus reservas vigentes:*\n\n${lines.join("\n\n")}`;
-};
 
 const buildBookingDraftSummaryReply = async ({
   companyId = null,
@@ -577,152 +413,6 @@ const buildAvailabilityResponse = async ({
   };
 };
 
-const parseAttendanceAnswer = (value = "") => {
-  const text = normalizeLooseText(value);
-  const yesSet = new Set(["1", "si asisto"]);
-  const noSet = new Set(["2", "no asisto"]);
-
-  if (yesSet.has(text)) return "YES";
-  if (noSet.has(text)) return "NO";
-  return null;
-};
-
-const buildAttendanceOptionsOnlyReply = () =>
-  "Para este turno solo puedo recibir una opción:\n1) SI ASISTO\n2) NO ASISTO";
-
-const CONCRETE_RESPONSE_TIMEOUT_MS = 3 * 60 * 1000;
-const ALLOWED_AI_ACTIONS = new Set([
-  "SERVICE_DEGRADED",
-  "INVALID_TIME_INPUT",
-  "CREATE_BOOKING",
-  "CHECK_AVAILABILITY",
-  "LIST_ACTIVE_BOOKINGS",
-  "AWAIT_COURT_SELECTION",
-  "CANCEL_BOOKING",
-  "FIXED_TURN_REQUEST",
-]);
-
-const parseStrictYesNoAnswer = (value = "") => {
-  const text = normalizeLooseText(value);
-  if (!text) return null;
-
-  const yesValues = new Set(["si", "si.", "s", "yes"]);
-  const noValues = new Set(["no", "n"]);
-
-  if (yesValues.has(text)) return "YES";
-  if (noValues.has(text)) return "NO";
-  return null;
-};
-
-const parseStrictCancel = (value = "") => {
-  const text = normalizeLooseText(value);
-  if (!text) return false;
-  return /\bcancel(ar|ame|a|ado|o)?\b/.test(text) || /\banul(ar|o|ado|ada|a)?\b/.test(text);
-};
-
-const parseStrictOfferConfirmation = (value = "") => {
-  const text = normalizeLooseText(value);
-  if (!text) return false;
-  if (text === "confirmar reserva" || text === "confirmar turno") return true;
-  return isEquivalentConfirmation(text);
-};
-
-const getStrictInputState = (meta = {}) => {
-  if (meta.awaitingAttendanceConfirmation && meta.attendanceBookingId) {
-    return "ATTENDANCE_CONFIRMATION";
-  }
-  if (meta.awaitingBookingClientNameConfirmation) {
-    return "NAME_CONFIRMATION";
-  }
-  if (meta.awaitingFullNameForBooking) {
-    return "FULL_NAME_CAPTURE";
-  }
-  if (
-    meta.awaitingExtraBookingConfirmation &&
-    meta.pendingBooking?.dateStr &&
-    meta.pendingBooking?.timeStr
-  ) {
-    return "EXTRA_CONFIRMATION";
-  }
-  if (Array.isArray(meta.pendingBookingDrafts) && meta.pendingBookingDrafts.length > 0) {
-    return "DRAFT_CONFIRMATION";
-  }
-  if (meta.pendingBookingOffer?.dateStr && meta.pendingBookingOffer?.timeStr) {
-    return "OFFER_CONFIRMATION";
-  }
-  return null;
-};
-
-const isAllowedInputForStrictState = (value = "", state = null, meta = {}) => {
-  if (!state) return true;
-  const text = normalizeLooseText(value);
-  if (!text) return false;
-
-  if (state === "ATTENDANCE_CONFIRMATION") {
-    return Boolean(parseAttendanceAnswer(value));
-  }
-  if (state === "NAME_CONFIRMATION") {
-    return Boolean(parseStrictYesNoAnswer(value));
-  }
-  if (state === "FULL_NAME_CAPTURE") {
-    return parseStrictCancel(value) || Boolean(extractFullNameFromMessage(value));
-  }
-  if (state === "EXTRA_CONFIRMATION") {
-    return parseStrictCancel(value) || text === "confirmar extra";
-  }
-  if (state === "DRAFT_CONFIRMATION") {
-    const draftCount = Array.isArray(meta.pendingBookingDrafts)
-      ? meta.pendingBookingDrafts.length
-      : 0;
-    return parseStrictCancel(value) || Boolean(parseStrictDraftConfirmation(value, draftCount));
-  }
-  if (state === "OFFER_CONFIRMATION") {
-    return parseStrictCancel(value) || parseStrictOfferConfirmation(value);
-  }
-  return true;
-};
-
-const buildStrictStateInvalidInputReply = (state = null, meta = {}) => {
-  if (state === "ATTENDANCE_CONFIRMATION") {
-    return buildAttendanceOptionsOnlyReply();
-  }
-  if (state === "NAME_CONFIRMATION") {
-    return "Para continuar, respondé únicamente *SI* o *NO*.";
-  }
-  if (state === "FULL_NAME_CAPTURE") {
-    return (
-      "Para continuar con tu reserva, enviame solo tu *nombre completo* (ej: *Juan Pérez*) " +
-      "o escribí *CANCELAR*."
-    );
-  }
-  if (state === "EXTRA_CONFIRMATION") {
-    return "Para continuar, respondé exactamente *CONFIRMAR EXTRA* o *CANCELAR*.";
-  }
-  if (state === "DRAFT_CONFIRMATION") {
-    const draftCount = Array.isArray(meta.pendingBookingDrafts)
-      ? meta.pendingBookingDrafts.length
-      : 0;
-    return draftCount > 1
-      ? "Para continuar, respondé *CONFIRMAR TODO*, *CONFIRMAR A*/*B*... o *CANCELAR*."
-      : "Para continuar, confirmá con *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*; o cancelá con *CANCELAR*.";
-  }
-  if (state === "OFFER_CONFIRMATION") {
-    return "Para continuar, confirmá con *SI*, *OK*, *DALE* o *CONFIRMAR RESERVA*; o cancelá con *CANCELAR*.";
-  }
-  return "No pude procesar ese mensaje. Probá de nuevo con una instrucción concreta.";
-};
-
-const isAwaitingConcreteAnswer = (meta = {}) =>
-  Boolean(
-    meta.awaitingAttendanceConfirmation ||
-      meta.awaitingFullNameForBooking ||
-      meta.awaitingBookingClientNameConfirmation ||
-      meta.awaitingExtraBookingConfirmation ||
-      (Array.isArray(meta.pendingBookingDrafts) &&
-        meta.pendingBookingDrafts.length > 0) ||
-      (meta.pendingBookingOffer?.dateStr && meta.pendingBookingOffer?.timeStr),
-  );
-
 const stampConcreteAnswerDeadline = (sessionId, meta = {}, extraMeta = {}) =>
   sessionService.updateMeta(sessionId, {
     ...extraMeta,
@@ -735,119 +425,6 @@ const clearConcreteAnswerDeadline = (sessionId, extraMeta = {}) =>
     ...extraMeta,
     concreteAnswerRequestedAt: null,
   });
-
-const auditSecurityEvent = ({
-  companyId = null,
-  chatId = "",
-  sessionId = "",
-  event = "UNKNOWN",
-  reason = "",
-  userMessage = "",
-  meta = {},
-}) => {
-  const payload = {
-    ts: new Date().toISOString(),
-    event,
-    reason,
-    companyId: companyId || "global",
-    chatId: String(chatId || ""),
-    sessionId: String(sessionId || ""),
-    messagePreview: String(userMessage || "").slice(0, 180),
-    ...meta,
-  };
-  console.warn(`[BotSecurity][${companyId || "global"}] ${JSON.stringify(payload)}`);
-};
-
-const enforceIncomingRateLimit = ({
-  sessionId = "",
-  companyId = null,
-  chatId = "",
-  userMessage = "",
-  isControlMessage = false,
-}) => {
-  const now = Date.now();
-  const safeWindowMs = Number.isFinite(INCOMING_RATE_WINDOW_MS)
-    ? Math.max(10 * 1000, INCOMING_RATE_WINDOW_MS)
-    : 60 * 1000;
-  const safeMaxMessages = Number.isFinite(INCOMING_RATE_MAX_MESSAGES)
-    ? Math.max(4, INCOMING_RATE_MAX_MESSAGES)
-    : 14;
-  const safeMaxControlMessages = Number.isFinite(INCOMING_RATE_MAX_CONTROL_MESSAGES)
-    ? Math.max(2, INCOMING_RATE_MAX_CONTROL_MESSAGES)
-    : 8;
-
-  const previous = incomingRateState.get(sessionId);
-  const bucket =
-    previous && now - previous.windowStart < safeWindowMs
-      ? previous
-      : { windowStart: now, totalCount: 0, controlCount: 0 };
-
-  bucket.totalCount += 1;
-  if (isControlMessage) bucket.controlCount += 1;
-
-  incomingRateState.set(sessionId, bucket);
-  if (incomingRateState.size > 5000) {
-    for (const [key, value] of incomingRateState.entries()) {
-      if (now - Number(value.windowStart || 0) > safeWindowMs * 3) {
-        incomingRateState.delete(key);
-      }
-    }
-  }
-
-  if (bucket.totalCount > safeMaxMessages || bucket.controlCount > safeMaxControlMessages) {
-    const waitSeconds = Math.max(
-      1,
-      Math.ceil((safeWindowMs - (now - bucket.windowStart)) / 1000),
-    );
-    auditSecurityEvent({
-      companyId,
-      chatId,
-      sessionId,
-      event: "RATE_LIMIT_BLOCKED",
-      reason:
-        bucket.controlCount > safeMaxControlMessages
-          ? "too_many_control_messages"
-          : "too_many_messages",
-      userMessage,
-      meta: {
-        waitSeconds,
-        totalCount: bucket.totalCount,
-        controlCount: bucket.controlCount,
-      },
-    });
-    return {
-      blocked: true,
-      reply:
-        `⚠️ Estoy recibiendo demasiados mensajes seguidos para procesar sin errores.\n` +
-        `Esperá *${waitSeconds}s* y enviá un solo mensaje concreto (ej: *hoy 20:00* o *CONFIRMAR RESERVA*).`,
-    };
-  }
-
-  return { blocked: false, reply: null };
-};
-
-const enforceStrictQuestionFlowReply = (rawReply = "") => {
-  const reply = String(rawReply || "").trim();
-  if (!reply) return reply;
-
-  const normalized = normalizeSpanishText(reply);
-  if (
-    /nombre[^.?!\n]*(fecha|hora)|(?:fecha|hora)[^.?!\n]*nombre/.test(normalized)
-  ) {
-    return "Antes de continuar, pasame tu *nombre completo* (ej: *Juan Pérez*).";
-  }
-  if (/fecha[^.?!\n]*hora|hora[^.?!\n]*fecha/.test(normalized)) {
-    return "Antes de continuar, decime solo la *fecha* del turno (ej: *hoy*, *mañana* o *2026-04-07*).";
-  }
-
-  const questionMarks = (reply.match(/\?/g) || []).length;
-  if (questionMarks <= 1) return reply;
-
-  const firstQuestionMatch = reply.match(/[\s\S]*?\?/);
-  const firstQuestion = firstQuestionMatch?.[0]?.trim();
-  if (!firstQuestion) return reply;
-  return `${firstQuestion}\n\nRespondé eso y avanzamos paso a paso.`;
-};
 
 const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
   try {
