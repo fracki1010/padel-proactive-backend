@@ -1,3 +1,7 @@
+const { normalizeNameText } = require('./messageSanitization');
+const { isEquivalentConfirmation } = require('../../utils/conversationGuardrails');
+const { stripUrlsFromText } = require('../../utils/stripUrlsFromText');
+
 const normalizeUnicode = (value = "") => String(value || "").normalize("NFC");
 
 const normalizeSpaces = (value = "") =>
@@ -192,7 +196,91 @@ const extractPersonName = (text = "") => {
   };
 };
 
+const isLikelyFullName = (value = "") => {
+  const clean = normalizeNameText(value);
+  const parts = clean.split(" ").filter(Boolean);
+  if (parts.length < 2) return false;
+  return parts.every((part) => /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}$/.test(part));
+};
+
+const isPlaceholderName = (value = "") => {
+  const normalized = normalizeSpanishText(value)
+    .replace(/[^a-z\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const placeholders = new Set([
+    "cliente",
+    "cliente desconocido",
+    "nombre apellido",
+    "socio",
+    "invitado",
+  ]);
+  return placeholders.has(normalized);
+};
+
+const isNonNameReply = (value = "") => {
+  const normalized = normalizeSpanishText(value)
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return true;
+
+  const blockedPhrases = [
+    "si",
+    "si por favor",
+    "por favor",
+    "dale",
+    "ok",
+    "okay",
+    "oka",
+    "listo",
+    "de una",
+    "confirmo",
+    "confirmado",
+    "reservalo",
+    "reserva",
+    "hazlo",
+    "hace la reserva",
+    "quiero reservar",
+    "quiero una cancha",
+    "cancelar",
+    "confirmar",
+    "confirmar reserva",
+    "confirmar turno",
+    "confirmar todo",
+    "confirmar extra",
+  ];
+
+  if (blockedPhrases.includes(normalized)) return true;
+  if (
+    /^confirmar(?:\s+(?:reserva|turno|todo|extra|[a-z]))?$/.test(normalized) ||
+    /^(cancelar|cancelo|cancelado)$/.test(normalized)
+  ) {
+    return true;
+  }
+
+  return isEquivalentConfirmation(normalized);
+};
+
+const extractFullNameFromMessage = (rawMessage, _aiCandidate = "") => {
+  const textForName = stripUrlsFromText(rawMessage);
+  const parsed = extractPersonName(textForName);
+  if (!parsed?.isValid) return null;
+  return parsed.value;
+};
+
+const isValidClientName = (value = "") => {
+  if (isPlaceholderName(value)) return false;
+  return Boolean(extractPersonName(value)?.isValid);
+};
+
 module.exports = {
   extractPersonName,
   normalizeSpanishText,
+  isLikelyFullName,
+  isPlaceholderName,
+  isNonNameReply,
+  extractFullNameFromMessage,
+  isValidClientName,
 };
