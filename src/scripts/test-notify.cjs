@@ -4,8 +4,8 @@ const axios = require("axios");
 
 // Configuración
 const API_URL = "http://localhost:3000/api/notifications/send-test";
-const ADMIN_TOKEN =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5YjZjNWVkOWY5NDI5MDExYjU2OGU3ZiIsInVzZXJuYW1lIjoiYWRtaW4iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE3NzM1ODY4MjYsImV4cCI6MTc3MzY3MzIyNn0.JmlLvtQTFUE4XCvaToxiPYb6ONyYa96ZRPbbacezwDs"; // Necesitas un token válido de admin
+// Necesitas un token válido de admin — provéelo vía env ADMIN_TOKEN
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 
 async function notify() {
   try {
