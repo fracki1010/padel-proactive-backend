@@ -22,6 +22,7 @@ const {
   parseGlobalInterruptIntent,
   shouldBlockRejectedSlotReattempt,
   isRejectedSlotAlternativeRequest,
+  parseConcreteAlternativeChoice,
   resolveSafeBotReply,
   buildRejectedBookingAttempt,
 } = require("../utils/conversationGuardrails");
@@ -53,8 +54,12 @@ const {
   normalizeLooseText,
   sanitizeIncomingUserMessage,
   sanitizeModelOnlyMessage,
+  safeModelTextReply,
   isPromptInjectionAttempt,
 } = require("../whatsapp/domain/messageSanitization");
+const {
+  extractJSON,
+} = require("../whatsapp/domain/extractModelJson");
 const {
   getTodayIsoArgentina,
   normalizeTimeString,
@@ -81,26 +86,6 @@ const {
   hasDirectBookingIntent,
   hasBookingControlKeywords,
 } = require("../whatsapp/domain/intentDetection");
-
-// --- FUNCIÓN HELPER PARA EXTRAER JSON ---
-// Busca cualquier cosa que parezca un objeto JSON {...} dentro del texto
-const extractJSON = (text) => {
-  try {
-    // 1. Intento directo
-    return JSON.parse(text);
-  } catch (e) {
-    // 2. Buscar patrón { ... } ignorando lo que haya fuera
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        return JSON.parse(match[0]);
-      } catch (e2) {
-        return null; // No es un JSON válido
-      }
-    }
-    return null;
-  }
-};
 
 const TRANSACTIONAL_MODE_ENABLED =
   String(process.env.WHATSAPP_TRANSACTIONAL_MODE || "true")
@@ -481,6 +466,7 @@ const buildAvailabilityResponse = async ({
   availability,
   modePrefix = "",
   courtName = null,
+  ordinalIndex = null,
 }) => {
   const dayPeriod = extractDayPeriodFromMessage(userMessage);
   const periodLabel = getDayPeriodLabel(dayPeriod);
@@ -666,7 +652,54 @@ const buildAvailabilityResponse = async ({
     ? filterSlotsByPeriod(availability.slots, dayPeriod)
     : availability.slots;
 
-  if (!slotsToShow.length) {
+  const isCourtTypeFilter = courtName && courtName !== "INDIFERENTE";
+  const countForCourtType = (slot) =>
+    slot.courtTypes
+      ? (slot.courtTypes.find((ct) => ct.type === courtName)?.count ?? 0)
+      : slot.availableCourts;
+  const visibleSlots = isCourtTypeFilter
+    ? slotsToShow.filter((s) => countForCourtType(s) > 0)
+    : slotsToShow;
+
+  // Elección ordinal ("la primera", "la 2"): se ofrece directamente el slot elegido
+  // en lugar de volver a listar todo (recuperación determinística post-rechazo).
+  if (ordinalIndex !== null && ordinalIndex >= 0) {
+    const chosen = visibleSlots[ordinalIndex];
+    if (!chosen) {
+      return {
+        replyText:
+          `${prefix}No encontré esa opción.` +
+          (visibleSlots.length
+            ? `\nTe paso los horarios libres:\n${visibleSlots.flatMap(formatSlotLines).join("\n")}`
+            : " No me quedan horarios disponibles para esa fecha."),
+        pendingBookingOffer: null,
+        rejectedBookingAttempt: null,
+      };
+    }
+    return {
+      replyText:
+        `${prefix}✅ Te ofrezco el *${getFormattedDate(requestedDate)} a las ${chosen.time}*` +
+        `${isCourtTypeFilter ? ` en cancha *${courtName.toLowerCase()}*` : ""}.\n` +
+        `💰 Precio: $${chosen.price}\n\n_¿Te lo reservo?_`,
+      pendingBookingOffer: {
+        courtName: courtName || "INDIFERENTE",
+        dateStr: requestedDate,
+        timeStr: chosen.time,
+        createdAt: Date.now(),
+      },
+      rejectedBookingAttempt: null,
+    };
+  }
+
+  if (!visibleSlots.length) {
+    if (isCourtTypeFilter) {
+      return {
+        replyText:
+          `${prefix}🚫 No tengo cancha *${courtName.toLowerCase()}* disponible el ${getFormattedDate(requestedDate)}.`,
+        pendingBookingOffer: null,
+        rejectedBookingAttempt: null,
+      };
+    }
     if (dayPeriod) {
       return {
         replyText:
@@ -682,11 +715,12 @@ const buildAvailabilityResponse = async ({
     };
   }
 
-  const lista = slotsToShow.flatMap(formatSlotLines).join("\n");
+  const lista = visibleSlots.flatMap(formatSlotLines).join("\n");
   const periodTitle = dayPeriod ? ` en la ${periodLabel}` : "";
+  const courtTitle = isCourtTypeFilter ? ` en cancha *${courtName.toLowerCase()}*` : "";
   return {
     replyText:
-      `${prefix}📅 *Libres para el ${getFormattedDate(requestedDate)}${periodTitle}:*\n\n${lista}\n\n_¿Cuál te reservo?_`,
+      `${prefix}📅 *Libres para el ${getFormattedDate(requestedDate)}${courtTitle}${periodTitle}:*\n\n${lista}\n\n_¿Cuál te reservo?_`,
     pendingBookingOffer: null,
     rejectedBookingAttempt: null,
   };
@@ -2199,24 +2233,59 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     }
 
     // Recuperación determinística post-rechazo: si el usuario pide alternativas tras un
-    // INVALID_TIME ("cuál está disponible", "dame otro horario") y el análisis
+    // INVALID_TIME ("cuál está disponible", "dame otro horario") o elige UNA opción
+    // concreta de la lista ("17:00", "techada", "la primera"), y el análisis
     // determinístico no capturó la fecha del intento rechazado, forzamos
-    // CHECK_AVAILABILITY con esa fecha en lugar de caer a la IA (que puede devolver
-    // vacío y dejar al bot mudo) o responder con la fecha de hoy por defecto.
+    // CHECK_AVAILABILITY con la fecha en sesión en lugar de caer a la IA (que puede
+    // devolver JSON truncado/malformado y filtrarlo crudo al usuario).
     const userAskedDate = extractDateFromMessage(userMessage);
-    if (
-      TRANSACTIONAL_MODE_ENABLED &&
-      !forcedActionFromState &&
-      !userAskedDate &&
-      isRejectedSlotAlternativeRequest(userMessage) &&
-      sessionMeta.lastRejectedBookingAttempt?.dateStr
-    ) {
-      parsedData = {
-        action: "CHECK_AVAILABILITY",
-        date: sessionMeta.lastRejectedBookingAttempt.dateStr,
-        time: null,
-        source: "rejected_slot_alternatives",
-      };
+    const recoveryDate =
+      sessionMeta.lastRejectedBookingAttempt?.dateStr ||
+      (sessionMeta.lastAvailabilityDate &&
+      isValidIsoDate(sessionMeta.lastAvailabilityDate)
+        ? sessionMeta.lastAvailabilityDate
+        : null);
+    const concreteChoice = recoveryDate
+      ? parseConcreteAlternativeChoice(userMessage)
+      : null;
+
+    if (TRANSACTIONAL_MODE_ENABLED && !forcedActionFromState && !userAskedDate) {
+      if (concreteChoice && recoveryDate) {
+        if (concreteChoice.type === "time") {
+          parsedData = {
+            action: "CHECK_AVAILABILITY",
+            date: recoveryDate,
+            time: concreteChoice.value,
+            source: "concrete_slot_choice",
+          };
+        } else if (concreteChoice.type === "court") {
+          parsedData = {
+            action: "CHECK_AVAILABILITY",
+            date: recoveryDate,
+            time: null,
+            courtName: concreteChoice.value,
+            source: "concrete_court_choice",
+          };
+        } else if (concreteChoice.type === "ordinal") {
+          parsedData = {
+            action: "CHECK_AVAILABILITY",
+            date: recoveryDate,
+            time: null,
+            ordinalIndex: concreteChoice.index,
+            source: "concrete_ordinal_choice",
+          };
+        }
+      } else if (
+        isRejectedSlotAlternativeRequest(userMessage) &&
+        sessionMeta.lastRejectedBookingAttempt?.dateStr
+      ) {
+        parsedData = {
+          action: "CHECK_AVAILABILITY",
+          date: sessionMeta.lastRejectedBookingAttempt.dateStr,
+          time: null,
+          source: "rejected_slot_alternatives",
+        };
+      }
     }
 
     if (!parsedData) {
@@ -2228,7 +2297,20 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       parsedData = extractJSON(aiResponseRaw);
     }
 
+    // P0 (fuga de JSON crudo): el JSON de decisión del modelo NUNCA debe terminar
+    // como texto plano de reply.
+    //  - JSON válido con acción no permitida (ej. {"action":"CHAT","message":...}):
+    //    se rescata el mensaje humano si existe; si no, se descarta.
+    //  - JSON-ish no parseable (truncado/malformado): extractJSON devuelve el
+    //    centinela {__unparseable:true}; se descarta y la rama de texto crudo
+    //    responderá con el nudge seguro.
     if (parsedData?.action && !ALLOWED_AI_ACTIONS.has(parsedData.action)) {
+      if (typeof parsedData.message === "string" && parsedData.message.trim()) {
+        parsedData = { message: parsedData.message.trim() };
+      } else {
+        parsedData = null;
+      }
+    } else if (parsedData && parsedData.__unparseable) {
       parsedData = null;
     }
 
@@ -2548,6 +2630,10 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           userMessage,
           availability,
           courtName: parsedData.courtName || null,
+          ordinalIndex:
+            typeof parsedData.ordinalIndex === "number"
+              ? parsedData.ordinalIndex
+              : null,
         });
         replyText = availabilityResponse.replyText;
         sessionService.updateMeta(sessionId, {
@@ -2811,13 +2897,11 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           "Perfecto. Ya le aviso al admin para que gestione ese *turno fijo* y te confirme por acá.";
       } else {
         sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
-        // Limpiamos posibles backticks de markdown por si acaso
-        replyText = sanitizeModelOnlyMessage(
-          aiResponseRaw
-            .replace(/```json/g, "")
-            .replace(/```/g, "")
-            .trim(),
-        );
+        // P0 (fuga de JSON crudo): nunca usar el texto del modelo como reply si
+        // parece un payload JSON (truncado/malformado). safeModelTextReply devuelve
+        // "" en ese caso y resolveSafeBotReply responde con el nudge seguro; así el
+        // bot nunca filtra JSON interno ni queda mudo.
+        replyText = safeModelTextReply(aiResponseRaw);
       }
     }
 

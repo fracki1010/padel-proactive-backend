@@ -2,6 +2,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const { handleIncomingMessage } = require("../handlers/messageHandler");
 const { getGroqKeyPoolStats } = require("../services/groqService");
+const { sanitizeOutgoingReply } = require("../utils/conversationGuardrails");
 const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
@@ -69,7 +70,12 @@ router.post("/whatsapp/incoming", async (req, res) => {
       companyId,
     });
 
-    const messageToSend = extractReplyMessage(responseRaw).trim();
+    // P0 (guarda de salida): cualquier reply que arranque como payload JSON crudo
+    // (truncado/malformado que escapó del handler) se reemplaza por el nudge seguro.
+    // Defensa en profundidad: nunca se encola JSON interno hacia WhatsApp.
+    const messageToSend = sanitizeOutgoingReply(
+      extractReplyMessage(responseRaw).trim(),
+    );
 
     if (!messageToSend) {
       return res.status(200).json({
@@ -126,3 +132,4 @@ router.get("/groq/key-pool", async (req, res) => {
 });
 
 module.exports = router;
+module.exports.extractReplyMessage = extractReplyMessage;

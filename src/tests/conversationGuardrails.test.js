@@ -7,8 +7,11 @@ const {
   shouldBlockRejectedSlotReattempt,
   shouldAllowStrictStateInterrupt,
   isRejectedSlotAlternativeRequest,
+  parseConcreteAlternativeChoice,
+  sanitizeOutgoingReply,
   resolveSafeBotReply,
   buildRejectedBookingAttempt,
+  SAFE_FALLBACK_REPLY,
 } = require("../utils/conversationGuardrails");
 
 test("acepta confirmaciones equivalentes configuradas para UX humana", () => {
@@ -175,4 +178,102 @@ test("buildRejectedBookingAttempt persiste intento rechazado solo ante INVALID_T
     }),
     null,
   );
+});
+
+test("parseConcreteAlternativeChoice detecta elección concreta de hora", () => {
+  assert.deepEqual(parseConcreteAlternativeChoice("17:00"), {
+    type: "time",
+    value: "17:00",
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("17"), {
+    type: "time",
+    value: "17:00",
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("17hs"), {
+    type: "time",
+    value: "17:00",
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("las 17"), {
+    type: "time",
+    value: "17:00",
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("a las 5"), {
+    type: "time",
+    value: "17:00",
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("5:30"), {
+    type: "time",
+    value: "05:30",
+  });
+});
+
+test("parseConcreteAlternativeChoice detecta elección ordinal", () => {
+  assert.deepEqual(parseConcreteAlternativeChoice("la primera"), {
+    type: "ordinal",
+    index: 0,
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("el primero"), {
+    type: "ordinal",
+    index: 0,
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("la segunda"), {
+    type: "ordinal",
+    index: 1,
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("la 2"), {
+    type: "ordinal",
+    index: 1,
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("la tercera"), {
+    type: "ordinal",
+    index: 2,
+  });
+});
+
+test("parseConcreteAlternativeChoice detecta elección de cancha", () => {
+  assert.deepEqual(parseConcreteAlternativeChoice("techada"), {
+    type: "court",
+    value: "techada",
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("la techada"), {
+    type: "court",
+    value: "techada",
+  });
+  assert.deepEqual(parseConcreteAlternativeChoice("descubierta"), {
+    type: "court",
+    value: "descubierta",
+  });
+});
+
+test("parseConcreteAlternativeChoice no dispara en charla casual o pedidos con fecha", () => {
+  assert.equal(parseConcreteAlternativeChoice("hola"), null);
+  assert.equal(parseConcreteAlternativeChoice("gracias"), null);
+  assert.equal(parseConcreteAlternativeChoice("mañana 20:00"), null);
+  assert.equal(parseConcreteAlternativeChoice("no entendí"), null);
+  assert.equal(parseConcreteAlternativeChoice(""), null);
+});
+
+test("isRejectedSlotAlternativeRequest cubre elecciones concretas post-rechazo", () => {
+  assert.equal(isRejectedSlotAlternativeRequest("17:00"), true);
+  assert.equal(isRejectedSlotAlternativeRequest("la primera"), true);
+  assert.equal(isRejectedSlotAlternativeRequest("techada"), true);
+});
+
+test("sanitizeOutgoingReply reemplaza payloads JSON crudos con nudge seguro", () => {
+  assert.equal(
+    sanitizeOutgoingReply('{"action":"CREATE_BOOKING","courtName":"Techada"}'),
+    SAFE_FALLBACK_REPLY,
+  );
+  assert.equal(sanitizeOutgoingReply('["a","b"]'), SAFE_FALLBACK_REPLY);
+  assert.equal(sanitizeOutgoingReply('  {"truncado":'), SAFE_FALLBACK_REPLY);
+  assert.equal(
+    sanitizeOutgoingReply("hola que tal"),
+    "hola que tal",
+  );
+  assert.equal(
+    sanitizeOutgoingReply("Tengo {2} canchas libres a las 17:00"),
+    "Tengo {2} canchas libres a las 17:00",
+  );
+  assert.equal(sanitizeOutgoingReply(""), "");
+  assert.equal(sanitizeOutgoingReply("   \n"), "");
 });

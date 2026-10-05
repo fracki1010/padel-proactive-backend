@@ -46,8 +46,11 @@ let groqRoundRobinCursor = 0;
 
 const PRIMARY_MODEL = process.env.GROQ_MODEL_PRIMARY || "openai/gpt-oss-120b";
 const FALLBACK_MODEL = process.env.GROQ_MODEL_FALLBACK || "openai/gpt-oss-20b";
-const PRIMARY_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 220);
-const FALLBACK_MAX_TOKENS = Number(process.env.GROQ_FALLBACK_MAX_TOKENS || 140);
+// P0 (anti-truncamiento): el payload JSON de decisión (~150 tokens en CREATE_BOOKING)
+// se truncaba con 220/140 y el bot filtraba JSON crudo a WhatsApp. GPT-OSS soporta
+// hasta 65k tokens de salida en Groq; 320/256 son seguros y cubren el payload completo.
+const PRIMARY_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 320);
+const FALLBACK_MAX_TOKENS = Number(process.env.GROQ_FALLBACK_MAX_TOKENS || 256);
 const MAX_HISTORY_MESSAGES = Number(process.env.GROQ_MAX_HISTORY || 8);
 const MAX_BUSINESS_CONTEXT_CHARS = Number(
   process.env.GROQ_MAX_BUSINESS_CONTEXT_CHARS || 2200,
@@ -595,4 +598,8 @@ const getChatResponse = async (
 module.exports = {
   getChatResponse,
   getGroqKeyPoolStats,
+  PRIMARY_MODEL,
+  FALLBACK_MODEL,
+  PRIMARY_MAX_TOKENS,
+  FALLBACK_MAX_TOKENS,
 };

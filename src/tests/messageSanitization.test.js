@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const {
   sanitizeIncomingUserMessage,
   sanitizeModelOnlyMessage,
+  safeModelTextReply,
   normalizeSpanishText,
   normalizeNameText,
   normalizeLooseText,
@@ -40,4 +41,35 @@ test('sanitizeModelOnlyMessage blocks confirm/cancel claims and passes through o
   assert.match(sanitizeModelOnlyMessage('turno cancelado'), /Para evitar errores/);
   assert.strictEqual(sanitizeModelOnlyMessage('hola que tal'), 'hola que tal');
   assert.strictEqual(sanitizeModelOnlyMessage(''), '');
+});
+
+test('safeModelTextReply nunca devuelve JSON crudo del modelo', () => {
+  assert.strictEqual(
+    safeModelTextReply('{"action":"CREATE_BOOKING","courtName":"Techada"}'),
+    '',
+  );
+  assert.strictEqual(
+    safeModelTextReply('```json\n{"action":"CREATE_BOOKING"}\n```'),
+    '',
+  );
+  assert.strictEqual(safeModelTextReply('["a","b"]'), '');
+  assert.strictEqual(
+    safeModelTextReply('truncado {"action":"CREATE_BOOKING","clientName":"Ju'),
+    '',
+  );
+  assert.strictEqual(
+    safeModelTextReply('El sistema dijo: {"message":"hola"} y nada más'),
+    '',
+  );
+});
+
+test('safeModelTextReply deja pasar texto plano y mantiene bloqueo de claims', () => {
+  assert.strictEqual(safeModelTextReply('hola que tal'), 'hola que tal');
+  assert.strictEqual(
+    safeModelTextReply('Perfecto, te paso los horarios'),
+    'Perfecto, te paso los horarios',
+  );
+  assert.match(safeModelTextReply('reserva confirmada'), /Para evitar errores/);
+  assert.strictEqual(safeModelTextReply(''), '');
+  assert.strictEqual(safeModelTextReply('   \n'), '');
 });
