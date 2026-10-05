@@ -10,6 +10,11 @@ const {
 const {
   getWhatsappIdByPhone,
 } = require("../utils/getWhatsappIdByPhone");
+const {
+  buildVerifiedUserIdSet,
+  isUserVerified,
+  shouldBlockVerifiedPhoneEdit,
+} = require("../services/clientVerification.service");
 const toIsoDateOnly = (value) => {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value || "");
@@ -30,7 +35,11 @@ const companyScope = (req, companyId) => {
   return { companyId: req.user?.companyId || null };
 };
 
-const enrichUserWithReliability = (user, trustedClientConfirmationCount = 3) => {
+const enrichUserWithReliability = (
+  user,
+  trustedClientConfirmationCount = 3,
+  extra = {},
+) => {
   const source = typeof user?.toObject === "function" ? user.toObject() : user;
   const attendanceConfirmedCount = Number(source?.attendanceConfirmedCount || 0);
   const trustedThreshold = Number(trustedClientConfirmationCount || 3);
@@ -41,6 +50,7 @@ const enrichUserWithReliability = (user, trustedClientConfirmationCount = 3) => 
 
   return {
     ...source,
+    ...extra,
     attendanceConfirmedCount,
     trustedClientConfirmationCount: trustedThreshold,
     confirmationsToBeTrusted,
@@ -48,15 +58,20 @@ const enrichUserWithReliability = (user, trustedClientConfirmationCount = 3) => 
   };
 };
 
-const getUsers = async (req, res) => {
+const getUsers = async (req, res, deps = {}) => {
+  const {
+    UserModel = User,
+    ClientAccountModel = ClientAccount,
+    getTrustedConfirmationCount = getTrustedClientConfirmationCount,
+  } = deps;
   try {
     const companyId = resolveCompanyId(req);
     const trustedClientConfirmationCount =
-      await getTrustedClientConfirmationCount(companyId);
+      await getTrustedConfirmationCount(companyId);
 
     const [users, unlinkedAccounts] = await Promise.all([
-      User.find(companyScope(req, companyId)).sort({ name: 1 }),
-      ClientAccount.find({
+      UserModel.find(companyScope(req, companyId)).sort({ name: 1 }),
+      ClientAccountModel.find({
         ...companyScope(req, companyId),
         linkedUserId: null,
       }),
@@ -79,11 +94,23 @@ const getUsers = async (req, res) => {
       a.name.localeCompare(b.name),
     );
 
+    // Single batched query: which of these Users have a linked ClientAccount.
+    const userIds = users.map((user) => user._id);
+    const linkedAccounts = userIds.length
+      ? await ClientAccountModel.find({
+          ...companyScope(req, companyId),
+          linkedUserId: { $in: userIds },
+        }).select("linkedUserId")
+      : [];
+    const verifiedUserIds = buildVerifiedUserIdSet(linkedAccounts);
+
     res.status(200).json({
       success: true,
       count: combined.length,
       data: combined.map((u) =>
-        enrichUserWithReliability(u, trustedClientConfirmationCount),
+        enrichUserWithReliability(u, trustedClientConfirmationCount, {
+          isVerified: isUserVerified(u, verifiedUserIds),
+        }),
       ),
     });
   } catch (error) {
@@ -91,13 +118,18 @@ const getUsers = async (req, res) => {
   }
 };
 
-const getUserById = async (req, res) => {
+const getUserById = async (req, res, deps = {}) => {
+  const {
+    UserModel = User,
+    ClientAccountModel = ClientAccount,
+    getTrustedConfirmationCount = getTrustedClientConfirmationCount,
+  } = deps;
   try {
     const companyId = resolveCompanyId(req);
     const trustedClientConfirmationCount =
-      await getTrustedClientConfirmationCount(companyId);
+      await getTrustedConfirmationCount(companyId);
 
-    const user = await User.findOne({
+    const user = await UserModel.findOne({
       _id: req.params.id,
       ...companyScope(req, companyId),
     }).populate(["fixedTurns.court", "fixedTurns.timeSlot"]);
@@ -108,9 +140,15 @@ const getUserById = async (req, res) => {
         .json({ success: false, error: "Usuario no encontrado" });
     }
 
+    const linkedAccount = await ClientAccountModel.findOne({
+      linkedUserId: user._id,
+    }).select("linkedUserId");
+
     return res.status(200).json({
       success: true,
-      data: enrichUserWithReliability(user, trustedClientConfirmationCount),
+      data: enrichUserWithReliability(user, trustedClientConfirmationCount, {
+        isVerified: Boolean(linkedAccount),
+      }),
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
@@ -164,10 +202,49 @@ const createUser = async (req, res) => {
   }
 };
 
-const updateUser = async (req, res) => {
+const updateUser = async (req, res, deps = {}) => {
+  const {
+    UserModel = User,
+    ClientAccountModel = ClientAccount,
+  } = deps;
   try {
     const companyId = resolveCompanyId(req);
-    const user = await User.findOneAndUpdate(
+
+    const currentUser = await UserModel.findOne({
+      _id: req.params.id,
+      ...companyScope(req, companyId),
+    });
+    if (!currentUser) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Usuario no encontrado" });
+    }
+
+    // A verified client (linked ClientAccount) cannot change its phone number.
+    const hasPhoneField = Object.prototype.hasOwnProperty.call(
+      req.body,
+      "phoneNumber",
+    );
+    if (hasPhoneField) {
+      const linkedAccount = await ClientAccountModel.findOne({
+        linkedUserId: currentUser._id,
+      }).select("linkedUserId");
+      const isVerified = Boolean(linkedAccount);
+      if (
+        shouldBlockVerifiedPhoneEdit({
+          isVerified,
+          currentPhone: currentUser.phoneNumber,
+          nextPhone: req.body.phoneNumber,
+        })
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "El teléfono de un socio verificado no se puede modificar",
+        });
+      }
+    }
+
+    const user = await UserModel.findOneAndUpdate(
       { _id: req.params.id, ...companyScope(req, companyId) },
       req.body,
       { returnDocument: "after", runValidators: true },
