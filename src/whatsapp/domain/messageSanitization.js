@@ -1,6 +1,7 @@
 'use strict';
 
 const { normalizeHomoglyphs } = require('../../utils/normalizeHomoglyphs');
+const { looksLikeJsonPayload } = require('./extractModelJson');
 
 const normalizeSpanishText = (text = "") =>
   String(text)
@@ -57,11 +58,25 @@ const sanitizeModelOnlyMessage = (value = "") => {
   return raw;
 };
 
+// P0 (fuga de JSON crudo): el texto libre del modelo SOLO puede usarse como
+// reply si no parece un payload JSON. Si lo parece (truncado/malformado o con
+// claves "action"/"message"), devuelve "" para que el caller responda con el
+// nudge seguro (resolveSafeBotReply) en vez de filtrar JSON interno al usuario.
+const safeModelTextReply = (value = "") => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (looksLikeJsonPayload(raw)) return "";
+  return sanitizeModelOnlyMessage(
+    raw.replace(/```json/gi, "").replace(/```/g, "").trim(),
+  );
+};
+
 module.exports = {
   normalizeSpanishText,
   normalizeNameText,
   normalizeLooseText,
   sanitizeIncomingUserMessage,
   sanitizeModelOnlyMessage,
+  safeModelTextReply,
   isPromptInjectionAttempt,
 };

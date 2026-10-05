@@ -1,3 +1,7 @@
+'use strict';
+
+const { startsWithJsonObject } = require('../whatsapp/domain/extractModelJson');
+
 const normalizeSpanishText = (text = "") =>
   String(text)
     .toLowerCase()
@@ -115,10 +119,101 @@ const shouldBlockRejectedSlotReattempt = ({
 const REJECTED_SLOT_ALTERNATIVES_PATTERN =
   /(que|cu[aá]l(?:es)?|otr[oa]s?|dame|mostr[aá](?:me|s))\b.*(disponible|libre|opciones?|horarios?|alternativas?)/;
 
+// P0 (elección concreta post-rechazo): cuando la sesión tiene un contexto de
+// disponibilidad (lastRejectedBookingAttempt.dateStr o lastAvailabilityDate) y el
+// usuario elige UNA opción concreta ("17:00", "la primera", "techada"), el bot debe
+// resolverla determinísticamente sin depender de la IA (que puede devolver JSON
+// truncado/malformado y filtrarlo como texto). Devuelve:
+//   { type: "time", value: "HH:mm" } | { type: "court", value } | { type: "ordinal", index } | null
+const parseConcreteAlternativeChoice = (value = "") => {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  // "las 5" / "a las 17" → hora con convención pm para valores ≤ 6
+  const lasMatch = raw.match(/^\s*(?:a\s+)?las\s+(\d{1,2})(?::(\d{2}))?\s*$/i);
+  if (lasMatch) {
+    const hh = Number(lasMatch[1]);
+    const mm = lasMatch[2] ? Number(lasMatch[2]) : 0;
+    const hour24 = hh <= 6 ? hh + 12 : hh;
+    if (hour24 <= 23 && mm <= 59) {
+      return { type: "time", value: `${String(hour24).padStart(2, "0")}:${String(mm).padStart(2, "0")}` };
+    }
+    return null;
+  }
+
+  // "17:00" / "5:30" → hora explícita
+  const colonMatch = raw.match(/^\s*(\d{1,2}):(\d{2})\s*$/);
+  if (colonMatch) {
+    const hh = Number(colonMatch[1]);
+    const mm = Number(colonMatch[2]);
+    if (hh <= 23 && mm <= 59) {
+      return { type: "time", value: `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}` };
+    }
+    return null;
+  }
+
+  // "17hs" / "17 hs" / "5 horas" → hora con sufijo
+  const suffixedMatch = raw.match(/^\s*(\d{1,2})\s*(?:hs|horas?)\s*$/i);
+  if (suffixedMatch) {
+    const hh = Number(suffixedMatch[1]);
+    if (hh <= 23) {
+      return { type: "time", value: `${String(hh).padStart(2, "0")}:00` };
+    }
+    return null;
+  }
+
+  // "17" pelado → hora solo si es inequívoca (7-23); si no, cae a ordinal
+  const bareNumber = raw.match(/^\s*(\d{1,2})\s*$/);
+  if (bareNumber) {
+    const n = Number(bareNumber[1]);
+    if (n >= 7 && n <= 23) {
+      return { type: "time", value: `${String(n).padStart(2, "0")}:00` };
+    }
+  }
+
+  const text = normalizeLooseText(value);
+
+  // "la primera" / "el primero" / "la 2" / "la tercera" → ordinal (0-based)
+  const ORDINAL_INDEX = {
+    primera: 0,
+    primero: 0,
+    "1ra": 0,
+    "1ro": 0,
+    segunda: 1,
+    segundo: 1,
+    "2da": 1,
+    "2do": 1,
+    tercera: 2,
+    tercero: 2,
+    "3ra": 2,
+    "3ro": 2,
+    cuarta: 3,
+    cuarto: 3,
+    "4ta": 3,
+    quinta: 4,
+    quinto: 4,
+    "5ta": 4,
+  };
+  const ordinalMatch = text.match(/^(?:la|el|la opcion|la opción)?\s*(primera|primero|segunda|segundo|tercera|tercero|cuarta|cuarto|quinta|quinto|1ra|1ro|2da|2do|3ra|3ro|4ta|5ta|\d{1,2})\s*$/);
+  if (ordinalMatch) {
+    const key = ordinalMatch[1];
+    const index = ORDINAL_INDEX[key] ?? (/\d{1,2}/.test(key) ? Number(key) - 1 : null);
+    if (index !== null && index >= 0) return { type: "ordinal", index };
+  }
+
+  // "techada" / "la techada" / "descubierta" → tipo de cancha
+  const courtMatch = text.match(/^(?:la|el|cancha)?\s*(techada|descubierta|semi techada|indiferente)\s*$/);
+  if (courtMatch) return { type: "court", value: courtMatch[1] };
+
+  return null;
+};
+
 const isRejectedSlotAlternativeRequest = (value = "") => {
   const text = normalizeLooseText(value);
   if (!text) return false;
-  return REJECTED_SLOT_ALTERNATIVES_PATTERN.test(text);
+  if (REJECTED_SLOT_ALTERNATIVES_PATTERN.test(text)) return true;
+  // P0: elecciones concretas ("17:00", "la primera", "techada") también cuentan
+  return parseConcreteAlternativeChoice(value) !== null;
 };
 
 const SAFE_FALLBACK_REPLY =
@@ -129,6 +224,17 @@ const SAFE_FALLBACK_REPLY =
 const resolveSafeBotReply = (value = "") => {
   const reply = String(value || "").trim();
   if (!reply) return SAFE_FALLBACK_REPLY;
+  return reply;
+};
+
+// P0 (guarda de salida): cualquier reply que arranque como payload JSON crudo
+// (truncado/malformado) se reemplaza por el nudge seguro. Defensa en profundidad:
+// el handler ya no debe producir estos replies, pero esta guarda cubre cualquier
+// ruta futura (por ejemplo respuestas que llegan directo del modelo).
+const sanitizeOutgoingReply = (value = "") => {
+  const reply = String(value || "").trim();
+  if (!reply) return reply;
+  if (startsWithJsonObject(reply)) return SAFE_FALLBACK_REPLY;
   return reply;
 };
 
@@ -152,6 +258,9 @@ module.exports = {
   shouldAllowStrictStateInterrupt,
   shouldBlockRejectedSlotReattempt,
   isRejectedSlotAlternativeRequest,
+  parseConcreteAlternativeChoice,
+  sanitizeOutgoingReply,
   resolveSafeBotReply,
   buildRejectedBookingAttempt,
+  SAFE_FALLBACK_REPLY,
 };
