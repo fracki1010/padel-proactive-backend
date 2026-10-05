@@ -59,6 +59,9 @@ const parseGlobalInterruptIntent = (value = "") => {
   if (
     /(ver disponibilidad|disponibilidad|hay lugar|tenes lugar|tenes algo|horarios disponibles|que horarios hay)/.test(
       text,
+    ) ||
+    /(cual(?:es)? (?:esta|estan) (?:disponible|disponibles|libre|libres)|que (?:esta|hay) (?:disponible|libre)|que horarios? (?:hay|tenes)|tenes algo (?:disponible|libre)|hay (?:opciones?|alternativas))/.test(
+      text,
     )
   ) {
     return { action: "CHECK_AVAILABILITY" };
@@ -105,10 +108,50 @@ const shouldBlockRejectedSlotReattempt = ({
   );
 };
 
+// El usuario pide alternativas tras un rechazo de horario ("cuál está disponible",
+// "dame otro horario", "mostrame opciones"). Requiere ambos grupos: el introductor
+// (que/cuál/otro/dame/mostrame) y el sustantivo objetivo (disponible/libre/opciones/
+// horarios/alternativas), para no dispararse en charla casual ("estoy libre").
+const REJECTED_SLOT_ALTERNATIVES_PATTERN =
+  /(que|cu[aá]l(?:es)?|otr[oa]s?|dame|mostr[aá](?:me|s))\b.*(disponible|libre|opciones?|horarios?|alternativas?)/;
+
+const isRejectedSlotAlternativeRequest = (value = "") => {
+  const text = normalizeLooseText(value);
+  if (!text) return false;
+  return REJECTED_SLOT_ALTERNATIVES_PATTERN.test(text);
+};
+
+const SAFE_FALLBACK_REPLY =
+  "No entendí. Decime qué horario querés (ej: mañana 20:00) o escribí 'disponibilidad'.";
+
+// Garantiza que el bot nunca emite un reply vacío: un mensaje vacío se descarta
+// silenciosamente en el worker (internal.routes.js) y deja al usuario sin respuesta.
+const resolveSafeBotReply = (value = "") => {
+  const reply = String(value || "").trim();
+  if (!reply) return SAFE_FALLBACK_REPLY;
+  return reply;
+};
+
+// Mapea el resultado de createNewBooking a un lastRejectedBookingAttempt, solo cuando
+// el motivo es INVALID_TIME (horario inexistente en la grilla). Así el follow-up
+// "cuál está disponible" puede recuperar la fecha del intento rechazado.
+const buildRejectedBookingAttempt = ({
+  dateStr = "",
+  timeStr = "",
+  bookingResult = null,
+} = {}) => {
+  if (!dateStr || !timeStr) return null;
+  if (bookingResult?.error !== "INVALID_TIME") return null;
+  return { dateStr, timeStr, reason: "INVALID_TIME" };
+};
+
 module.exports = {
   isEquivalentConfirmation,
   parseGlobalInterruptIntent,
   isInterruptibleAction,
   shouldAllowStrictStateInterrupt,
   shouldBlockRejectedSlotReattempt,
+  isRejectedSlotAlternativeRequest,
+  resolveSafeBotReply,
+  buildRejectedBookingAttempt,
 };

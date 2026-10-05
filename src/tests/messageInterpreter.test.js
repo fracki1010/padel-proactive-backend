@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { interpretIncomingMessage, INTENTS } = require("../whatsapp/domain/messageInterpreter");
+const { interpretIncomingMessage, detectIntent, INTENTS } = require("../whatsapp/domain/messageInterpreter");
 const { STATES } = require("../whatsapp/domain/bookingStateMachine");
 
 const now = new Date("2026-04-20T18:00:00.000Z");
@@ -57,4 +57,27 @@ test("mis reservas detecta list active", () => {
 
   assert.equal(result.detectedIntent, INTENTS.LIST_ACTIVE_BOOKINGS);
   assert.equal(result.nextAction.action, "LIST_ACTIVE_BOOKINGS");
+});
+
+test("detectIntent reconoce pedidos escopetados de disponibilidad", () => {
+  const accepted = [
+    "cuál está disponible",
+    "cuál está libre",
+    "qué hay disponible",
+    "qué horarios tenés",
+    "tenés algo libre",
+    "hay opciones",
+  ];
+  for (const text of accepted) {
+    assert.equal(
+      detectIntent(text),
+      INTENTS.CHECK_AVAILABILITY,
+      `Debe detectar: ${text}`,
+    );
+  }
+});
+
+test("detectIntent no false-positive con 'libre' en charla casual", () => {
+  assert.notEqual(detectIntent("estoy libre el jueves"), INTENTS.CHECK_AVAILABILITY);
+  assert.notEqual(detectIntent("hoy me siento libre"), INTENTS.CHECK_AVAILABILITY);
 });
