@@ -3,6 +3,7 @@ const router = express.Router({ mergeParams: true });
 const {
   getClubInfo,
   getAvailability,
+  getAnnouncements,
   sendOtp,
   verifyOtp,
   completeRegistration,
@@ -26,6 +27,9 @@ router.get("/", getClubInfo);
 
 // Disponibilidad para una fecha
 router.get("/availability", getAvailability);
+
+// Avisos vigentes del club (público)
+router.get("/announcements", getAnnouncements);
 
 // Auth de clientes (WhatsApp + OTP)
 router.post("/auth/send-otp", otpRateLimit, sendOtp);
