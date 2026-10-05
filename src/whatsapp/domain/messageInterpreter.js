@@ -72,7 +72,10 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
   if (/\b(mis reservas|que turnos tengo|que tengo reservado|hay alguna reserva a mi nombre)\b/.test(normalized)) {
     return INTENTS.LIST_ACTIVE_BOOKINGS;
   }
-  if (/\b(disponibilidad|horarios disponibles|hay lugar|tenes lugar|ver disponibilidad|que horarios hay)\b/.test(normalized)) {
+  if (
+    /\b(disponibilidad|horarios disponibles|hay lugar|tenes lugar|ver disponibilidad|que horarios hay)\b/.test(normalized) ||
+    /\b(cual(?:es)?\s+(?:esta|estan)\s+(?:disponible|disponibles|libre|libres)|que\s+(?:esta|hay)\s+(?:disponible|libre)|que\s+horarios?\s+(?:hay|tenes)|tenes\s+algo\s+(?:disponible|libre)|hay\s+(?:opciones?|alternativas))\b/.test(normalized)
+  ) {
     return INTENTS.CHECK_AVAILABILITY;
   }
 

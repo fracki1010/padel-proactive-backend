@@ -21,6 +21,9 @@ const {
   isEquivalentConfirmation,
   parseGlobalInterruptIntent,
   shouldBlockRejectedSlotReattempt,
+  isRejectedSlotAlternativeRequest,
+  resolveSafeBotReply,
+  buildRejectedBookingAttempt,
 } = require("../utils/conversationGuardrails");
 const {
   resolveStrictStateTransition,
@@ -1508,6 +1511,16 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       }
 
       const firstSuccessfulDraft = executionResults.find((item) => item.result?.success)?.draft;
+      const rejectedBookingAttempt =
+        executionResults
+          .map((item) =>
+            buildRejectedBookingAttempt({
+              dateStr: item.draft.dateStr,
+              timeStr: item.draft.timeStr,
+              bookingResult: item.result,
+            }),
+          )
+          .find(Boolean) || null;
       sessionService.updateMeta(sessionId, {
         pendingBookingDrafts: null,
         pendingBookingClientName: null,
@@ -1518,6 +1531,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         awaitingBookingClientNameConfirmation: false,
         pendingBookingClientNameCandidate: null,
         concreteAnswerRequestedAt: null,
+        lastRejectedBookingAttempt: rejectedBookingAttempt,
         lastConfirmedBookingSlot: firstSuccessfulDraft
           ? { dateStr: firstSuccessfulDraft.dateStr, timeStr: firstSuccessfulDraft.timeStr, confirmedAt: Date.now() }
           : null,
@@ -1611,6 +1625,11 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           pendingClientName,
           bookingResult,
         );
+        const rejectedBookingAttempt = buildRejectedBookingAttempt({
+          dateStr: pendingBooking.dateStr,
+          timeStr: pendingBooking.timeStr,
+          bookingResult,
+        });
         sessionService.updateMeta(sessionId, {
           awaitingExtraBookingConfirmation: false,
           pendingBooking: null,
@@ -1618,6 +1637,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           pendingBookingOffer: null,
           awaitingFullNameForBooking: false,
           concreteAnswerRequestedAt: null,
+          lastRejectedBookingAttempt: rejectedBookingAttempt,
           lastConfirmedBookingSlot: bookingResult?.success
             ? { dateStr: pendingBooking.dateStr, timeStr: pendingBooking.timeStr, confirmedAt: Date.now() }
             : null,
@@ -1716,6 +1736,11 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           requestedClientName,
           bookingResult,
         );
+        const rejectedBookingAttempt = buildRejectedBookingAttempt({
+          dateStr: pendingBookingOffer.dateStr,
+          timeStr: pendingBookingOffer.timeStr,
+          bookingResult,
+        });
         sessionService.updateMeta(sessionId, {
           pendingBookingOffer: null,
           awaitingFullNameForBooking: false,
@@ -1725,6 +1750,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           awaitingBookingClientNameConfirmation: false,
           pendingBookingClientNameCandidate: null,
           concreteAnswerRequestedAt: null,
+          lastRejectedBookingAttempt: rejectedBookingAttempt,
           lastConfirmedBookingSlot: bookingResult?.success
             ? { dateStr: pendingBookingOffer.dateStr, timeStr: pendingBookingOffer.timeStr, confirmedAt: Date.now() }
             : null,
@@ -2172,6 +2198,27 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         inferDeterministicAction(userMessage);
     }
 
+    // Recuperación determinística post-rechazo: si el usuario pide alternativas tras un
+    // INVALID_TIME ("cuál está disponible", "dame otro horario") y el análisis
+    // determinístico no capturó la fecha del intento rechazado, forzamos
+    // CHECK_AVAILABILITY con esa fecha en lugar de caer a la IA (que puede devolver
+    // vacío y dejar al bot mudo) o responder con la fecha de hoy por defecto.
+    const userAskedDate = extractDateFromMessage(userMessage);
+    if (
+      TRANSACTIONAL_MODE_ENABLED &&
+      !forcedActionFromState &&
+      !userAskedDate &&
+      isRejectedSlotAlternativeRequest(userMessage) &&
+      sessionMeta.lastRejectedBookingAttempt?.dateStr
+    ) {
+      parsedData = {
+        action: "CHECK_AVAILABILITY",
+        date: sessionMeta.lastRejectedBookingAttempt.dateStr,
+        time: null,
+        source: "rejected_slot_alternatives",
+      };
+    }
+
     if (!parsedData) {
       const history = sessionService.getHistory(sessionId);
       aiResponseRaw = await groqService.getChatResponse(history, knownName, {
@@ -2302,9 +2349,27 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
             requestedTime,
           })
         ) {
-          replyText =
-            "Ese horario ya fue rechazado por falta de disponibilidad.\n" +
-            "Decime otro horario y te lo reviso.";
+          // El usuario reintenta el mismo slot rechazado: en vez de solo pedir otro
+          // horario, listamos las alternativas del día rechazado.
+          const availability = await bookingService.getAvailableSlots(
+            requestedDate,
+            { companyId },
+          );
+          const availabilityResponse = await buildAvailabilityResponse({
+            companyId,
+            requestedDate,
+            requestedTime: null,
+            userMessage,
+            availability,
+          });
+          replyText = availabilityResponse.replyText;
+          sessionService.updateMeta(sessionId, {
+            pendingBookingOffer: availabilityResponse.pendingBookingOffer,
+            lastRejectedBookingAttempt: sessionMeta.lastRejectedBookingAttempt || null,
+            concreteAnswerRequestedAt: availabilityResponse.pendingBookingOffer
+              ? Date.now()
+              : null,
+          });
           sessionService.addMessage(sessionId, "assistant", replyText);
           return replyText;
         }
@@ -2760,6 +2825,9 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     if (strictQuestionFlowEnabled) {
       replyText = enforceStrictQuestionFlowReply(replyText);
     }
+    // Nunca emitir un reply vacío: el worker descarta silenciosamente los mensajes
+    // vacíos y el usuario queda sin respuesta (bug "bot mudo").
+    replyText = resolveSafeBotReply(replyText);
     sessionService.addMessage(sessionId, "assistant", replyText);
     return replyText;
   } catch (error) {
