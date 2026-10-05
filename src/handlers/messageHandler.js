@@ -1020,7 +1020,10 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const Company = require("../models/company.model");
         const company = await Company.findById(companyId).select("slug").lean();
         if (company?.slug) {
-          portalLink = `https://padel-proactivb.web.app/reservar/${company.slug}`;
+          const portalBaseUrl =
+            String(process.env.PORTAL_BASE_URL || "").trim().replace(/\/$/, "") ||
+            "https://padexa.online";
+          portalLink = `${portalBaseUrl}/reservar/${company.slug}`;
         }
       }
 
