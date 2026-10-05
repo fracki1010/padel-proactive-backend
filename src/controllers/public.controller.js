@@ -29,6 +29,8 @@ const {
 } = require("../services/clientAuth.service");
 
 const JWT_SECRET = process.env.JWT_SECRET;
+// Duración de la sesión del cliente del portal (default: 1 año).
+const JWT_CLIENT_EXPIRES_IN = process.env.JWT_CLIENT_EXPIRES_IN || "365d";
 
 const TIMEZONE = "America/Argentina/Buenos_Aires";
 
@@ -92,7 +94,7 @@ const signClientToken = (client, companyId) =>
   jwt.sign(
     { id: client._id, email: client.email, companyId, type: "client" },
     JWT_SECRET,
-    { expiresIn: "30d" },
+    { expiresIn: JWT_CLIENT_EXPIRES_IN },
   );
 
 const clientPayload = (client) => ({
