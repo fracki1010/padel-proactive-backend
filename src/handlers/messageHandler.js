@@ -69,7 +69,6 @@ const {
   getNextWeekdayIsoDate,
   extractDateFromMessage,
   extractTimeFromMessage,
-  formatIsoDateAsDayMonthYear,
   toMinutes,
   extractDayPeriodFromMessage,
   getDayPeriodLabel,
@@ -441,7 +440,7 @@ const buildBookingDraftSummaryReply = async ({
     lines.push(
       `${draft.id}) 👤 ${clientName}\n` +
         `   📌 Cancha: ${draft.courtName === "INDIFERENTE" ? "Cualquier cancha disponible" : draft.courtName}\n` +
-        `   📅 Fecha: ${formatIsoDateAsDayMonthYear(draft.dateStr)}\n` +
+        `   📅 Fecha: ${getFormattedDate(draft.dateStr)}\n` +
         `   ⏰ Hora: ${draft.timeStr}${endTimeText}` +
         priceLine,
     );
@@ -1528,7 +1527,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           );
           return (
             `⚠️ No pude reservar el borrador ${item.draft.id} ` +
-            `(${formatIsoDateAsDayMonthYear(item.draft.dateStr)} ${item.draft.timeStr}).\n` +
+            `(${getFormattedDate(item.draft.dateStr)} ${item.draft.timeStr}).\n` +
             `${failureReason}`
           );
         });
