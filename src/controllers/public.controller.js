@@ -5,6 +5,7 @@ const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
 const Booking = require("../models/booking.model");
 const ClubClosure = require("../models/clubClosure.model");
+const Announcement = require("../models/announcement.model");
 const ClientAccount = require("../models/clientAccount.model");
 const OtpVerification = require("../models/otpVerification.model");
 const User = require("../models/user.model");
@@ -19,6 +20,9 @@ const {
 } = require("../services/whatsappCommandQueue.service");
 const { getWhatsappIdByPhone } = require("../utils/getWhatsappIdByPhone");
 const { getCancellationLockHours } = require("../services/appConfig.service");
+const {
+  buildActiveAnnouncementsQuery,
+} = require("../services/announcement.service");
 const {
   buildNormalizedPhone,
   phoneMatchQuery,
@@ -250,6 +254,25 @@ const findOrCreateLinkedUser = async (companyId, phone, name, resolveWhatsappId 
     phoneNumber: phone,
     accountOrigin: origin,
   });
+};
+
+// GET /api/public/:slug/announcements
+const getAnnouncements = async (req, res) => {
+  try {
+    const company = await resolveCompany(req.params.slug);
+    if (!company) {
+      return res.status(404).json({ success: false, error: "Club no encontrado" });
+    }
+
+    const announcements = await Announcement.find(
+      buildActiveAnnouncementsQuery(company._id, new Date()),
+    ).sort({ order: 1, createdAt: -1 });
+
+    return res.json({ success: true, data: announcements });
+  } catch (err) {
+    console.error("[public.controller]", err);
+    return res.status(500).json({ success: false, error: "Error interno" });
+  }
 };
 
 // POST /api/public/:slug/auth/send-otp
@@ -929,6 +952,7 @@ const cancelMyBooking = async (req, res) => {
 module.exports = {
   getClubInfo,
   getAvailability,
+  getAnnouncements,
   sendOtp,
   verifyOtp,
   completeRegistration,
