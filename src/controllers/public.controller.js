@@ -1,4 +1,3 @@
-const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const Company = require("../models/company.model");
@@ -18,11 +17,16 @@ const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
 } = require("../services/whatsappCommandQueue.service");
-const {
-  normalizeCanonicalClientPhone,
-} = require("../utils/identityNormalization");
 const { getWhatsappIdByPhone } = require("../utils/getWhatsappIdByPhone");
 const { getCancellationLockHours } = require("../services/appConfig.service");
+const {
+  buildNormalizedPhone,
+  phoneMatchQuery,
+  planGoogleAuth,
+  verifyOtpCode,
+  resolveClientByVerifiedPhone,
+  completeRegistration: createClientRegistration,
+} = require("../services/clientAuth.service");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -97,29 +101,6 @@ const clientPayload = (client) => ({
   email: client.email,
   phone: client.phone,
 });
-
-// Argentina: insertar el 9 entre el código de país (54) y el número de área si no está presente
-const canonicalizePhone = (digits = "") => {
-  if (digits.startsWith("54") && !digits.startsWith("549") && digits.length >= 12) {
-    return "549" + digits.slice(2);
-  }
-  return digits;
-};
-
-// Combina countryCode + localNumber, normaliza a solo dígitos y canoniza formato argentino
-const buildNormalizedPhone = (countryCode = "", localNumber = "") => {
-  const raw = `${countryCode}${localNumber}`;
-  return canonicalizePhone(normalizeCanonicalClientPhone(raw));
-};
-
-// Query MongoDB que matchea un teléfono en ambos formatos (con y sin el 9 argentino)
-// para compatibilidad con registros guardados antes de la canonización
-const phoneMatchQuery = (phone = "") => {
-  if (phone.startsWith("549") && phone.length >= 13) {
-    return { $in: [phone, "54" + phone.slice(3)] };
-  }
-  return phone;
-};
 
 const maskPhone = (digits = "") => {
   if (digits.length < 4) return "****";
@@ -287,15 +268,12 @@ const sendOtp = async (req, res) => {
       return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
     }
 
+    // El mismo endpoint sirve para crear cuenta o iniciar sesión: si el
+    // teléfono ya existe simplemente se verifica y el usuario entra.
     if (googleFlow) {
       const existingUser = await User.findOne({ companyId: company._id, phoneNumber: phoneMatchQuery(phone) });
       if (existingUser?.accountOrigin === "google") {
         return res.status(409).json({ success: false, error: "Este número ya está vinculado a una cuenta de Google" });
-      }
-    } else {
-      const phoneTaken = await ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone) });
-      if (phoneTaken) {
-        return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
       }
     }
 
@@ -338,40 +316,23 @@ const sendOtp = async (req, res) => {
   }
 };
 
-// Función interna reutilizable para verificar OTP
-const checkOtp = async (companyId, phone, code) => {
-  const otp = await OtpVerification.findOne({
-    companyId,
-    phone: phoneMatchQuery(phone),
-    used: false,
-    expiresAt: { $gt: new Date() },
-  });
-  if (!otp) return { valid: false, reason: "Código inválido o expirado" };
-  if (otp.code !== String(code)) return { valid: false, reason: "Código incorrecto" };
-  return { valid: true, otp };
-};
-
-// POST /api/public/:slug/auth/register
-const registerClient = async (req, res) => {
+// POST /api/public/:slug/auth/verify-otp
+// Verifies the code. If the phone already belongs to a client (ClientAccount or
+// a User created by the WhatsApp bot) it logs in directly; otherwise it asks
+// for the name so the client can complete registration.
+const verifyOtp = async (req, res) => {
   try {
     const company = await resolveCompany(req.params.slug);
     if (!company) {
       return res.status(404).json({ success: false, error: "Club no encontrado" });
     }
 
-    const { name, email, password, countryCode, localNumber, otp } = req.body;
-
-    if (!name || !email || !password) {
-      return res.status(400).json({ success: false, error: "Nombre, email y contraseña son requeridos" });
-    }
+    const { countryCode, localNumber, otp } = req.body;
     if (!countryCode || !localNumber) {
-      return res.status(400).json({ success: false, error: "Teléfono requerido" });
+      return res.status(400).json({ success: false, error: "Código de país y número requeridos" });
     }
     if (!otp) {
       return res.status(400).json({ success: false, error: "Código de verificación requerido" });
-    }
-    if (password.length < 6) {
-      return res.status(400).json({ success: false, error: "La contraseña debe tener al menos 6 caracteres" });
     }
 
     const phone = buildNormalizedPhone(countryCode, localNumber);
@@ -379,46 +340,30 @@ const registerClient = async (req, res) => {
       return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
     }
 
-    const otpCheck = await checkOtp(company._id, phone, otp);
+    const otpCheck = await verifyOtpCode({ companyId: company._id, phone, code: otp, OtpVerification });
     if (!otpCheck.valid) {
       return res.status(400).json({ success: false, error: otpCheck.reason });
     }
 
-    const emailNorm = email.toLowerCase().trim();
-    const [emailTaken, phoneTaken] = await Promise.all([
-      ClientAccount.findOne({ companyId: company._id, email: emailNorm }),
-      ClientAccount.findOne({ companyId: company._id, phone: phoneMatchQuery(phone) }),
-    ]);
-
-    if (emailTaken) {
-      return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese email" });
-    }
-    if (phoneTaken) {
-      return res.status(409).json({ success: false, error: "Ya existe una cuenta con ese teléfono" });
-    }
-
-    const passwordHash = await bcrypt.hash(password, 10);
-    const client = await ClientAccount.create({
+    const resolution = await resolveClientByVerifiedPhone({
       companyId: company._id,
-      name: name.trim(),
-      email: emailNorm,
       phone,
-      passwordHash,
+      models: { ClientAccount, User },
     });
 
-    // Marcar OTP como usado después de crear la cuenta para que el usuario
-    // pueda reintentar si el servidor cae entre ambas operaciones.
+    if (resolution.kind === "needs_name") {
+      // Keep the OTP valid so complete-registration can consume it after the
+      // client provides a name.
+      return res.json({ success: true, data: { needsName: true, phone } });
+    }
+
     await otpCheck.otp.updateOne({ used: true });
 
-    const linkedUser = await findOrCreateLinkedUser(company._id, phone, name.trim());
-    client.linkedUserId = linkedUser._id;
-    await client.save();
-
-    return res.status(201).json({
+    return res.json({
       success: true,
       data: {
-        token: signClientToken(client, company._id),
-        client: clientPayload(client),
+        token: signClientToken(resolution.client, company._id),
+        client: clientPayload(resolution.client),
       },
     });
   } catch (err) {
@@ -427,35 +372,57 @@ const registerClient = async (req, res) => {
   }
 };
 
-// POST /api/public/:slug/auth/login
-const loginClient = async (req, res) => {
+// POST /api/public/:slug/auth/complete-registration
+// Completes a brand-new client: verifies the OTP again, creates User +
+// ClientAccount and returns the session token.
+const completeRegistration = async (req, res) => {
   try {
     const company = await resolveCompany(req.params.slug);
     if (!company) {
       return res.status(404).json({ success: false, error: "Club no encontrado" });
     }
 
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ success: false, error: "Email y contraseña requeridos" });
+    const { name, countryCode, localNumber, otp } = req.body;
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ success: false, error: "Nombre requerido" });
+    }
+    if (!countryCode || !localNumber) {
+      return res.status(400).json({ success: false, error: "Código de país y número requeridos" });
+    }
+    if (!otp) {
+      return res.status(400).json({ success: false, error: "Código de verificación requerido" });
     }
 
-    const client = await ClientAccount.findOne({
+    const phone = buildNormalizedPhone(countryCode, localNumber);
+    if (!phone || phone.length < 7) {
+      return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
+    }
+
+    const otpCheck = await verifyOtpCode({ companyId: company._id, phone, code: otp, OtpVerification });
+    if (!otpCheck.valid) {
+      return res.status(400).json({ success: false, error: otpCheck.reason });
+    }
+
+    // The number may have been registered between verify-otp and this call.
+    const resolution = await resolveClientByVerifiedPhone({
       companyId: company._id,
-      email: email.toLowerCase().trim(),
-      isActive: true,
+      phone,
+      models: { ClientAccount, User },
     });
 
-    if (!client) {
-      return res.status(401).json({ success: false, error: "Email o contraseña incorrectos" });
-    }
+    const client = resolution.kind === "login"
+      ? resolution.client
+      : await createClientRegistration({
+        companyId: company._id,
+        phone,
+        name,
+        models: { ClientAccount, User },
+        origin: "sistema",
+      });
 
-    const valid = await bcrypt.compare(password, client.passwordHash);
-    if (!valid) {
-      return res.status(401).json({ success: false, error: "Email o contraseña incorrectos" });
-    }
+    await otpCheck.otp.updateOne({ used: true });
 
-    return res.json({
+    return res.status(201).json({
       success: true,
       data: {
         token: signClientToken(client, company._id),
@@ -518,7 +485,7 @@ const googleAuth = async (req, res) => {
           name: existingElsewhere.name,
           email: emailNorm,
           ...(sourcePhone && !phoneTaken ? { phone: sourcePhone } : {}),
-          passwordHash: await bcrypt.hash(Math.random().toString(36), 10),
+          passwordHash: "",
           googleAuth: true,
         });
 
@@ -535,12 +502,19 @@ const googleAuth = async (req, res) => {
         });
       }
 
-      // Cuenta nueva — necesita teléfono verificado
-      if (!countryCode || !localNumber) {
+      // Cuenta nueva — Google no saltea la verificación del teléfono
+      const googlePlan = planGoogleAuth({
+        phoneProvided: Boolean(countryCode && localNumber),
+        otpProvided: Boolean(otp),
+      });
+      if (googlePlan === "needs_phone") {
         return res.status(200).json({
           success: true,
           data: { needsPhone: true, name, email: emailNorm },
         });
+      }
+      if (googlePlan === "needs_otp") {
+        return res.status(400).json({ success: false, error: "Código de verificación requerido" });
       }
 
       const phone = buildNormalizedPhone(countryCode, localNumber);
@@ -548,11 +522,7 @@ const googleAuth = async (req, res) => {
         return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
       }
 
-      if (!otp) {
-        return res.status(400).json({ success: false, error: "Código de verificación requerido" });
-      }
-
-      const otpCheck = await checkOtp(company._id, phone, otp);
+      const otpCheck = await verifyOtpCode({ companyId: company._id, phone, code: otp, OtpVerification });
       if (!otpCheck.valid) {
         return res.status(400).json({ success: false, error: otpCheck.reason });
       }
@@ -574,7 +544,7 @@ const googleAuth = async (req, res) => {
         name: clientName,
         email: emailNorm,
         ...(phoneTaken ? {} : { phone }),
-        passwordHash: await bcrypt.hash(Math.random().toString(36), 10),
+        passwordHash: "",
         googleAuth: true,
       });
 
@@ -585,7 +555,7 @@ const googleAuth = async (req, res) => {
     } else if (!client.phone && countryCode && localNumber && otp) {
       // Cuenta existente sin teléfono — verificar y actualizar
       const phone = buildNormalizedPhone(countryCode, localNumber);
-      const otpCheck = await checkOtp(company._id, phone, otp);
+      const otpCheck = await verifyOtpCode({ companyId: company._id, phone, code: otp, OtpVerification });
       if (!otpCheck.valid) {
         return res.status(400).json({ success: false, error: otpCheck.reason });
       }
@@ -661,7 +631,7 @@ const updatePhone = async (req, res) => {
       return res.status(400).json({ success: false, error: "Número de teléfono inválido" });
     }
 
-    const otpCheck = await checkOtp(company._id, phone, otp);
+    const otpCheck = await verifyOtpCode({ companyId: company._id, phone, code: otp, OtpVerification });
     if (!otpCheck.valid) {
       return res.status(400).json({ success: false, error: otpCheck.reason });
     }
@@ -958,8 +928,8 @@ module.exports = {
   getClubInfo,
   getAvailability,
   sendOtp,
-  registerClient,
-  loginClient,
+  verifyOtp,
+  completeRegistration,
   googleAuth,
   getMe,
   updatePhone,

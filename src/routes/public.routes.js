@@ -4,8 +4,8 @@ const {
   getClubInfo,
   getAvailability,
   sendOtp,
-  registerClient,
-  loginClient,
+  verifyOtp,
+  completeRegistration,
   googleAuth,
   getMe,
   updatePhone,
@@ -27,10 +27,10 @@ router.get("/", getClubInfo);
 // Disponibilidad para una fecha
 router.get("/availability", getAvailability);
 
-// Auth de clientes
+// Auth de clientes (WhatsApp + OTP)
 router.post("/auth/send-otp", otpRateLimit, sendOtp);
-router.post("/auth/register", authRateLimit, registerClient);
-router.post("/auth/login", authRateLimit, loginClient);
+router.post("/auth/verify-otp", authRateLimit, verifyOtp);
+router.post("/auth/complete-registration", authRateLimit, completeRegistration);
 router.post("/auth/google", authRateLimit, googleAuth);
 router.get("/auth/me", protectClient, getMe);
 router.put("/auth/me/phone", protectClient, updatePhone);

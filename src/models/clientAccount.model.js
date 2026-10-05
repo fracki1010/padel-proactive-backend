@@ -14,7 +14,7 @@ const clientAccountSchema = new mongoose.Schema(
     },
     email: {
       type: String,
-      required: true,
+      default: "",
       trim: true,
       lowercase: true,
     },
@@ -25,7 +25,7 @@ const clientAccountSchema = new mongoose.Schema(
     },
     passwordHash: {
       type: String,
-      required: true,
+      default: "",
     },
     googleAuth: {
       type: Boolean,
@@ -46,7 +46,12 @@ const clientAccountSchema = new mongoose.Schema(
   },
 );
 
-clientAccountSchema.index({ companyId: 1, email: 1 }, { unique: true });
+// Solo indexa documentos con email no vacío; permite múltiples cuentas sin email
+// (Google/WhatsApp) sin romper el índice único.
+clientAccountSchema.index(
+  { companyId: 1, email: 1 },
+  { unique: true, partialFilterExpression: { email: { $gt: "" } } },
+);
 // Solo indexa documentos con phone no vacío; permite múltiples cuentas sin teléfono
 clientAccountSchema.index(
   { companyId: 1, phone: 1 },
