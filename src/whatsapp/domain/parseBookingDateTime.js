@@ -45,8 +45,14 @@ const resolveWeekday = (weekday, now = new Date(), timezone = "America/Argentina
   const tzNow = getNowInTimezone(now, timezone);
   const currentWeekday = tzNow.getDay();
   let diff = (weekday - currentWeekday + 7) % 7;
-  if (diff === 0) diff = 7;
-  return addDays(getTodayIso(now, timezone), diff);
+  // El día pedido es HOY: queda ambiguo (hoy vs. el de la semana próxima).
+  // Se resuelve tentativamente al próximo, pero el flag permite preguntar.
+  const weekdayToday = diff === 0;
+  if (weekdayToday) diff = 7;
+  return {
+    date: addDays(getTodayIso(now, timezone), diff),
+    weekdayToday,
+  };
 };
 
 const parseDate = (input = "", now = new Date(), timezone = "America/Argentina/Buenos_Aires") => {
@@ -54,29 +60,31 @@ const parseDate = (input = "", now = new Date(), timezone = "America/Argentina/B
   const today = getTodayIso(now, timezone);
 
   if (/\bpasado manana\b/.test(text)) {
-    return { date: addDays(today, 2), relativeDate: "PASADO_MANANA" };
+    return { date: addDays(today, 2), relativeDate: "PASADO_MANANA", weekdayToday: false };
   }
   if (/\bhoy\b/.test(text)) {
-    return { date: today, relativeDate: "HOY" };
+    return { date: today, relativeDate: "HOY", weekdayToday: false };
   }
   if (/\bmanana\b/.test(text)) {
-    return { date: addDays(today, 1), relativeDate: "MANANA" };
+    return { date: addDays(today, 1), relativeDate: "MANANA", weekdayToday: false };
   }
 
   for (const [name, index] of Object.entries(WEEKDAY_MAP)) {
     const matcher = new RegExp(`\\b${name}\\b`, "i");
     if (matcher.test(text)) {
+      const resolved = resolveWeekday(index, now, timezone);
       return {
-        date: resolveWeekday(index, now, timezone),
+        date: resolved.date,
         weekday: name,
         relativeDate: "WEEKDAY",
+        weekdayToday: resolved.weekdayToday,
       };
     }
   }
 
   const isoMatch = text.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (isoMatch?.[1]) {
-    return { date: isoMatch[1], relativeDate: "ISO" };
+    return { date: isoMatch[1], relativeDate: "ISO", weekdayToday: false };
   }
 
   const dmyMatch = text.match(/\b(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?\b/);
@@ -89,10 +97,10 @@ const parseDate = (input = "", now = new Date(), timezone = "America/Argentina/B
       ? Number(rawYear.length === 2 ? `20${rawYear}` : rawYear)
       : currentYear;
     const candidate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    return { date: candidate, relativeDate: "DMY" };
+    return { date: candidate, relativeDate: "DMY", weekdayToday: false };
   }
 
-  return { date: null, relativeDate: null };
+  return { date: null, relativeDate: null, weekdayToday: false };
 };
 
 const inferHourFromNaturalLanguage = (input = "") => {
@@ -204,6 +212,7 @@ const parseBookingDateTime = (input = "", now = new Date(), timezone = "America/
     dateTime: dateParsed.date && timeParsed.time ? `${dateParsed.date} ${timeParsed.time}` : null,
     relativeDate: dateParsed.relativeDate,
     weekday: dateParsed.weekday || null,
+    weekdayToday: Boolean(dateParsed.weekdayToday),
     invalidTime: Boolean(timeParsed.invalidTime),
     isPast: isPastDateTime,
     raw: {
