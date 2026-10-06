@@ -4,6 +4,8 @@ const {
   getClubInfo,
   getAvailability,
   getAnnouncements,
+  acquireSlotLockHandler,
+  releaseSlotLockHandler,
   sendOtp,
   verifyOtp,
   completeRegistration,
@@ -21,12 +23,18 @@ const { createRateLimiter } = require("../middleware/rateLimit.middleware");
 const otpRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 3 });
 // 10 intentos por IP cada 15 minutos para login/register/google
 const authRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 10 });
+// 40 locks por IP cada 15 minutos — evita abuso del slot lock
+const slotLockRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 40 });
 
 // Info del club (canchas + slots)
 router.get("/", getClubInfo);
 
 // Disponibilidad para una fecha
 router.get("/availability", getAvailability);
+
+// Bloqueo temporal de un turno mientras el cliente completa la reserva
+router.post("/slot-lock", slotLockRateLimit, acquireSlotLockHandler);
+router.delete("/slot-lock/:id", slotLockRateLimit, releaseSlotLockHandler);
 
 // Avisos vigentes del club (público)
 router.get("/announcements", getAnnouncements);
