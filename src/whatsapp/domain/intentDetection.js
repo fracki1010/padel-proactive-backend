@@ -19,11 +19,13 @@ const { isEquivalentConfirmation } = require('../../utils/conversationGuardrails
 const inferFallbackAction = (rawText) => {
   const text = normalizeSpanishText(rawText);
 
-  const hasMyBookingsIntent =
-    /(mis\s+reservas|mis\s+turnos|que\s+reservas\s+tengo|que\s+turnos\s+tengo|tengo\s+reservas|tengo\s+turnos|reservas\s+vigentes|turnos\s+vigentes|reserve\s+algun\s+turno|reserve\s+algo|tengo\s+algun\s+turno\s+reservado|me\s+reservaste\s+algo|hay\s+alguna\s+reserva\s+a\s+mi\s+nombre|si\s+reserve\s+algo|si\s+tengo\s+alguna\s+reserva)/.test(
+  const hasBookingActionVerb =
+    /\b(quiero reservar|anotame|agendame|reservame|haceme la reserva|hace la reserva)\b/.test(text);
+  const hasOwnBookingsPhrase =
+    /\b(mi reserva|mi turno|mis reservas|mis turnos|ver mis reservas|ver mis turnos|lista de reservas|lista de turnos|que reservas tengo|que turnos tengo|cuant[ao]s? (?:reservas|turnos) tengo|(?:reservas|turnos) que tengo|tengo reservas|tengo turnos|tengo (?:una )?reserva|tengo (?:un )?turno|reservas vigentes|turnos vigentes|turnos reservados|que tengo reservado|hay alguna reserva a mi nombre|reserve algun turno|reserve algo|me reservaste algo|si reserve algo|si tengo alguna reserva|mi reserva esta confirmada|mi turno esta confirmado|esta confirmada mi reserva|esta confirmado mi turno|confirmada mi reserva|confirmado mi turno|verificar mi reserva|verificar mi turno|consultar mi reserva|consultar mi turno|saber si tengo (?:una )?(?:reserva|turno)|quiero saber si (?:tengo|tengo (?:una )?(?:reserva|turno)|mi reserva|mi turno|esta confirmada mi reserva|esta confirmado mi turno)|quiero ver mi (?:reserva|turno)|estado de mi (?:reserva|turno)|como esta mi (?:reserva|turno)|sigue en pie mi (?:reserva|turno))\b/.test(
       text,
     );
-  if (hasMyBookingsIntent) {
+  if (!hasBookingActionVerb && hasOwnBookingsPhrase) {
     return { action: "LIST_ACTIVE_BOOKINGS" };
   }
 

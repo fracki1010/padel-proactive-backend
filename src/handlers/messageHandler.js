@@ -51,6 +51,10 @@ const {
 const {
   deriveStateFromMeta,
 } = require("../whatsapp/domain/bookingStateMachine");
+const {
+  findActiveBookingForRequestedSlot,
+  buildExistingBookingStatusReply,
+} = require("../whatsapp/domain/bookingSlotMatch");
 const { stripUrlsFromText } = require("../utils/stripUrlsFromText");
 const {
   normalizeSpanishText,
@@ -433,6 +437,36 @@ const isAmbiguousAvailabilityRequest = ({ parsedData = {}, userMessage = "" }) =
   if (extractDateFromMessage(userMessage)) return false;
   if (extractTimeFromMessage(userMessage)) return false;
   return true;
+};
+
+// REGLA CLAVE: si el cliente YA tiene una reserva vigente en la fecha y hora
+// pedidas (mismo slot o rango), respondemos el estado de ESA reserva en lugar
+// de sugerir canchas o avanzar con el agendado. Devuelve null cuando no hay
+// reserva exacta y el flujo debe continuar normal.
+const buildExistingReservationPriorityReply = async ({
+  companyId = null,
+  chatId,
+  canonicalClientPhone,
+  date,
+  time,
+}) => {
+  if (!date || !time) return null;
+  const activeReservations = await bookingService.getActiveBookingsForClient({
+    companyId,
+    clientPhone: canonicalClientPhone,
+    clientWhatsappId: chatId,
+    limit: 15,
+  });
+  if (!activeReservations.success || !Array.isArray(activeReservations.data)) {
+    return null;
+  }
+  const matchingBooking = findActiveBookingForRequestedSlot({
+    activeBookings: activeReservations.data,
+    date,
+    time,
+  });
+  if (!matchingBooking) return null;
+  return buildExistingBookingStatusReply(matchingBooking);
 };
 
 const buildBookingDraftSummaryReply = async ({
@@ -2514,6 +2548,32 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           hasDirectBookingIntent(userMessage) ||
           weekdayChoiceResolved?.action === "CREATE_BOOKING";
 
+        // Prioridad de reserva existente: si el cliente ya tiene una reserva
+        // vigente en la fecha y hora pedidas, le mostramos el estado de ESA
+        // reserva antes de avanzar con el agendado.
+        const requestedReservationDate =
+          requestedDate && isValidIsoDate(requestedDate)
+            ? requestedDate
+            : userDerivedDate && isValidIsoDate(userDerivedDate)
+              ? userDerivedDate
+              : null;
+        const requestedReservationTime = requestedTime || userDerivedTime;
+        if (requestedReservationDate && requestedReservationTime) {
+          const existingReservationReply = await buildExistingReservationPriorityReply({
+            companyId,
+            chatId,
+            canonicalClientPhone,
+            date: requestedReservationDate,
+            time: requestedReservationTime,
+          });
+          if (existingReservationReply) {
+            sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
+            replyText = existingReservationReply;
+            sessionService.addMessage(sessionId, "assistant", replyText);
+            return replyText;
+          }
+        }
+
         if (
           requestedDate &&
           requestedTime &&
@@ -2719,6 +2779,25 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         const requestedDate = parsedData.date || getTodayIsoArgentina();
         const requestedTime = normalizeTimeString(parsedData.time);
         const invalidTimeInMessage = hasInvalidTimeInput(userMessage);
+
+        // Prioridad de reserva existente: con fecha y hora pedidas, si el
+        // cliente YA tiene una reserva vigente en ese slot, respondemos el
+        // estado de ESA reserva en vez de listar disponibilidad del club.
+        if (requestedTime && isValidIsoDate(requestedDate)) {
+          const existingReservationReply = await buildExistingReservationPriorityReply({
+            companyId,
+            chatId,
+            canonicalClientPhone,
+            date: requestedDate,
+            time: requestedTime,
+          });
+          if (existingReservationReply) {
+            sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
+            replyText = existingReservationReply;
+            sessionService.addMessage(sessionId, "assistant", replyText);
+            return replyText;
+          }
+        }
 
         if (parsedData.date && !isValidIsoDate(parsedData.date)) {
           replyText =
