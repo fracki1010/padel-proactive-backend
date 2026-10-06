@@ -25,6 +25,9 @@ const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
 } = require("../services/whatsappCommandQueue.service");
+const {
+  sendBookingWhatsappConfirmation,
+} = require("../services/bookingWhatsappConfirmation.service");
 const { getWhatsappIdByPhone } = require("../utils/getWhatsappIdByPhone");
 const { getCancellationLockHours } = require("../services/appConfig.service");
 const {
@@ -918,6 +921,17 @@ const createClientBooking = async (req, res) => {
       .catch((lockErr) => {
         console.error("[createClientBooking] No se pudo liberar el slot lock:", lockErr?.message);
       });
+
+    // Confirmar el turno al cliente por WhatsApp. Best-effort: si el encolado
+    // falla, la reserva ya está persistida y se responde 201 igual.
+    await sendBookingWhatsappConfirmation({
+      companyId: company._id,
+      clientPhone,
+      client,
+      court: populated.court,
+      slot: populated.timeSlot,
+      date: toIsoDateOnly(searchDate),
+    });
 
     return res.status(201).json({
       success: true,
