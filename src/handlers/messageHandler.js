@@ -422,6 +422,19 @@ const buildActiveBookingsReply = (bookings = []) => {
   return `🎾 *Estas son tus reservas vigentes:*\n\n${lines.join("\n\n")}`;
 };
 
+// Una consulta de disponibilidad es ambigua cuando el cliente pidió "turnos" o
+// "turnos disponibles" sin fecha, hora ni cancha: podría estar preguntando por la
+// disponibilidad del club o por sus propios turnos. En ese caso el handler
+// desambigua mostrando las reservas del cliente si las tiene.
+const isAmbiguousAvailabilityRequest = ({ parsedData = {}, userMessage = "" }) => {
+  if (parsedData?.action !== "CHECK_AVAILABILITY") return false;
+  if (parsedData.hasExplicitDate || parsedData.hasExplicitTime) return false;
+  if (parsedData.courtName && parsedData.courtName !== "INDIFERENTE") return false;
+  if (extractDateFromMessage(userMessage)) return false;
+  if (extractTimeFromMessage(userMessage)) return false;
+  return true;
+};
+
 const buildBookingDraftSummaryReply = async ({
   companyId = null,
   clientName = "Cliente",
@@ -2680,6 +2693,29 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
 
       // CASO B: DISPONIBILIDAD
       else if (parsedData.action === "CHECK_AVAILABILITY") {
+        // Desambiguación: "turnos" / "turnos disponibles" sin fecha, hora ni cancha.
+        // Si el cliente tiene reservas vigentes, se las mostramos en vez de listar
+        // la disponibilidad del club. Sin reservas, o con fecha explícita, seguimos
+        // con la disponibilidad normal.
+        if (isAmbiguousAvailabilityRequest({ parsedData, userMessage })) {
+          const clientActiveBookings = await bookingService.getActiveBookingsForClient({
+            companyId,
+            clientPhone: canonicalClientPhone,
+            clientWhatsappId: chatId,
+            limit: 15,
+          });
+          if (
+            clientActiveBookings.success &&
+            Array.isArray(clientActiveBookings.data) &&
+            clientActiveBookings.data.length > 0
+          ) {
+            sessionService.updateMeta(sessionId, { pendingBookingOffer: null });
+            replyText = buildActiveBookingsReply(clientActiveBookings.data);
+            sessionService.addMessage(sessionId, "assistant", replyText);
+            return replyText;
+          }
+        }
+
         const requestedDate = parsedData.date || getTodayIsoArgentina();
         const requestedTime = normalizeTimeString(parsedData.time);
         const invalidTimeInMessage = hasInvalidTimeInput(userMessage);

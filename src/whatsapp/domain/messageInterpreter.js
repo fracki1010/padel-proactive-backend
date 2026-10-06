@@ -69,12 +69,27 @@ const detectIntent = (text = "", { currentState = null } = {}) => {
   if (/\b(cancelar|cancelo|cancelame|anular|anulo|anulado|anulada|dar de baja)\b/.test(normalized)) {
     return INTENTS.CANCEL_BOOKING;
   }
-  if (/\b(mis reservas|que turnos tengo|que tengo reservado|hay alguna reserva a mi nombre)\b/.test(normalized)) {
+  // Frases de "los míos": el cliente habla de SUS turnos/reservas, no de la
+  // disponibilidad del club. Deben evaluarse ANTES que CHECK_AVAILABILITY para
+  // que "tengo turnos" no caiga en la detección de disponibilidad genérica.
+  if (
+    /\b(mis reservas|mis turnos|ver mis reservas|ver mis turnos|lista de reservas|lista de turnos|que reservas tengo|que turnos tengo|cuant[ao]s? (?:reservas|turnos) tengo|(?:reservas|turnos) que tengo|tengo reservas|tengo turnos|reservas vigentes|turnos vigentes|turnos reservados|que tengo reservado|hay alguna reserva a mi nombre|reserve algun turno|reserve algo|me reservaste algo|si reserve algo|si tengo alguna reserva)\b/.test(normalized)
+  ) {
     return INTENTS.LIST_ACTIVE_BOOKINGS;
   }
+
+  // Consulta genérica de "turnos" sin fecha/hora: puede ser tanto una pregunta por
+  // la disponibilidad del club como un pedido de los turnos propios. Se clasifica
+  // como CHECK_AVAILABILITY y el handler desambigua (si el cliente tiene reservas,
+  // se las muestra; si no, cae a la disponibilidad normal).
+  const hasGenericTurnsAvailability =
+    /\bturnos\b/.test(normalized) &&
+    !/\b(reservar|reserva|reservas|reservad[oa]s?|cancelar|cancelo|cancelame|anular|anulo|fijo|semanal)\b/.test(normalized);
+
   if (
     /\b(disponibilidad|horarios disponibles|hay lugar|tenes lugar|ver disponibilidad|que horarios hay)\b/.test(normalized) ||
-    /\b(cual(?:es)?\s+(?:esta|estan)\s+(?:disponible|disponibles|libre|libres)|que\s+(?:esta|hay)\s+(?:disponible|libre)|que\s+horarios?\s+(?:hay|tenes)|tenes\s+algo\s+(?:disponible|libre)|hay\s+(?:opciones?|alternativas))\b/.test(normalized)
+    /\b(cual(?:es)?\s+(?:esta|estan)\s+(?:disponible|disponibles|libre|libres)|que\s+(?:esta|hay)\s+(?:disponible|libre)|que\s+horarios?\s+(?:hay|tenes)|tenes\s+algo\s+(?:disponible|libre)|hay\s+(?:opciones?|alternativas))\b/.test(normalized) ||
+    hasGenericTurnsAvailability
   ) {
     return INTENTS.CHECK_AVAILABILITY;
   }
@@ -130,6 +145,10 @@ const mapIntentToAction = ({ intent = INTENTS.UNKNOWN, entities = {}, now = new 
       action: "CHECK_AVAILABILITY",
       date: entities.date || getTodayIso(now, timezone),
       time: entities.time || null,
+      // Flags de desambiguación: distinguen un pedido genérico ("turnos",
+      // "turnos disponibles") de uno con fecha/hora explícita ("turnos para mañana").
+      hasExplicitDate: Boolean(entities.date),
+      hasExplicitTime: Boolean(entities.time),
     };
   }
   if (intent === INTENTS.CREATE_BOOKING) {
