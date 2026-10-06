@@ -10,6 +10,13 @@ const ClientAccount = require("../models/clientAccount.model");
 const OtpVerification = require("../models/otpVerification.model");
 const User = require("../models/user.model");
 const {
+  SLOT_LOCK_TTL_MS,
+  acquireSlotLock,
+  releaseSlotLock,
+  applyLocksToAvailability,
+  createMongooseSlotLockStore,
+} = require("../services/slotLock.service");
+const {
   materializeFixedBookingsForDate,
 } = require("../services/fixedTurnsMaterialization.service");
 const { getCancellationContactPhone } = require("../services/bookingService");
@@ -193,7 +200,11 @@ const getAvailability = async (req, res) => {
 
     await materializeFixedBookingsForDate({ companyId: company._id, searchDate });
 
-    const [courts, slots, bookings] = await Promise.all([
+    const holderId = req.query.holderId ? String(req.query.holderId) : null;
+    const now = new Date();
+    const lockStore = createMongooseSlotLockStore();
+
+    const [courts, slots, bookings, activeLocks] = await Promise.all([
       Court.find({ companyId: company._id, isActive: true }).sort({ name: 1 }),
       TimeSlot.find({ companyId: company._id, isActive: true }).sort({ order: 1, startTime: 1 }),
       Booking.find({
@@ -201,13 +212,14 @@ const getAvailability = async (req, res) => {
         date: searchDate,
         status: { $nin: ["cancelado"] },
       }).select("court timeSlot status"),
+      lockStore.findActiveLocksForDate({ companyId: company._id, date: searchDate, now }),
     ]);
 
     const occupiedSet = new Set(
       bookings.map((b) => `${String(b.court)}_${String(b.timeSlot)}`),
     );
 
-    const availability = courts.flatMap((court) =>
+    const baseAvailability = courts.flatMap((court) =>
       slots.map((slot) => ({
         courtId: String(court._id),
         slotId: String(slot._id),
@@ -215,10 +227,111 @@ const getAvailability = async (req, res) => {
       })),
     );
 
+    const availability = applyLocksToAvailability({
+      availability: baseAvailability,
+      locks: activeLocks,
+      holderId,
+      now,
+    });
+
     return res.json({
       success: true,
       data: { closed: false, courts, slots, availability },
     });
+  } catch (err) {
+    console.error("[public.controller]", err);
+    return res.status(500).json({ success: false, error: "Error interno" });
+  }
+};
+
+// POST /api/public/:slug/slot-lock  (público)
+// Bloquea temporalmente un turno para el holder que está por reservar.
+const acquireSlotLockHandler = async (req, res) => {
+  try {
+    const company = await resolveCompany(req.params.slug);
+    if (!company) {
+      return res.status(404).json({ success: false, error: "Club no encontrado" });
+    }
+
+    const { courtId, slotId, date, holderId } = req.body;
+    if (!courtId || !slotId || !date || !holderId) {
+      return res.status(400).json({
+        success: false,
+        error: "Cancha, turno, fecha y holderId son requeridos",
+      });
+    }
+
+    const searchDate = parseDateToUtcMidnight(date);
+    if (!searchDate) {
+      return res.status(400).json({ success: false, error: "Fecha inválida" });
+    }
+
+    const [court, slot] = await Promise.all([
+      Court.findOne({ _id: courtId, companyId: company._id, isActive: true }).lean(),
+      TimeSlot.findOne({ _id: slotId, companyId: company._id, isActive: true }).lean(),
+    ]);
+    if (!court) return res.status(404).json({ success: false, error: "Cancha no encontrada" });
+    if (!slot) return res.status(404).json({ success: false, error: "Turno no encontrado" });
+
+    const result = await acquireSlotLock({
+      companyId: company._id,
+      courtId: court._id,
+      slotId: slot._id,
+      date: searchDate,
+      holderId: String(holderId),
+      store: createMongooseSlotLockStore(),
+    });
+
+    if (!result.ok) {
+      if (result.reason === "booked") {
+        return res.status(409).json({
+          success: false,
+          error: "Ese turno ya está reservado",
+          code: "SLOT_ALREADY_BOOKED",
+        });
+      }
+      return res.status(409).json({
+        success: false,
+        error: "Ese turno lo está reservando otra persona, elegí otro",
+        code: "SLOT_LOCKED",
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        lockId: String(result.lock._id),
+        expiresAt: result.expiresAt,
+        ttlMs: SLOT_LOCK_TTL_MS,
+      },
+    });
+  } catch (err) {
+    console.error("[public.controller]", err);
+    return res.status(500).json({ success: false, error: "Error interno" });
+  }
+};
+
+// DELETE /api/public/:slug/slot-lock/:id  (público)
+const releaseSlotLockHandler = async (req, res) => {
+  try {
+    const company = await resolveCompany(req.params.slug);
+    if (!company) {
+      return res.status(404).json({ success: false, error: "Club no encontrado" });
+    }
+
+    const holderId = req.body?.holderId || req.query?.holderId;
+    if (!holderId) {
+      return res.status(400).json({ success: false, error: "holderId requerido" });
+    }
+
+    const result = await releaseSlotLock({
+      companyId: company._id,
+      lockId: req.params.id,
+      holderId: String(holderId),
+      store: createMongooseSlotLockStore(),
+    });
+
+    return res.json({ success: true, data: { released: result.ok } });
   } catch (err) {
     console.error("[public.controller]", err);
     return res.status(500).json({ success: false, error: "Error interno" });
@@ -698,7 +811,7 @@ const createClientBooking = async (req, res) => {
       return res.status(403).json({ success: false, error: "No autorizado para este club" });
     }
 
-    const { courtId, slotId, date } = req.body;
+    const { courtId, slotId, date, holderId } = req.body;
     if (!courtId || !slotId || !date) {
       return res.status(400).json({ success: false, error: "Cancha, turno y fecha son requeridos" });
     }
@@ -793,6 +906,18 @@ const createClientBooking = async (req, res) => {
     const populated = await Booking.findById(booking._id)
       .populate("court")
       .populate("timeSlot");
+
+    // The slot is booked now: release any temporary lock for it.
+    await createMongooseSlotLockStore()
+      .deleteLocksForSlot({
+        companyId: company._id,
+        courtId: court._id,
+        slotId: slot._id,
+        date: searchDate,
+      })
+      .catch((lockErr) => {
+        console.error("[createClientBooking] No se pudo liberar el slot lock:", lockErr?.message);
+      });
 
     return res.status(201).json({
       success: true,
@@ -953,6 +1078,8 @@ module.exports = {
   getClubInfo,
   getAvailability,
   getAnnouncements,
+  acquireSlotLockHandler,
+  releaseSlotLockHandler,
   sendOtp,
   verifyOtp,
   completeRegistration,
