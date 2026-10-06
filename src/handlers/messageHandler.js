@@ -41,6 +41,10 @@ const {
   getTodayIso,
 } = require("../whatsapp/domain/parseBookingDateTime");
 const {
+  buildWeekdayDisambiguationQuestion,
+  resolveWeekdayChoiceDate,
+} = require("../whatsapp/domain/weekdayDisambiguation");
+const {
   interpretIncomingMessage,
   INTENTS,
 } = require("../whatsapp/domain/messageInterpreter");
@@ -1108,6 +1112,41 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       return tooLongMessageReply;
     }
 
+    // Desambiguación de día de la semana: el usuario pidió un día que era HOY y
+    // el bot preguntó "¿hoy o el próximo?". Aquí resolvemos su respuesta.
+    let forcedActionFromState = null;
+    let weekdayChoiceResolved = null;
+    if (sessionMeta.pendingWeekdayChoice) {
+      const pendingWeekdayChoice = sessionMeta.pendingWeekdayChoice;
+      const resolution = resolveWeekdayChoiceDate(userMessage, {
+        todayIso: pendingWeekdayChoice.todayIso,
+        nextIso: pendingWeekdayChoice.nextIso,
+      });
+
+      if (!resolution.matched) {
+        const repeatQuestion = buildWeekdayDisambiguationQuestion({
+          weekdayName: pendingWeekdayChoice.weekdayName,
+          todayIso: pendingWeekdayChoice.todayIso,
+          nextIso: pendingWeekdayChoice.nextIso,
+        });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", repeatQuestion);
+        return repeatQuestion;
+      }
+
+      sessionService.updateMeta(sessionId, { pendingWeekdayChoice: null });
+      weekdayChoiceResolved = {
+        action: pendingWeekdayChoice.action,
+        date: resolution.date,
+        time: pendingWeekdayChoice.time || null,
+        courtName: pendingWeekdayChoice.courtName || "INDIFERENTE",
+      };
+      forcedActionFromState = {
+        ...weekdayChoiceResolved,
+        source: "weekday_disambiguation",
+      };
+    }
+
     const earlyInterpretation = interpretIncomingMessage({
       text: userMessage,
       state: deriveStateFromMeta(sessionMeta),
@@ -1177,7 +1216,6 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           ? inferDeterministicAction(userMessage)
           : null;
     const globalInterruptIntent = parseGlobalInterruptIntent(userMessage);
-    let forcedActionFromState = null;
 
     if (globalInterruptIntent?.action === "TALK_TO_ADMIN") {
       clearBookingStrictStateMeta(sessionId);
@@ -2316,6 +2354,43 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
       parsedData = null;
     }
 
+    // Desambiguación de día de la semana: si el usuario pidió un día que es HOY,
+    // preguntar "¿hoy o el próximo?" en lugar de asumir el próximo directamente.
+    if (
+      parsedData &&
+      (parsedData.action === "CREATE_BOOKING" ||
+        parsedData.action === "CHECK_AVAILABILITY")
+    ) {
+      const weekdayParsed = parseBookingDateTime(
+        userMessage,
+        new Date(),
+        "America/Argentina/Buenos_Aires",
+      );
+      if (weekdayParsed.weekdayToday && weekdayParsed.weekday) {
+        const todayIso = getTodayIsoArgentina();
+        const nextIso = weekdayParsed.date;
+        const ambiguityQuestion = buildWeekdayDisambiguationQuestion({
+          weekdayName: weekdayParsed.weekday,
+          todayIso,
+          nextIso,
+        });
+        sessionService.updateMeta(sessionId, {
+          pendingWeekdayChoice: {
+            action: parsedData.action,
+            todayIso,
+            nextIso,
+            weekdayName: weekdayParsed.weekday,
+            time:
+              normalizeTimeString(parsedData.time) ||
+              normalizeTimeString(extractTimeFromMessage(userMessage)),
+            courtName: parsedData.courtName || null,
+          },
+        });
+        sessionService.addMessage(sessionId, "assistant", ambiguityQuestion);
+        return ambiguityQuestion;
+      }
+    }
+
     if (parsedData) {
       // ==========================================
       // SI ES UN JSON VÁLIDO (Acción o Mensaje)
@@ -2422,7 +2497,9 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           userMessage,
           requestedCourt,
         );
-        const canCreateBookingFromMessage = hasDirectBookingIntent(userMessage);
+        const canCreateBookingFromMessage =
+          hasDirectBookingIntent(userMessage) ||
+          weekdayChoiceResolved?.action === "CREATE_BOOKING";
 
         if (
           requestedDate &&
