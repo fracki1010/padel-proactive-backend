@@ -45,6 +45,12 @@ const {
   resolveWeekdayChoiceDate,
 } = require("../whatsapp/domain/weekdayDisambiguation");
 const {
+  parseAttendanceAnswer,
+  looksLikeAttendanceAnswer,
+  isRecentAttendancePrompt,
+  ATTENDANCE_FALLBACK_WINDOW_MS,
+} = require("../whatsapp/domain/attendanceAnswer");
+const {
   interpretIncomingMessage,
   INTENTS,
 } = require("../whatsapp/domain/messageInterpreter");
@@ -776,16 +782,6 @@ const buildAvailabilityResponse = async ({
   };
 };
 
-const parseAttendanceAnswer = (value = "") => {
-  const text = normalizeLooseText(value);
-  const yesSet = new Set(["1", "si asisto"]);
-  const noSet = new Set(["2", "no asisto"]);
-
-  if (yesSet.has(text)) return "YES";
-  if (noSet.has(text)) return "NO";
-  return null;
-};
-
 const buildAttendanceOptionsOnlyReply = () =>
   "Para este turno solo puedo recibir una opción:\n1) SI ASISTO\n2) NO ASISTO";
 
@@ -1046,6 +1042,158 @@ const enforceStrictQuestionFlowReply = (rawReply = "") => {
   const firstQuestion = firstQuestionMatch?.[0]?.trim();
   if (!firstQuestion) return reply;
   return `${firstQuestion}\n\nRespondé eso y avanzamos paso a paso.`;
+};
+
+// Candidate phone identities for the sessionless attendance fallback. When the
+// client answers from a linked device the incoming chatId may be an @lid alias
+// that does not match the @c.us session used to send the reminder, so we look
+// the pending booking up by the best phone candidates we can resolve.
+const buildAttendanceFallbackPhones = ({
+  canonicalClientPhone = "",
+  registeredPhoneRaw = "",
+  resolvedNumber = "",
+} = {}) => {
+  const phones = new Set();
+  for (const value of [canonicalClientPhone, registeredPhoneRaw, resolvedNumber]) {
+    const clean = String(value || "").trim();
+    if (clean) phones.add(clean);
+  }
+  return [...phones];
+};
+
+const findPendingAttendanceBookingForClient = async ({
+  companyId = null,
+  chatId = "",
+  candidatePhones = [],
+  now = Date.now(),
+  windowMs = ATTENDANCE_FALLBACK_WINDOW_MS,
+} = {}) => {
+  const phones = [
+    ...new Set(
+      (candidatePhones || [])
+        .map((phone) => String(phone || "").trim())
+        .filter(Boolean),
+    ),
+  ];
+  const orClauses = [];
+  if (phones.length) orClauses.push({ clientPhone: { $in: phones } });
+  if (chatId) orClauses.push({ clientWhatsappId: chatId });
+  if (!orClauses.length) return null;
+
+  const cutoff = new Date(now - windowMs);
+  const query = {
+    companyId: companyId || null,
+    status: { $in: ["confirmado", "reservado"] },
+    attendanceConfirmationStatus: "pending",
+    attendanceConfirmationSentAt: { $ne: null, $gte: cutoff },
+    attendanceConfirmationRespondedAt: null,
+  };
+  if (orClauses.length === 1) Object.assign(query, orClauses[0]);
+  else query.$or = orClauses;
+
+  try {
+    const booking = await Booking.findOne(query).populate("timeSlot");
+    if (!booking) return null;
+    if (
+      !isRecentAttendancePrompt(booking.attendanceConfirmationSentAt, now, windowMs)
+    ) {
+      return null;
+    }
+    return booking;
+  } catch (error) {
+    console.error(
+      "[AttendanceFallback] Error buscando confirmación de asistencia pendiente:",
+      error?.message || error,
+    );
+    return null;
+  }
+};
+
+const processAttendanceResponse = async ({
+  attendanceBooking,
+  attendanceAnswer,
+  sessionId,
+  companyId = null,
+  canonicalClientPhone = "",
+} = {}) => {
+  if (!attendanceBooking) return null;
+
+  const clearAttendanceState = () =>
+    sessionService.updateMeta(sessionId, {
+      awaitingAttendanceConfirmation: false,
+      attendanceBookingId: null,
+      concreteAnswerRequestedAt: null,
+    });
+
+  if (attendanceAnswer === "YES") {
+    await Booking.updateOne(
+      { _id: attendanceBooking._id },
+      {
+        $set: {
+          attendanceConfirmationStatus: "confirmed",
+          attendanceConfirmationRespondedAt: new Date(),
+        },
+      },
+    );
+
+    const updatedUser = await User.findOneAndUpdate(
+      {
+        companyId: companyId || null,
+        phoneNumber: attendanceBooking.clientPhone,
+      },
+      {
+        $inc: { attendanceConfirmedCount: 1 },
+      },
+      { returnDocument: "after" },
+    );
+
+    const confirmedCount = updatedUser?.attendanceConfirmedCount || 0;
+    let trustedThreshold = DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT;
+    try {
+      trustedThreshold = await getTrustedClientConfirmationCount(companyId);
+    } catch (_error) {
+      trustedThreshold = DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT;
+    }
+
+    clearAttendanceState();
+
+    return confirmedCount >= trustedThreshold
+      ? "Perfecto, gracias por confirmar ✅ Ya te marcamos como cliente cumplidor, no te vamos a pedir esta confirmación previa en próximos turnos."
+      : "Perfecto, gracias por confirmar ✅ Te esperamos en el club.";
+  }
+
+  await Booking.updateOne(
+    { _id: attendanceBooking._id },
+    {
+      $set: {
+        attendanceConfirmationStatus: "declined",
+        attendanceConfirmationRespondedAt: new Date(),
+      },
+    },
+  );
+
+  clearAttendanceState();
+
+  try {
+    await sendAdminNotification(
+      "attendance_declined",
+      "Cliente indicó que no asistirá",
+      `Cliente: ${attendanceBooking.clientName}\nTeléfono: ${stripPhoneForClientDisplay(canonicalClientPhone)}\nFecha: ${getFormattedDate(
+        new Date(attendanceBooking.date).toISOString().slice(0, 10),
+      )}\nHora: ${attendanceBooking?.timeSlot?.startTime || "N/D"}\nReserva ID: ${attendanceBooking._id}\n\nEl turno NO fue cancelado automáticamente. Requiere gestión del administrador.`,
+      { bookingId: attendanceBooking._id, companyId },
+      { companyId },
+    );
+  } catch (attendanceDeclinedNotificationError) {
+    console.error(
+      `[AttendanceDeclined][${companyId || "global"}] Error notificando al admin:`,
+      attendanceDeclinedNotificationError?.message ||
+        attendanceDeclinedNotificationError,
+    );
+  }
+
+  return "Gracias por avisar. Ya notificamos al administrador para que lo resuelva o te contacte.\n" +
+    "Este turno no se cancela automáticamente por esta vía; para cancelarlo, hablá con el admin.";
 };
 
 const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
@@ -1405,90 +1553,51 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           return optionsOnlyReply;
         }
 
-        if (attendanceAnswer === "YES") {
-          await Booking.updateOne(
-            { _id: attendanceBooking._id },
-            {
-              $set: {
-                attendanceConfirmationStatus: "confirmed",
-                attendanceConfirmationRespondedAt: new Date(),
-              },
-            },
-          );
-
-          const updatedUser = await User.findOneAndUpdate(
-            {
-              companyId: companyId || null,
-              phoneNumber: attendanceBooking.clientPhone,
-            },
-            {
-              $inc: { attendanceConfirmedCount: 1 },
-            },
-            { returnDocument: "after" },
-          );
-
-          const confirmedCount = updatedUser?.attendanceConfirmedCount || 0;
-          let trustedThreshold = DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT;
-          try {
-            trustedThreshold = await getTrustedClientConfirmationCount(companyId);
-          } catch (_error) {
-            trustedThreshold = DEFAULT_TRUSTED_CLIENT_CONFIRMATION_COUNT;
-          }
-          const attendanceOkReply =
-            confirmedCount >= trustedThreshold
-              ? "Perfecto, gracias por confirmar ✅ Ya te marcamos como cliente cumplidor, no te vamos a pedir esta confirmación previa en próximos turnos."
-              : "Perfecto, gracias por confirmar ✅ Te esperamos en el club.";
-
-          sessionService.updateMeta(sessionId, {
-            awaitingAttendanceConfirmation: false,
-            attendanceBookingId: null,
-            concreteAnswerRequestedAt: null,
-          });
-          sessionService.addMessage(sessionId, "user", userMessage);
-          sessionService.addMessage(sessionId, "assistant", attendanceOkReply);
-          return attendanceOkReply;
-        }
-
-        await Booking.updateOne(
-          { _id: attendanceBooking._id },
-          {
-            $set: {
-              attendanceConfirmationStatus: "declined",
-              attendanceConfirmationRespondedAt: new Date(),
-            },
-          },
-        );
-
-        sessionService.updateMeta(sessionId, {
-          awaitingAttendanceConfirmation: false,
-          attendanceBookingId: null,
-          concreteAnswerRequestedAt: null,
+        const attendanceReply = await processAttendanceResponse({
+          attendanceBooking,
+          attendanceAnswer,
+          sessionId,
+          companyId,
+          canonicalClientPhone,
         });
-
-        try {
-          await sendAdminNotification(
-            "attendance_declined",
-            "Cliente indicó que no asistirá",
-            `Cliente: ${attendanceBooking.clientName}\nTeléfono: ${stripPhoneForClientDisplay(canonicalClientPhone)}\nFecha: ${getFormattedDate(
-              new Date(attendanceBooking.date).toISOString().slice(0, 10),
-            )}\nHora: ${attendanceBooking?.timeSlot?.startTime || "N/D"}\nReserva ID: ${attendanceBooking._id}\n\nEl turno NO fue cancelado automáticamente. Requiere gestión del administrador.`,
-            { bookingId: attendanceBooking._id, companyId },
-            { companyId },
-          );
-        } catch (attendanceDeclinedNotificationError) {
-          console.error(
-            `[AttendanceDeclined][${companyId || "global"}] Error notificando al admin:`,
-            attendanceDeclinedNotificationError?.message ||
-              attendanceDeclinedNotificationError,
-          );
-        }
-        const declinedReply =
-          "Gracias por avisar. Ya notificamos al administrador para que lo resuelva o te contacte.\n" +
-          "Este turno no se cancela automáticamente por esta vía; para cancelarlo, hablá con el admin.";
-
         sessionService.addMessage(sessionId, "user", userMessage);
-        sessionService.addMessage(sessionId, "assistant", declinedReply);
-        return declinedReply;
+        sessionService.addMessage(sessionId, "assistant", attendanceReply);
+        return attendanceReply;
+      }
+    }
+
+    // Fallback de asistencia (bug @lid vs @c.us): si el mensaje parece una
+    // respuesta de asistencia pero la sesión entrante no tiene estado pendiente
+    // (el cliente responde desde otro dispositivo/identidad), buscamos una
+    // reserva con confirmación pendiente para ese cliente y la procesamos igual.
+    // No intercepta otras confirmaciones en curso (oferta/borrador/nombre).
+    const fallbackAnswer = parseAttendanceAnswer(userMessage);
+    if (
+      fallbackAnswer &&
+      !isAwaitingConcreteAnswer(sessionMeta) &&
+      looksLikeAttendanceAnswer(userMessage)
+    ) {
+      const fallbackBooking = await findPendingAttendanceBookingForClient({
+        companyId,
+        chatId,
+        candidatePhones: buildAttendanceFallbackPhones({
+          canonicalClientPhone,
+          registeredPhoneRaw,
+          resolvedNumber: number,
+        }),
+      });
+
+      if (fallbackBooking) {
+        const fallbackReply = await processAttendanceResponse({
+          attendanceBooking: fallbackBooking,
+          attendanceAnswer: fallbackAnswer,
+          sessionId,
+          companyId,
+          canonicalClientPhone,
+        });
+        sessionService.addMessage(sessionId, "user", userMessage);
+        sessionService.addMessage(sessionId, "assistant", fallbackReply);
+        return fallbackReply;
       }
     }
 
