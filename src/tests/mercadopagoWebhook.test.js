@@ -597,6 +597,55 @@ test('the webhook never hands a projected credential to getPayment', async () =>
   );
 });
 
+// ── Slice-3 end-to-end seam ──────────────────────────────────────────────────
+
+test('the default seam applies an approved deposit end-to-end (booking -> reservado)', async () => {
+  const Booking = require('../models/booking.model');
+  const { createInMemoryBookingModel } = require('./helpers/inMemoryBookingModel');
+  const model = createInMemoryBookingModel([
+    {
+      _id: BOOKING_ID,
+      companyId: COMPANY,
+      status: 'pendiente_seña',
+      finalPrice: 25000,
+      deposit: {
+        required: true,
+        amount: 5000,
+        status: 'pendiente',
+        paymentId: null,
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      },
+    },
+  ]);
+  // Persistence only; the real webhook handler + real deposit.service run.
+  Booking.findOneAndUpdate = (filter, update, options) =>
+    model.findOneAndUpdate(filter, update, options);
+
+  const handler = createWebhookHandler({
+    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
+    isAlreadyApplied: async () => false,
+    markApplied: async () => {},
+    getPayment: async () => ({ status: 'approved', external_reference: BOOKING_ID }),
+    // applyApprovedPayment is intentionally omitted -> default seam.
+  });
+
+  const res = await invoke(handler, {
+    headers: signHeaders({
+      secret: SECRET,
+      paymentId: PAYMENT_ID,
+      requestId: 'req-e2e-slice3',
+      ts: nowSeconds(),
+    }),
+    body: paymentBody(),
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.applied, true);
+  assert.equal(model.bookings[0].status, 'reservado');
+  assert.equal(model.bookings[0].deposit.status, 'pagado');
+  assert.equal(model.bookings[0].finalPrice, 20000);
+});
+
 test('concurrent duplicates may both run the seam — Slice 3 approveDeposit must be idempotent', async () => {
   const applied = new Set();
   let seamCalls = 0;
