@@ -1,21 +1,32 @@
 'use strict';
 
 // Deposit expiry sweeper. Mirrors attendanceConfirmation.service: a periodic,
-// per-company, idempotent interval job. It cancels unpaid `pendiente_seña`
-// bookings whose deadline passed, which frees the court through the existing
-// non-cancelled unique index. Each transition goes through the atomic
-// `expireDeposit` guard, so running the sweep repeatedly (or concurrently with
-// the webhook) is safe.
+// idempotent interval job. It cancels unpaid `pendiente_seña` bookings whose
+// deadline passed, which frees the court through the existing non-cancelled
+// unique index. Each transition goes through the atomic `expireDeposit` guard,
+// so running the sweep repeatedly (or concurrently with the webhook) is safe.
+//
+// The scan is GLOBAL (not filtered by the company's current `depositEnabled`):
+// a club that disables deposits must not leave outstanding holds holding courts
+// forever. Each expiry is still scoped by the booking's own `companyId`.
 
-const AppConfig = require('../models/appConfig.model');
 const Booking = require('../models/booking.model');
 const { isMongoConnected } = require('../config/database');
 const { BOOKING_STATUS, DEPOSIT_STATUS, expireDeposit } = require('./deposit.service');
 
-const CONFIG_KEY = 'main';
-const CHECK_INTERVAL_MS = Number(
-  process.env.DEPOSIT_EXPIRY_INTERVAL_MS || 60 * 1000,
+const DEFAULT_CHECK_INTERVAL_MS = 60 * 1000;
+const DEFAULT_BATCH_LIMIT = Number(process.env.DEPOSIT_EXPIRY_BATCH_LIMIT || 200);
+const DEFAULT_NOTIFY_TIMEOUT_MS = Number(
+  process.env.DEPOSIT_EXPIRY_NOTIFY_TIMEOUT_MS || 5000,
 );
+
+// Rejects NaN/zero/negative intervals instead of producing a busy loop.
+const resolveCheckInterval = (raw) => {
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_CHECK_INTERVAL_MS;
+};
+
+const CHECK_INTERVAL_MS = resolveCheckInterval(process.env.DEPOSIT_EXPIRY_INTERVAL_MS);
 
 let timer = null;
 let isRunning = false;
@@ -27,13 +38,28 @@ const defaultNotifyExpired = async (payload) => {
   return notifyDepositExpired(payload);
 };
 
-const getEnabledCompanyIds = async (configModel = AppConfig) => {
-  const query = configModel.find({ key: CONFIG_KEY, depositEnabled: true });
-  const configs =
-    query && typeof query.select === 'function'
-      ? await query.select('companyId')
-      : await query;
-  return (configs || []).map((config) => config.companyId || null);
+// Bounds any single notification so a hung WhatsApp/DB call cannot leave the
+// sweeper's `isRunning` flag set forever.
+const withTimeout = (promise, ms) => {
+  let timeoutTimer;
+  const timeout = new Promise((_, reject) => {
+    timeoutTimer = setTimeout(() => reject(new Error('notify_timeout')), ms);
+    if (timeoutTimer && typeof timeoutTimer.unref === 'function') {
+      timeoutTimer.unref();
+    }
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutTimer));
+};
+
+const notifyExpiredSafely = async (notifyExpired, payload, timeoutMs) => {
+  try {
+    await withTimeout(Promise.resolve().then(() => notifyExpired(payload)), timeoutMs);
+  } catch (error) {
+    console.error(
+      `[DepositExpiry][${payload?.companyId || 'global'}] Error notificando expiración:`,
+      error?.message || error,
+    );
+  }
 };
 
 const runDepositExpirySweep = async (options = {}) => {
@@ -50,38 +76,39 @@ const runDepositExpirySweep = async (options = {}) => {
 
   isRunning = true;
   const bookingModel = options.bookingModel || Booking;
-  const configModel = options.configModel || AppConfig;
   const now = options.now || new Date();
   const notifyExpired = options.notifyExpired || defaultNotifyExpired;
+  const notifyTimeoutMs =
+    Number.isInteger(options.notifyTimeoutMs) && options.notifyTimeoutMs > 0
+      ? options.notifyTimeoutMs
+      : DEFAULT_NOTIFY_TIMEOUT_MS;
+  const batchLimit =
+    Number.isInteger(options.limit) && options.limit > 0
+      ? options.limit
+      : DEFAULT_BATCH_LIMIT;
   const expiredIds = [];
 
   try {
-    const companyIds = await getEnabledCompanyIds(configModel);
-    for (const companyId of companyIds) {
-      const candidates = await bookingModel.find({
-        companyId,
-        status: BOOKING_STATUS.PENDING_DEPOSIT,
-        'deposit.status': DEPOSIT_STATUS.PENDING,
-        'deposit.expiresAt': { $lt: now },
-      });
+    let query = bookingModel.find({
+      status: BOOKING_STATUS.PENDING_DEPOSIT,
+      'deposit.status': DEPOSIT_STATUS.PENDING,
+      'deposit.expiresAt': { $lt: now },
+    });
+    if (query && typeof query.limit === 'function') {
+      query = query.limit(batchLimit);
+    }
+    const candidates = await query;
 
-      for (const candidate of candidates || []) {
-        const result = await expireDeposit(
-          { bookingId: candidate._id, companyId, now },
-          { model: bookingModel },
-        );
-        if (!result.expired) continue;
+    for (const candidate of candidates || []) {
+      const companyId = candidate.companyId || null;
+      const result = await expireDeposit(
+        { bookingId: candidate._id, companyId, now },
+        { model: bookingModel },
+      );
+      if (!result.expired) continue;
 
-        expiredIds.push(String(candidate._id));
-        try {
-          await notifyExpired({ booking: result.booking, companyId });
-        } catch (error) {
-          console.error(
-            `[DepositExpiry][${companyId || 'global'}] Error notificando expiración:`,
-            error?.message || error,
-          );
-        }
-      }
+      expiredIds.push(String(candidate._id));
+      await notifyExpiredSafely(notifyExpired, { booking: result.booking, companyId }, notifyTimeoutMs);
     }
 
     return { skipped: false, expiredCount: expiredIds.length, expiredIds };
@@ -106,7 +133,8 @@ const startDepositExpiryMonitor = () => {
 
 module.exports = {
   CHECK_INTERVAL_MS,
-  getEnabledCompanyIds,
+  DEFAULT_CHECK_INTERVAL_MS,
+  resolveCheckInterval,
   runDepositExpirySweep,
   startDepositExpiryMonitor,
 };
