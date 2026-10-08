@@ -13,6 +13,8 @@ const {
   DEFAULT_DEPOSIT_ENABLED,
   DEFAULT_DEPOSIT_AMOUNT,
   DEFAULT_HOLD_MINUTES,
+  MAX_DEPOSIT_AMOUNT,
+  MAX_HOLD_MINUTES,
   validateDepositSettings,
   getDepositSettings,
   setDepositSettings,
@@ -136,6 +138,36 @@ test('validateDepositSettings coerces numeric strings (triangulation)', () => {
   assert.equal(result.value.holdMinutes, 20);
 });
 
+// ── Upper bounds ─────────────────────────────────────────────────────────────
+
+test('validateDepositSettings rejects an amount above the maximum', () => {
+  const result = validateDepositSettings({
+    depositEnabled: true,
+    depositAmount: MAX_DEPOSIT_AMOUNT + 1,
+  });
+  assert.equal(result.valid, false);
+});
+
+test('validateDepositSettings rejects holdMinutes above the maximum', () => {
+  const result = validateDepositSettings({
+    depositEnabled: true,
+    depositAmount: 1000,
+    holdMinutes: MAX_HOLD_MINUTES + 1,
+  });
+  assert.equal(result.valid, false);
+});
+
+test('validateDepositSettings accepts the upper boundary values', () => {
+  const result = validateDepositSettings({
+    depositEnabled: true,
+    depositAmount: MAX_DEPOSIT_AMOUNT,
+    holdMinutes: MAX_HOLD_MINUTES,
+  });
+  assert.equal(result.valid, true);
+  assert.equal(result.value.depositAmount, MAX_DEPOSIT_AMOUNT);
+  assert.equal(result.value.holdMinutes, MAX_HOLD_MINUTES);
+});
+
 // ── Persistence ──────────────────────────────────────────────────────────────
 
 test('setDepositSettings rejects an invalid amount without persisting', async () => {
@@ -169,6 +201,49 @@ test('setDepositSettings persists only deposit fields (additive, no retroactivit
     'depositEnabled',
     'holdMinutes',
   ]);
+});
+
+test('setDepositSettings merges a partial update over current settings', async () => {
+  const model = createFakeConfigModel();
+  model.setDoc({ depositEnabled: true, depositAmount: 5000, holdMinutes: 15 });
+
+  await setDepositSettings({ holdMinutes: 30 }, COMPANY_A, { model });
+
+  const { update } = model.calls.findOneAndUpdate[0];
+  assert.deepEqual(Object.keys(update.$set), ['holdMinutes']);
+  assert.equal(update.$set.holdMinutes, 30);
+});
+
+test('setDepositSettings keeps unspecified fields when enabling', async () => {
+  const model = createFakeConfigModel();
+  model.setDoc({ depositEnabled: false, depositAmount: 5000, holdMinutes: 30 });
+
+  await setDepositSettings({ depositEnabled: true }, COMPANY_A, { model });
+
+  const { update } = model.calls.findOneAndUpdate[0];
+  assert.deepEqual(Object.keys(update.$set), ['depositEnabled']);
+  assert.equal(update.$set.depositEnabled, true);
+});
+
+test('setDepositSettings rejects enabling when the merged amount is zero', async () => {
+  const model = createFakeConfigModel();
+  model.setDoc({ depositEnabled: false, depositAmount: 0, holdMinutes: 15 });
+
+  await assert.rejects(
+    setDepositSettings({ depositEnabled: true }, COMPANY_A, { model }),
+    (error) => error.statusCode === 400,
+  );
+  assert.equal(model.calls.findOneAndUpdate.length, 0);
+});
+
+test('setDepositSettings rejects an empty patch without persisting', async () => {
+  const model = createFakeConfigModel();
+
+  await assert.rejects(
+    setDepositSettings({}, COMPANY_A, { model }),
+    (error) => error.statusCode === 400,
+  );
+  assert.equal(model.calls.findOneAndUpdate.length, 0);
 });
 
 test('getDepositSettings returns defaults for an empty config', async () => {
@@ -210,4 +285,15 @@ test('AppConfig exposes the deposit fields with safe defaults', () => {
   assert.equal(AppConfig.schema.path('depositEnabled').defaultValue, false);
   assert.equal(AppConfig.schema.path('depositAmount').defaultValue, 0);
   assert.equal(AppConfig.schema.path('holdMinutes').defaultValue, 15);
+});
+
+test('AppConfig enforces the deposit upper bounds in the schema', () => {
+  assert.equal(
+    AppConfig.schema.path('depositAmount').options.max,
+    MAX_DEPOSIT_AMOUNT,
+  );
+  assert.equal(
+    AppConfig.schema.path('holdMinutes').options.max,
+    MAX_HOLD_MINUTES,
+  );
 });

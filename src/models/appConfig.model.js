@@ -100,11 +100,13 @@ const appConfigSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+      max: 10000000,
     },
     holdMinutes: {
       type: Number,
       default: 15,
       min: 1,
+      max: 1440,
     },
   },
   {
@@ -115,3 +117,5 @@ const appConfigSchema = new mongoose.Schema(
 appConfigSchema.index({ companyId: 1, key: 1 }, { unique: true });
 
 module.exports = mongoose.model("AppConfig", appConfigSchema);
+module.exports.MAX_DEPOSIT_AMOUNT = 10000000;
+module.exports.MAX_HOLD_MINUTES = 1440;

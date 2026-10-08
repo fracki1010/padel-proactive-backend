@@ -1,5 +1,8 @@
 const AppConfig = require("../models/appConfig.model");
 
+const MAX_DEPOSIT_AMOUNT = AppConfig.MAX_DEPOSIT_AMOUNT;
+const MAX_HOLD_MINUTES = AppConfig.MAX_HOLD_MINUTES;
+
 const CONFIG_KEY = "main";
 const DEFAULT_PENALTY_LIMIT = 2;
 const DEFAULT_PENALTY_SYSTEM_ENABLED = true;
@@ -65,6 +68,7 @@ const normalizeCancellationLockHours = (value) => {
 const DEFAULT_DEPOSIT_ENABLED = false;
 const DEFAULT_DEPOSIT_AMOUNT = 0;
 const DEFAULT_HOLD_MINUTES = 15;
+const DEPOSIT_FIELDS = ["depositEnabled", "depositAmount", "holdMinutes"];
 
 const normalizeString = (value) =>
   typeof value === "string" ? value.trim() : String(value || "").trim();
@@ -74,7 +78,7 @@ const isBlank = (value) =>
 
 const normalizeDepositAmount = (value) => {
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) {
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > MAX_DEPOSIT_AMOUNT) {
     return DEFAULT_DEPOSIT_AMOUNT;
   }
   return parsed;
@@ -82,55 +86,90 @@ const normalizeDepositAmount = (value) => {
 
 const normalizeHoldMinutes = (value) => {
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_HOLD_MINUTES) {
     return DEFAULT_HOLD_MINUTES;
   }
   return parsed;
 };
 
-// Pure validator shared by the service and the admin route.
-// Returns { valid, error, value } so callers can map invalid input to HTTP 400.
-const validateDepositSettings = (input = {}) => {
+// Pure: merges the provided deposit fields over the current settings and
+// validates the result. Returns { valid, error, provided, value } so callers
+// can map invalid input to HTTP 400 and persist only the provided fields.
+const resolveDepositUpdate = (input = {}, current = {}) => {
   const source = input && typeof input === "object" ? input : {};
-  const depositEnabled =
-    typeof source.depositEnabled === "boolean"
-      ? source.depositEnabled
-      : DEFAULT_DEPOSIT_ENABLED;
+  const provided = DEPOSIT_FIELDS.filter((field) =>
+    Object.prototype.hasOwnProperty.call(source, field),
+  );
+  const value = {
+    depositEnabled:
+      typeof current?.depositEnabled === "boolean"
+        ? current.depositEnabled
+        : DEFAULT_DEPOSIT_ENABLED,
+    depositAmount: normalizeDepositAmount(current?.depositAmount),
+    holdMinutes: normalizeHoldMinutes(current?.holdMinutes),
+  };
 
-  const hasAmount = !isBlank(source.depositAmount);
-  const depositAmount = hasAmount
-    ? Number(source.depositAmount)
-    : DEFAULT_DEPOSIT_AMOUNT;
-  if (hasAmount && (!Number.isInteger(depositAmount) || depositAmount < 0)) {
-    return {
-      valid: false,
-      error: "depositAmount must be an integer greater than or equal to 0.",
-    };
+  if (provided.includes("depositEnabled")) {
+    if (typeof source.depositEnabled !== "boolean") {
+      return {
+        valid: false,
+        error: "depositEnabled must be a boolean.",
+        provided,
+        value,
+      };
+    }
+    value.depositEnabled = source.depositEnabled;
   }
-  if (depositEnabled && depositAmount <= 0) {
+
+  if (provided.includes("depositAmount")) {
+    const amount = Number(source.depositAmount);
+    if (
+      isBlank(source.depositAmount) ||
+      !Number.isInteger(amount) ||
+      amount < 0 ||
+      amount > MAX_DEPOSIT_AMOUNT
+    ) {
+      return {
+        valid: false,
+        error: `depositAmount must be an integer between 0 and ${MAX_DEPOSIT_AMOUNT}.`,
+        provided,
+        value,
+      };
+    }
+    value.depositAmount = amount;
+  }
+
+  if (provided.includes("holdMinutes")) {
+    const holdMinutes = Number(source.holdMinutes);
+    if (
+      isBlank(source.holdMinutes) ||
+      !Number.isInteger(holdMinutes) ||
+      holdMinutes < 1 ||
+      holdMinutes > MAX_HOLD_MINUTES
+    ) {
+      return {
+        valid: false,
+        error: `holdMinutes must be an integer between 1 and ${MAX_HOLD_MINUTES}.`,
+        provided,
+        value,
+      };
+    }
+    value.holdMinutes = holdMinutes;
+  }
+
+  if (value.depositEnabled && value.depositAmount <= 0) {
     return {
       valid: false,
       error: "depositAmount must be greater than 0 when deposits are enabled.",
+      provided,
+      value,
     };
   }
 
-  const hasHoldMinutes = !isBlank(source.holdMinutes);
-  const holdMinutes = hasHoldMinutes
-    ? Number(source.holdMinutes)
-    : DEFAULT_HOLD_MINUTES;
-  if (!Number.isInteger(holdMinutes) || holdMinutes < 1) {
-    return {
-      valid: false,
-      error: "holdMinutes must be an integer greater than or equal to 1.",
-    };
-  }
-
-  return {
-    valid: true,
-    error: null,
-    value: { depositEnabled, depositAmount, holdMinutes },
-  };
+  return { valid: true, error: null, provided, value };
 };
+
+const validateDepositSettings = (input = {}) => resolveDepositUpdate(input, {});
 
 const resolveConfigModel = (options) =>
   (options && options.model) || AppConfig;
@@ -147,22 +186,29 @@ const getDepositSettings = async (companyId = null, options = {}) => {
 };
 
 const setDepositSettings = async (settings = {}, companyId = null, options = {}) => {
-  const { valid, error, value } = validateDepositSettings(settings);
+  const model = resolveConfigModel(options);
+  const current = await getDepositSettings(companyId, options);
+  const { valid, error, provided, value } = resolveDepositUpdate(settings, current);
+
   if (!valid) {
     const validationError = new Error(error);
     validationError.statusCode = 400;
     throw validationError;
   }
+  if (provided.length === 0) {
+    const validationError = new Error("At least one deposit setting is required.");
+    validationError.statusCode = 400;
+    throw validationError;
+  }
 
-  return resolveConfigModel(options).findOneAndUpdate(
+  const depositPatch = {};
+  for (const field of provided) {
+    depositPatch[field] = value[field];
+  }
+
+  return model.findOneAndUpdate(
     buildConfigFilter(companyId),
-    {
-      $set: {
-        depositEnabled: value.depositEnabled,
-        depositAmount: value.depositAmount,
-        holdMinutes: value.holdMinutes,
-      },
-    },
+    { $set: depositPatch },
     { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 };
@@ -497,6 +543,8 @@ module.exports = {
   DEFAULT_DEPOSIT_AMOUNT,
   DEFAULT_DEPOSIT_ENABLED,
   DEFAULT_HOLD_MINUTES,
+  MAX_DEPOSIT_AMOUNT,
+  MAX_HOLD_MINUTES,
   DEFAULT_PENALTY_LIMIT,
   DEFAULT_PENALTY_SYSTEM_ENABLED,
   DEFAULT_STRICT_QUESTION_FLOW_ENABLED,
@@ -525,6 +573,7 @@ module.exports = {
   setDailyAvailabilityDigestStatus,
   setDailyAvailabilityDigestLastSentDate,
   validateDepositSettings,
+  resolveDepositUpdate,
   getDepositSettings,
   setDepositSettings,
 };
