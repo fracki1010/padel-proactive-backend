@@ -200,9 +200,12 @@ const resolveActiveCredential = async (companyId, options = {}) => {
 
 // Creates a Checkout Pro preference for a booking's deposit. The amount is the
 // configured fixed seña; `external_reference` carries the booking id so the
-// webhook can link the payment back. The club token is used and never logged.
+// webhook can link the payment back. When `expiresAt` is provided it is sent as
+// `expiration_date_to` so Checkout Pro stops accepting the payment after the
+// booking hold deadline (prevents most late payments). The club token is used
+// and never logged.
 const createDepositPreference = async (payload = {}, options = {}) => {
-  const { companyId, booking, depositAmount, backUrls, notificationUrl } = payload;
+  const { companyId, booking, depositAmount, backUrls, notificationUrl, expiresAt } = payload;
   const credential = await resolveActiveCredential(companyId, options);
   if (!credential || credential.isActive === false) {
     throw new MercadoPagoError('MercadoPago is not configured for this club.', 409);
@@ -232,6 +235,10 @@ const createDepositPreference = async (payload = {}, options = {}) => {
   };
   if (backUrls && typeof backUrls === 'object') {
     body.back_urls = backUrls;
+  }
+  const expirationDate = expiresAt ? new Date(expiresAt) : null;
+  if (expirationDate && !Number.isNaN(expirationDate.getTime())) {
+    body.expiration_date_to = expirationDate.toISOString();
   }
   // Prefer an explicit caller value, then the shared env configuration. The MP
   // dashboard notification URL is the fallback if neither is set.

@@ -4,8 +4,9 @@
 // messages for the pending/paid/expired deposit events. Reuses
 // `notificationService.sendAdminNotification` and `enqueueWhatsappCommand`.
 // Services are injectable (`deps`) so the notifiers can be tested without a
-// queue, a database or a live WhatsApp worker. All enqueues are best-effort:
-// a transient queue failure never throws back into the booking/webhook flow.
+// queue, a database or a live WhatsApp worker. Every side effect is best-effort
+// and INDEPENDENT: a failing admin alert must never suppress the client message
+// (and vice versa), and a failure never throws back into the booking flow.
 
 const notificationService = require('./notificationService');
 const whatsappCommandQueue = require('./whatsappCommandQueue.service');
@@ -21,6 +22,8 @@ const NOTIFICATION_TYPES = {
   PENDING: 'deposit_pending',
   PAID: 'deposit_paid',
   EXPIRED: 'deposit_expired',
+  LATE_PAYMENT: 'deposit_late_payment',
+  AMOUNT_MISMATCH: 'deposit_amount_mismatch',
 };
 
 const resolveDeps = (deps = {}) => ({
@@ -29,6 +32,21 @@ const resolveDeps = (deps = {}) => ({
   enqueueWhatsappCommand:
     deps.enqueueWhatsappCommand || whatsappCommandQueue.enqueueWhatsappCommand,
 });
+
+// Runs a best-effort side effect, never throwing. Each side effect in a notifier
+// runs through this so one failing channel cannot suppress the others.
+const runSafe = async (label, fn) => {
+  try {
+    const value = await fn();
+    return { ok: true, value };
+  } catch (error) {
+    console.error(
+      `[DepositNotification] ${label} failed:`,
+      error?.message || error,
+    );
+    return { ok: false, error };
+  }
+};
 
 const buildClientChatId = (rawPhone) => {
   const digits = normalizeCanonicalClientPhone(rawPhone);
@@ -39,20 +57,14 @@ const buildClientChatId = (rawPhone) => {
 const enqueueClientMessage = async ({ companyId, phone, message, enqueue }) => {
   const chatId = buildClientChatId(phone);
   if (!chatId) return null;
-  try {
-    await enqueue({
+  const result = await runSafe('client whatsapp enqueue', () =>
+    enqueue({
       companyId,
       type: whatsappCommandQueue.COMMAND_TYPES.SEND_MESSAGE,
       payload: { to: chatId, message },
-    });
-    return chatId;
-  } catch (error) {
-    console.error(
-      '[DepositNotification] No se pudo encolar el mensaje al cliente:',
-      error?.message || error,
-    );
-    return null;
-  }
+    }),
+  );
+  return result.ok ? chatId : null;
 };
 
 const notifyDepositPending = async (
@@ -62,14 +74,16 @@ const notifyDepositPending = async (
   const { sendAdminNotification, enqueueWhatsappCommand: enqueue } = resolveDeps(deps);
   const amount = booking?.deposit?.amount ?? 0;
 
-  await sendAdminNotification(
-    NOTIFICATION_TYPES.PENDING,
-    'Reserva con seña pendiente',
-    `Cliente: ${booking?.clientName || 'N/D'}\nFecha: ${formatBookingDateShort(
-      booking?.date,
-    )}\nSeña: $${amount}`,
-    { bookingId: booking?._id, companyId },
-    { companyId },
+  const adminResult = await runSafe('deposit_pending admin', () =>
+    sendAdminNotification(
+      NOTIFICATION_TYPES.PENDING,
+      'Reserva con seña pendiente',
+      `Cliente: ${booking?.clientName || 'N/D'}\nFecha: ${formatBookingDateShort(
+        booking?.date,
+      )}\nSeña: $${amount}`,
+      { bookingId: booking?._id, companyId },
+      { companyId },
+    ),
   );
 
   const message = buildDepositPaymentMessage({
@@ -86,20 +100,22 @@ const notifyDepositPending = async (
     enqueue,
   });
 
-  return { notified: true, chatId };
+  return { notified: true, adminNotified: adminResult.ok, chatId };
 };
 
 const notifyDepositPaid = async ({ booking, companyId = null }, deps = {}) => {
   const { sendAdminNotification, enqueueWhatsappCommand: enqueue } = resolveDeps(deps);
 
-  await sendAdminNotification(
-    NOTIFICATION_TYPES.PAID,
-    'Seña pagada',
-    `Cliente: ${booking?.clientName || 'N/D'}\nFecha: ${formatBookingDateShort(
-      booking?.date,
-    )}\nSeña: $${booking?.deposit?.amount ?? 0}\nLa reserva quedó confirmada.`,
-    { bookingId: booking?._id, companyId },
-    { companyId },
+  const adminResult = await runSafe('deposit_paid admin', () =>
+    sendAdminNotification(
+      NOTIFICATION_TYPES.PAID,
+      'Seña pagada',
+      `Cliente: ${booking?.clientName || 'N/D'}\nFecha: ${formatBookingDateShort(
+        booking?.date,
+      )}\nSeña: $${booking?.deposit?.amount ?? 0}\nLa reserva quedó confirmada.`,
+      { bookingId: booking?._id, companyId },
+      { companyId },
+    ),
   );
 
   const chatId = await enqueueClientMessage({
@@ -109,20 +125,22 @@ const notifyDepositPaid = async ({ booking, companyId = null }, deps = {}) => {
     enqueue,
   });
 
-  return { notified: true, chatId };
+  return { notified: true, adminNotified: adminResult.ok, chatId };
 };
 
 const notifyDepositExpired = async ({ booking, companyId = null }, deps = {}) => {
   const { sendAdminNotification, enqueueWhatsappCommand: enqueue } = resolveDeps(deps);
 
-  await sendAdminNotification(
-    NOTIFICATION_TYPES.EXPIRED,
-    'Seña vencida',
-    `Cliente: ${booking?.clientName || 'N/D'}\nFecha: ${formatBookingDateShort(
-      booking?.date,
-    )}\nNo se acreditó la seña a tiempo; el turno fue liberado.`,
-    { bookingId: booking?._id, companyId },
-    { companyId },
+  const adminResult = await runSafe('deposit_expired admin', () =>
+    sendAdminNotification(
+      NOTIFICATION_TYPES.EXPIRED,
+      'Seña vencida',
+      `Cliente: ${booking?.clientName || 'N/D'}\nFecha: ${formatBookingDateShort(
+        booking?.date,
+      )}\nNo se acreditó la seña a tiempo; el turno fue liberado.`,
+      { bookingId: booking?._id, companyId },
+      { companyId },
+    ),
   );
 
   const chatId = await enqueueClientMessage({
@@ -132,13 +150,62 @@ const notifyDepositExpired = async ({ booking, companyId = null }, deps = {}) =>
     enqueue,
   });
 
-  return { notified: true, chatId };
+  return { notified: true, adminNotified: adminResult.ok, chatId };
+};
+
+// A payment approved after the hold died: the money is captured but the court is
+// gone, so this needs MANUAL review/refund. Admin-only — the client already got
+// the expiry message; no confirmation is sent.
+const notifyDepositLatePayment = async (
+  { booking, companyId = null, bookingId = null, paymentId = null },
+  deps = {},
+) => {
+  const { sendAdminNotification } = resolveDeps(deps);
+  const resolvedBookingId = booking?._id || bookingId;
+
+  const adminResult = await runSafe('deposit_late_payment admin', () =>
+    sendAdminNotification(
+      NOTIFICATION_TYPES.LATE_PAYMENT,
+      'Pago recibido fuera de término',
+      `Cliente: ${booking?.clientName || 'N/D'}\nFecha: ${formatBookingDateShort(
+        booking?.date,
+      )}\nPago: ${paymentId || 'N/D'}\nEl pago se acreditó DESPUÉS de liberarse el turno. Revisar y reembolsar si corresponde.`,
+      { bookingId: resolvedBookingId, paymentId, companyId },
+      { companyId },
+    ),
+  );
+
+  return { notified: true, adminNotified: adminResult.ok, reviewRequired: true };
+};
+
+// The captured amount does not match the configured seña: do not confirm;
+// admin-only review notification.
+const notifyDepositAmountMismatch = async (
+  { booking, companyId = null, bookingId = null, paymentId = null, expected = null, received = null },
+  deps = {},
+) => {
+  const { sendAdminNotification } = resolveDeps(deps);
+  const resolvedBookingId = booking?._id || bookingId;
+
+  const adminResult = await runSafe('deposit_amount_mismatch admin', () =>
+    sendAdminNotification(
+      NOTIFICATION_TYPES.AMOUNT_MISMATCH,
+      'Monto de seña no coincide',
+      `Cliente: ${booking?.clientName || 'N/D'}\nPago: ${paymentId || 'N/D'}\nEsperado: $${expected ?? 'N/D'}\nRecibido: $${received ?? 'N/D'}\nNo se confirmó la reserva; revisar manualmente.`,
+      { bookingId: resolvedBookingId, paymentId, expected, received, companyId },
+      { companyId },
+    ),
+  );
+
+  return { notified: true, adminNotified: adminResult.ok, reviewRequired: true };
 };
 
 module.exports = {
   NOTIFICATION_TYPES,
   buildClientChatId,
+  notifyDepositAmountMismatch,
   notifyDepositExpired,
+  notifyDepositLatePayment,
   notifyDepositPaid,
   notifyDepositPending,
 };

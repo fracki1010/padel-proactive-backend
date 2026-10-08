@@ -13,6 +13,22 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-deposit-lifecycl
 
 const { createInMemoryBookingModel } = require('./helpers/inMemoryBookingModel');
 
+// Patch the MP preference call BEFORE deposit.service is first required so its
+// destructured reference captures the recorder.
+const mpService = require('../services/mercadopago.service');
+const mpPreference = { calls: [] };
+mpService.createDepositPreference = async (args, options) => {
+  mpPreference.calls.push({ args, options });
+  return { initPoint: 'https://mp/checkout/pref-x', preferenceId: 'pref-x' };
+};
+
+// Neutralize the real notification side effects; deposit.service lazy-requires
+// these modules and reads the properties at call time.
+const notificationService = require('../services/notificationService');
+const whatsappQueue = require('../services/whatsappCommandQueue.service');
+notificationService.sendAdminNotification = async () => ({ queuedCount: 0 });
+whatsappQueue.enqueueWhatsappCommand = async () => ({ command: { _id: 'cmd-x' } });
+
 const COMPANY = '64b0000000000000000000a1';
 const OTHER_COMPANY = '64b0000000000000000000b2';
 const BOOKING_ID = '64b0000000000000000000c3';
@@ -246,7 +262,7 @@ test('approve vs expire race: exactly one transition wins', async () => {
 
 // ── markRefundableOnCancel ───────────────────────────────────────────────────
 
-test('markRefundableOnCancel flags a paid deposit as refunded', () => {
+test('markRefundableOnCancel flags a paid deposit as refund_pending (not refunded)', () => {
   const { markRefundableOnCancel } = require('../services/deposit.service');
 
   const patch = markRefundableOnCancel({
@@ -254,7 +270,11 @@ test('markRefundableOnCancel flags a paid deposit as refunded', () => {
   });
 
   assert.equal(patch.refundable, true);
-  assert.equal(patch.deposit.status, 'reembolsado');
+  assert.equal(
+    patch.deposit.status,
+    'refund_pending',
+    'a refund still has to be executed; do not claim reembolsado yet',
+  );
   assert.equal(patch.deposit.refundable, true);
 
   // Triangulate: an unpaid pending deposit has nothing to refund.
@@ -262,10 +282,104 @@ test('markRefundableOnCancel flags a paid deposit as refunded', () => {
     deposit: { status: 'pendiente', amount: 5000, refundable: false },
   });
   assert.equal(pendingPatch.refundable, false);
-  assert.notEqual(pendingPatch.deposit.status, 'reembolsado');
+  assert.notEqual(pendingPatch.deposit.status, 'refund_pending');
 
   // A booking without a deposit is untouched.
   assert.deepEqual(markRefundableOnCancel({}), { refundable: false, deposit: null });
+});
+
+// ── Payability guard + payment link ──────────────────────────────────────────
+
+test('isBookingDepositPayable only allows a non-expired pending booking', () => {
+  const { isBookingDepositPayable } = require('../services/deposit.service');
+  const now = new Date('2026-10-08T12:00:00.000Z');
+  const base = {
+    status: 'pendiente_seña',
+    deposit: { status: 'pendiente', expiresAt: new Date('2026-10-08T12:15:00.000Z') },
+  };
+
+  assert.equal(isBookingDepositPayable(base, now), true);
+  assert.equal(
+    isBookingDepositPayable(
+      { ...base, deposit: { ...base.deposit, expiresAt: new Date('2026-10-08T11:59:00.000Z') } },
+      now,
+    ),
+    false,
+    'an expired hold must not be payable',
+  );
+  assert.equal(isBookingDepositPayable({ ...base, status: 'cancelado' }, now), false);
+  assert.equal(isBookingDepositPayable({ ...base, status: 'reservado' }, now), false);
+  assert.equal(isBookingDepositPayable(null, now), false);
+});
+
+test('buildDepositPaymentLink refuses to mint a live link for a dead booking', async () => {
+  const { buildDepositPaymentLink, BOOKING_STATUS } = require('../services/deposit.service');
+  mpPreference.calls.length = 0;
+  const stubModel = { updateOne: async () => ({ matchedCount: 0 }) };
+
+  const expired = await buildDepositPaymentLink(
+    {
+      companyId: COMPANY,
+      booking: {
+        _id: BOOKING_ID,
+        status: BOOKING_STATUS.PENDING_DEPOSIT,
+        deposit: { status: 'pendiente', expiresAt: new Date(Date.now() - 60 * 1000) },
+      },
+      settings: { depositAmount: 5000, holdMinutes: 15 },
+    },
+    { model: stubModel },
+  );
+  assert.equal(expired.initPoint, '');
+  assert.equal(expired.blocked, true);
+  assert.equal(mpPreference.calls.length, 0, 'must not call MercadoPago for an expired hold');
+
+  const cancelled = await buildDepositPaymentLink(
+    {
+      companyId: COMPANY,
+      booking: { _id: BOOKING_ID, status: BOOKING_STATUS.CANCELLED, deposit: null },
+      settings: { depositAmount: 5000, holdMinutes: 15 },
+    },
+    { model: stubModel },
+  );
+  assert.equal(cancelled.blocked, true);
+  assert.equal(mpPreference.calls.length, 0);
+
+  // Triangulate: a live pending booking still mints a link and forwards the
+  // hold deadline as the preference expiration.
+  const live = await buildDepositPaymentLink(
+    {
+      companyId: COMPANY,
+      booking: {
+        _id: BOOKING_ID,
+        status: BOOKING_STATUS.PENDING_DEPOSIT,
+        deposit: { status: 'pendiente', expiresAt: new Date(Date.now() + 15 * 60 * 1000) },
+      },
+      settings: { depositAmount: 5000, holdMinutes: 15 },
+    },
+    { model: stubModel },
+  );
+  assert.equal(live.initPoint, 'https://mp/checkout/pref-x');
+  assert.equal(mpPreference.calls.length, 1);
+  assert.ok(mpPreference.calls[0].args.expiresAt instanceof Date);
+});
+
+// ── getBookingForDeposit ─────────────────────────────────────────────────────
+
+test('getBookingForDeposit returns the company-scoped booking or null', async () => {
+  const { getBookingForDeposit } = require('../services/deposit.service');
+  const model = createInMemoryBookingModel([pendingBooking()]);
+
+  const found = await getBookingForDeposit(
+    { companyId: COMPANY, bookingId: BOOKING_ID },
+    { model },
+  );
+  assert.equal(String(found._id), BOOKING_ID);
+
+  const crossCompany = await getBookingForDeposit(
+    { companyId: OTHER_COMPANY, bookingId: BOOKING_ID },
+    { model },
+  );
+  assert.equal(crossCompany, null);
 });
 
 // ── Slice-2 webhook seam integration ─────────────────────────────────────────

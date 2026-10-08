@@ -191,7 +191,7 @@ test('cancelling a booking with a paid deposit marks it refundable', async () =>
 
   assert.equal(res.payload.success, true);
   assert.equal(booking.status, 'cancelado');
-  assert.equal(booking.deposit.status, 'reembolsado');
+  assert.equal(booking.deposit.status, 'refund_pending');
   assert.equal(booking.deposit.refundable, true);
   assert.equal(booking.saved, true);
 });

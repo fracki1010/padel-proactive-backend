@@ -9,7 +9,7 @@ const depositSchema = new mongoose.Schema(
     amount: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ["pendiente", "pagado", "expirado", "reembolsado"],
+      enum: ["pendiente", "pagado", "expirado", "refund_pending", "reembolsado"],
       default: null,
     },
     preferenceId: { type: String, default: null },

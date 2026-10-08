@@ -24,6 +24,34 @@ const {
   createWebhookRouter,
   webhookRateLimiter,
 } = require('../routes/webhook.routes');
+const Booking = require('../models/booking.model');
+const { createInMemoryBookingModel } = require('./helpers/inMemoryBookingModel');
+const notificationService = require('../services/notificationService');
+const whatsappQueue = require('../services/whatsappCommandQueue.service');
+
+// Recorders for the real notification side effects triggered by the default
+// seam. depositNotification.service reads these module properties at call time.
+const notifyState = { admin: [], enqueued: [] };
+notificationService.sendAdminNotification = async (type, title, message, data = {}, options = {}) => {
+  notifyState.admin.push({ type, title, message, data, options });
+  return { queuedCount: 0 };
+};
+whatsappQueue.enqueueWhatsappCommand = async (command) => {
+  notifyState.enqueued.push(command);
+  return { command: { _id: 'cmd-1' } };
+};
+const resetNotifyState = () => {
+  notifyState.admin.length = 0;
+  notifyState.enqueued.length = 0;
+};
+
+// Point the real Booking persistence at an in-memory collection.
+const useBookingModel = (bookings) => {
+  const model = createInMemoryBookingModel(bookings);
+  Booking.findOneAndUpdate = model.findOneAndUpdate;
+  Booking.findOne = model.findOne;
+  return model;
+};
 
 const COMPANY = '64b0000000000000000000a1';
 const BOOKING_ID = '64b0000000000000000000c3';
@@ -599,13 +627,14 @@ test('the webhook never hands a projected credential to getPayment', async () =>
 
 // ── Slice-3 end-to-end seam ──────────────────────────────────────────────────
 
-test('the default seam applies an approved deposit end-to-end (booking -> reservado)', async () => {
-  const Booking = require('../models/booking.model');
-  const { createInMemoryBookingModel } = require('./helpers/inMemoryBookingModel');
-  const model = createInMemoryBookingModel([
+test('the default seam applies an approved deposit end-to-end (booking -> reservado + client paid message)', async () => {
+  resetNotifyState();
+  const model = useBookingModel([
     {
       _id: BOOKING_ID,
       companyId: COMPANY,
+      clientName: 'Ana',
+      clientPhone: '5491100000000',
       status: 'pendiente_seña',
       finalPrice: 25000,
       deposit: {
@@ -617,15 +646,16 @@ test('the default seam applies an approved deposit end-to-end (booking -> reserv
       },
     },
   ]);
-  // Persistence only; the real webhook handler + real deposit.service run.
-  Booking.findOneAndUpdate = (filter, update, options) =>
-    model.findOneAndUpdate(filter, update, options);
 
   const handler = createWebhookHandler({
     resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
     isAlreadyApplied: async () => false,
     markApplied: async () => {},
-    getPayment: async () => ({ status: 'approved', external_reference: BOOKING_ID }),
+    getPayment: async () => ({
+      status: 'approved',
+      external_reference: BOOKING_ID,
+      transaction_amount: 5000,
+    }),
     // applyApprovedPayment is intentionally omitted -> default seam.
   });
 
@@ -644,6 +674,187 @@ test('the default seam applies an approved deposit end-to-end (booking -> reserv
   assert.equal(model.bookings[0].status, 'reservado');
   assert.equal(model.bookings[0].deposit.status, 'pagado');
   assert.equal(model.bookings[0].finalPrice, 20000);
+
+  // BLOCKER 2: the paying client must get a "seña acreditada" message and the
+  // admin a deposit_paid alert; previously this path was silent.
+  assert.ok(
+    notifyState.admin.some((entry) => entry.type === 'deposit_paid'),
+    'admin must be notified the deposit was paid',
+  );
+  assert.ok(
+    notifyState.enqueued.some((entry) => /Seña acreditada/i.test(entry.payload.message)),
+    'the client must receive the deposit-paid message',
+  );
+});
+
+// ── BLOCKER 1 / WARNING 4 / SUGGESTION 11: late, idempotent, mismatch ─────────
+
+const seamWithDefault = (overrides = {}) =>
+  createWebhookHandler({
+    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
+    isAlreadyApplied: async () => false,
+    markApplied: async () => {},
+    // applyApprovedPayment omitted -> default seam.
+    ...overrides,
+  });
+
+const invokeSigned = (handler, requestId) =>
+  invoke(handler, {
+    headers: signHeaders({
+      secret: SECRET,
+      paymentId: PAYMENT_ID,
+      requestId,
+      ts: nowSeconds(),
+    }),
+    body: paymentBody(),
+  });
+
+test('a late payment (hold already expired) is acked, alerted and never re-books', async () => {
+  resetNotifyState();
+  let appliedRow = null;
+  const model = useBookingModel([
+    {
+      _id: BOOKING_ID,
+      companyId: COMPANY,
+      clientName: 'Ana',
+      status: 'cancelado',
+      finalPrice: 25000,
+      deposit: { required: true, amount: 5000, status: 'expirado', paymentId: null },
+    },
+  ]);
+
+  const res = await invokeSigned(
+    seamWithDefault({
+      getPayment: async () => ({
+        status: 'approved',
+        external_reference: BOOKING_ID,
+        transaction_amount: 5000,
+      }),
+      markApplied: async (doc) => {
+        appliedRow = doc;
+      },
+    }),
+    'req-late',
+  );
+
+  assert.equal(res.statusCode, 200, 'a late payment must not loop 503 forever');
+  assert.equal(res.payload.applied, true);
+  assert.equal(model.bookings[0].status, 'cancelado', 'must not re-book a freed court');
+  assert.equal(model.bookings[0].deposit.status, 'expirado');
+  assert.ok(
+    notifyState.admin.some((entry) => entry.type === 'deposit_late_payment'),
+    'admins must be alerted to review/refund',
+  );
+  assert.ok(appliedRow, 'the processed row must be persisted so MP stops retrying');
+});
+
+test('an already-paid retry is idempotent success (WARNING 4)', async () => {
+  resetNotifyState();
+  let appliedRow = null;
+  const model = useBookingModel([
+    {
+      _id: BOOKING_ID,
+      companyId: COMPANY,
+      status: 'reservado',
+      finalPrice: 20000,
+      deposit: { required: true, amount: 5000, status: 'pagado', paymentId: PAYMENT_ID },
+    },
+  ]);
+
+  const res = await invokeSigned(
+    seamWithDefault({
+      getPayment: async () => ({
+        status: 'approved',
+        external_reference: BOOKING_ID,
+        transaction_amount: 5000,
+      }),
+      markApplied: async (doc) => {
+        appliedRow = doc;
+      },
+    }),
+    'req-retry-applied',
+  );
+
+  assert.equal(res.statusCode, 200, 'a retry after a successful apply must ack, not 503');
+  assert.equal(res.payload.applied, true);
+  assert.equal(model.bookings[0].finalPrice, 20000, 'must not deduct twice');
+  assert.ok(appliedRow, 'the retry must be able to persist the applied row');
+  assert.equal(
+    notifyState.admin.some((entry) => entry.type === 'deposit_late_payment'),
+    false,
+    'an already-applied retry is not a late payment',
+  );
+});
+
+test('a transaction_amount mismatch is not silently confirmed (SUGGESTION 11)', async () => {
+  resetNotifyState();
+  let appliedRow = null;
+  const model = useBookingModel([
+    {
+      _id: BOOKING_ID,
+      companyId: COMPANY,
+      clientName: 'Ana',
+      status: 'pendiente_seña',
+      finalPrice: 25000,
+      deposit: {
+        required: true,
+        amount: 5000,
+        status: 'pendiente',
+        paymentId: null,
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      },
+    },
+  ]);
+
+  const res = await invokeSigned(
+    seamWithDefault({
+      getPayment: async () => ({
+        status: 'approved',
+        external_reference: BOOKING_ID,
+        transaction_amount: 4500,
+      }),
+      markApplied: async (doc) => {
+        appliedRow = doc;
+      },
+    }),
+    'req-mismatch',
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(
+    model.bookings[0].status,
+    'pendiente_seña',
+    'a mismatched amount must NOT auto-confirm the booking',
+  );
+  assert.equal(model.bookings[0].deposit.status, 'pendiente');
+  assert.ok(
+    notifyState.admin.some((entry) => entry.type === 'deposit_amount_mismatch'),
+    'admins must be alerted for manual review',
+  );
+  assert.ok(appliedRow, 'the processed row must be persisted so MP stops retrying');
+});
+
+test('an approved payment for an unknown booking is acked and alerted', async () => {
+  resetNotifyState();
+  useBookingModel([]);
+
+  const res = await invokeSigned(
+    seamWithDefault({
+      getPayment: async () => ({
+        status: 'approved',
+        external_reference: BOOKING_ID,
+        transaction_amount: 5000,
+      }),
+    }),
+    'req-unknown',
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.applied, true);
+  assert.ok(
+    notifyState.admin.some((entry) => entry.type === 'deposit_late_payment'),
+    'an unknown booking reference must be surfaced for review',
+  );
 });
 
 test('concurrent duplicates may both run the seam — Slice 3 approveDeposit must be idempotent', async () => {

@@ -45,7 +45,13 @@ const makeDeps = () => {
 
 test('notification model accepts the deposit notification types', () => {
   const enumValues = Notification.schema.path('type').enumValues;
-  for (const type of ['deposit_pending', 'deposit_paid', 'deposit_expired']) {
+  for (const type of [
+    'deposit_pending',
+    'deposit_paid',
+    'deposit_expired',
+    'deposit_late_payment',
+    'deposit_amount_mismatch',
+  ]) {
     assert.ok(enumValues.includes(type), `missing notification type ${type}`);
   }
 });
@@ -127,4 +133,67 @@ test('a client without a phone still notifies the admin but skips WhatsApp', asy
 
   assert.equal(adminCalls.length, 1);
   assert.equal(enqueued.length, 0);
+});
+
+// ── WARNING 7: side effects independent ──────────────────────────────────────
+
+test('notifyDepositPending still enqueues the client link when the admin alert fails', async () => {
+  const { notifyDepositPending } = require('../services/depositNotification.service');
+  const enqueued = [];
+  const deps = {
+    sendAdminNotification: async () => {
+      throw new Error('admin channel down');
+    },
+    enqueueWhatsappCommand: async (command) => {
+      enqueued.push(command);
+      return { command: { _id: 'cmd-1' } };
+    },
+  };
+
+  const result = await notifyDepositPending(
+    { booking: sampleBooking(), companyId: COMPANY, initPoint: 'https://mp/checkout/pref-x' },
+    deps,
+  );
+
+  assert.equal(enqueued.length, 1, 'the client payment link must not be suppressed');
+  assert.match(enqueued[0].payload.message, /https:\/\/mp\/checkout\/pref-x/);
+  assert.equal(result.adminNotified, false);
+});
+
+// ── Late / mismatch review notifications ─────────────────────────────────────
+
+test('notifyDepositLatePayment alerts admins (no client message) for a late payment', async () => {
+  const { notifyDepositLatePayment } = require('../services/depositNotification.service');
+  const { deps, adminCalls, enqueued } = makeDeps();
+
+  await notifyDepositLatePayment(
+    { booking: sampleBooking(), companyId: COMPANY, paymentId: 'pay-999' },
+    deps,
+  );
+
+  assert.equal(adminCalls.length, 1);
+  assert.equal(adminCalls[0].type, 'deposit_late_payment');
+  assert.match(adminCalls[0].message, /pay-999/);
+  assert.equal(enqueued.length, 0, 'a late payment needs review, not a client confirmation');
+});
+
+test('notifyDepositAmountMismatch alerts admins with expected vs received', async () => {
+  const { notifyDepositAmountMismatch } = require('../services/depositNotification.service');
+  const { deps, adminCalls } = makeDeps();
+
+  await notifyDepositAmountMismatch(
+    {
+      booking: sampleBooking(),
+      companyId: COMPANY,
+      paymentId: 'pay-999',
+      expected: 5000,
+      received: 4500,
+    },
+    deps,
+  );
+
+  assert.equal(adminCalls.length, 1);
+  assert.equal(adminCalls[0].type, 'deposit_amount_mismatch');
+  assert.match(adminCalls[0].message, /5000/);
+  assert.match(adminCalls[0].message, /4500/);
 });

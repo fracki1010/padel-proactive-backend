@@ -2,10 +2,15 @@
 
 // Minimal in-memory stand-in for the Mongoose Booking model. It supports the
 // exact query/update surface the deposit lifecycle uses, including MongoDB
-// update pipelines ($set of $subtract/$max/$ifNull/$$NOW). findOneAndUpdate is
-// synchronous up to its (single) write, so concurrent calls are observed by the
-// same atomicity guarantees as a real single-document update: only one of a
-// competing approve/expire pair can match the status guard.
+// update pipelines ($set of $subtract/$max/$ifNull/$$NOW).
+//
+// CONCURRENCY CAVEAT: findOneAndUpdate / updateOne yield one microtask before
+// the match+write so `Promise.all(...)` calls interleave the way an async DB
+// driver does. That does NOT model real MongoDB write serialization; true
+// concurrent-write behaviour is UNVERIFIED in-suite (the repo has no
+// mongodb-memory-server and CI has no test gate). The one-winner approve/expire
+// race here is only a best-effort interleaving check — real concurrency must be
+// validated against a real Mongo instance.
 
 const getPath = (obj, path) =>
   String(path)
@@ -86,6 +91,8 @@ const createInMemoryBookingModel = (initialBookings = []) => {
   return {
     bookings,
     async findOneAndUpdate(filter, update, options = {}) {
+      // Yield so concurrent callers interleave (best-effort; see caveat above).
+      await Promise.resolve();
       const doc = bookings.find((booking) => matches(booking, filter));
       if (!doc) return null;
       applyUpdate(doc, update);
@@ -93,10 +100,15 @@ const createInMemoryBookingModel = (initialBookings = []) => {
       return { ...doc };
     },
     async updateOne(filter, update) {
+      await Promise.resolve();
       const doc = bookings.find((booking) => matches(booking, filter));
       if (!doc) return { matchedCount: 0, modifiedCount: 0 };
       applyUpdate(doc, update);
       return { matchedCount: 1, modifiedCount: 1 };
+    },
+    async findOne(filter = {}) {
+      const doc = bookings.find((booking) => matches(booking, filter));
+      return doc ? { ...doc } : null;
     },
     async find(filter = {}) {
       return bookings.filter((booking) => matches(booking, filter)).map((booking) => ({ ...booking }));

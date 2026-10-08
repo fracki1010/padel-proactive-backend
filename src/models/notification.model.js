@@ -19,6 +19,8 @@ const notificationSchema = new mongoose.Schema(
         "deposit_pending",
         "deposit_paid",
         "deposit_expired",
+        "deposit_late_payment",
+        "deposit_amount_mismatch",
       ],
       required: true,
     },
