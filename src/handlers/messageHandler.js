@@ -1519,7 +1519,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     if (knownName && !isValidClientName(knownName)) {
       knownName = null;
     }
-    const number = await getNumberByUser(chatId, client);
+    const number = await getNumberByUser(chatId, companyId);
     const registeredPhoneRaw = String(registeredUser?.phoneNumber || "").trim();
     const canonicalClientPhone = normalizeCanonicalClientPhone(
       registeredPhoneRaw,

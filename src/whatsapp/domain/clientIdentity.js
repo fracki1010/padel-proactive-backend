@@ -20,6 +20,15 @@ const unwrapTransportPrefix = (value = "") => {
   return raw;
 };
 
+// A plain WhatsApp Linked-Device ID (e.g. "38552364683267@lid") is NOT a phone
+// number. QA sessions embed a real phone inside the transport prefix and are
+// handled separately, so they are excluded here.
+const isLidIdentifier = (value = "") => {
+  const raw = normalizeRaw(value);
+  if (!raw || !/@lid(\b|$)/i.test(raw)) return false;
+  return !isQaSession(raw);
+};
+
 const normalizePhoneDigits = (value = "") => {
   const raw = unwrapTransportPrefix(value);
   const local = raw.includes("@") ? raw.split("@")[0] : raw;
@@ -70,8 +79,11 @@ const buildWhatsappKeys = ({ whatsappId = "", chatId = "", canonicalPhoneDigits 
       const [local] = normalized.split("@");
       keys.add(`wa:${local}`);
       keys.add(`wafull:${normalized}`);
-      const digits = normalizePhoneDigits(local);
-      if (digits) keys.add(`phone:${digits}`);
+      // A LID local part is not a phone: never derive a phone key from it.
+      if (!isLidIdentifier(value)) {
+        const digits = normalizePhoneDigits(local);
+        if (digits) keys.add(`phone:${digits}`);
+      }
     } else {
       const digits = normalizePhoneDigits(normalized);
       if (digits) keys.add(`phone:${digits}`);
@@ -88,11 +100,18 @@ const normalizeClientIdentity = (input = {}) => {
   const whatsappIdRaw = input.whatsappId || "";
   const chatIdRaw = input.chatId || "";
 
+  // Never derive phone digits from a Linked-Device ID: an unresolved @lid must
+  // stay unresolved instead of being treated as the client's phone.
   const canonicalPhoneDigits =
-    normalizePhoneDigits(input.canonicalClientPhone || "") ||
-    normalizePhoneDigits(phone) ||
-    normalizePhoneDigits(whatsappIdRaw) ||
-    normalizePhoneDigits(chatIdRaw);
+    [
+      input.canonicalClientPhone || "",
+      phone,
+      whatsappIdRaw,
+      chatIdRaw,
+    ]
+      .filter((value) => value && !isLidIdentifier(value))
+      .map((value) => normalizePhoneDigits(value))
+      .find((digits) => Boolean(digits)) || "";
 
   const canonicalPhone = toE164(canonicalPhoneDigits);
   const normalizedWhatsappId = normalizeWhatsappId(whatsappIdRaw || chatIdRaw || "");
@@ -121,4 +140,5 @@ module.exports = {
   normalizeWhatsappId,
   toE164,
   isQaSession,
+  isLidIdentifier,
 };

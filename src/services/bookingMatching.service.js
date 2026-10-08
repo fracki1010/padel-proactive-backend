@@ -21,6 +21,10 @@ const matchSingleBooking = (requestIdentity, booking = {}) => {
     (k) => k.startsWith("wa:") || k.startsWith("wafull:") || k.startsWith("qa:"),
   );
 
+  // Phone-only matching uses EXACT digit equality. Do NOT canonicalize AR
+  // mobile/landline variants here: collapsing "54…" and "549…" would match
+  // different people (same subscriber digits) and could leak or cancel another
+  // client's booking. The strong identity signal is the WhatsApp channel keys.
   const byPhone =
     Boolean(requestIdentity.canonicalPhoneDigits) &&
     Boolean(bookingIdentity.canonicalPhoneDigits) &&
