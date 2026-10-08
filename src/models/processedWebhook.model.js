@@ -1,13 +1,14 @@
 'use strict';
 
-// Durable idempotency gate for payment webhooks. The unique
-// (provider, paymentId) index is the first line of defense: the first event for
-// a payment id wins and any resend hits an E11000 duplicate key error. The
-// booking-level status guard (applied by the transition seam) is the second.
+// Durable idempotency gate for payment webhooks. It records APPLIED terminal
+// transitions only: the row is written after a successful, ownership-scoped
+// apply, and only a `status: "applied"` row dedupes a retry. The unique
+// (provider, paymentId) index makes a concurrent duplicate collide with E11000.
 
 const mongoose = require('mongoose');
 
 const PROCESSED_WEBHOOK_PROVIDERS = ['mercadopago'];
+const PROCESSED_WEBHOOK_STATUSES = ['pending', 'applied', 'failed'];
 
 const processedWebhookSchema = new mongoose.Schema(
   {
@@ -32,6 +33,13 @@ const processedWebhookSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    // Only `applied` records block a retry; `pending`/`failed` must not.
+    status: {
+      type: String,
+      enum: PROCESSED_WEBHOOK_STATUSES,
+      default: 'applied',
+      required: true,
+    },
     receivedAt: {
       type: Date,
       default: Date.now,
@@ -46,3 +54,4 @@ processedWebhookSchema.index({ provider: 1, paymentId: 1 }, { unique: true });
 
 module.exports = mongoose.model('ProcessedWebhook', processedWebhookSchema);
 module.exports.PROCESSED_WEBHOOK_PROVIDERS = PROCESSED_WEBHOOK_PROVIDERS;
+module.exports.PROCESSED_WEBHOOK_STATUSES = PROCESSED_WEBHOOK_STATUSES;

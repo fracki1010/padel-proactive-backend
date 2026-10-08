@@ -1,11 +1,12 @@
 'use strict';
 
-// Integration tests for the MercadoPago webhook handler using in-memory fakes
-// for the durable idempotency gate and the booking-transition seam:
-// - signed `payment.approved` reaches the transition seam
-// - duplicate payment ids are ignored (ProcessedWebhook unique index)
-// - forged signatures are rejected and never touch the booking
-// - the company is derived from the credential, never the payload
+// Integration tests for the MercadoPago webhook handler using in-memory fakes.
+// Corrected semantics (review findings):
+// - dedupe represents APPLIED terminal transitions only; pending/created events
+//   are answered 200 without persisting so a later `approved` still applies
+// - apply/fetch failures return 5xx so MercadoPago retries (no lost payments)
+// - the processed row is written only after a successful, ownership-scoped apply
+// - a body-only companyId can never forge an event
 // Also asserts the raw-body mount happens before the global JSON parser.
 
 const { test } = require('node:test');
@@ -15,8 +16,14 @@ const crypto = require('node:crypto');
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-webhook';
 
 const ProcessedWebhook = require('../models/processedWebhook.model');
+const { CryptoConfigError } = require('../lib/crypto');
 const { SignatureError, verifyWebhookSignature } = require('../services/mercadopago.service');
-const { createWebhookHandler, createWebhookRouter } = require('../routes/webhook.routes');
+const {
+  WEBHOOK_RATE_LIMIT_MAX,
+  createWebhookHandler,
+  createWebhookRouter,
+  webhookRateLimiter,
+} = require('../routes/webhook.routes');
 
 const COMPANY = '64b0000000000000000000a1';
 const BOOKING_ID = '64b0000000000000000000c3';
@@ -26,7 +33,7 @@ const SECRET = 'club-webhook-secret';
 const nowSeconds = () => String(Math.floor(Date.now() / 1000));
 
 const signHeaders = ({ secret, paymentId, requestId, ts }) => {
-  const manifest = `id:${paymentId};request-id:${requestId};ts:${ts};`;
+  const manifest = `id:${String(paymentId).toLowerCase()};request-id:${requestId};ts:${ts};`;
   const hash = crypto.createHmac('sha256', secret).update(manifest).digest('hex');
   return { 'x-signature': `ts=${ts},v1=${hash}`, 'x-request-id': requestId };
 };
@@ -50,22 +57,50 @@ const createResponse = () => ({
   },
 });
 
-const invoke = async (handler, { headers = {}, body = {} }) => {
+const invoke = async (handler, { headers = {}, body = {}, query = {} }) => {
   const res = createResponse();
-  await handler({ headers, body: Buffer.from(JSON.stringify(body)) }, res);
+  await handler({ headers, query, body: Buffer.from(JSON.stringify(body)) }, res);
   return res;
 };
 
 const paymentBody = (extra = {}) => ({
   type: 'payment',
-  action: 'payment.created',
+  action: 'payment.updated',
   data: { id: PAYMENT_ID },
   ...extra,
 });
 
+// Handler deps with an in-memory "applied" set and a recorder for the legacy
+// markProcessed callback so regressions to the old flow are observable.
+const createDeps = (overrides = {}) => {
+  const applied = new Set();
+  const legacy = [];
+  return {
+    applied,
+    legacy,
+    deps: {
+      resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
+      isAlreadyApplied: async ({ paymentId }) => applied.has(paymentId),
+      markApplied: async ({ paymentId }) => {
+        applied.add(paymentId);
+      },
+      markProcessed: async (doc) => {
+        legacy.push(doc);
+      },
+      getPayment: async () => ({
+        id: PAYMENT_ID,
+        status: 'approved',
+        external_reference: BOOKING_ID,
+      }),
+      applyApprovedPayment: async () => ({ applied: true }),
+      ...overrides,
+    },
+  };
+};
+
 // ── Model ────────────────────────────────────────────────────────────────────
 
-test('ProcessedWebhook defines a unique provider+paymentId index', () => {
+test('ProcessedWebhook defines a unique provider+paymentId index and an applied status', () => {
   const indexes = ProcessedWebhook.schema.indexes();
   const unique = indexes.find(
     ([definition, options]) =>
@@ -74,70 +109,124 @@ test('ProcessedWebhook defines a unique provider+paymentId index', () => {
       options?.unique === true,
   );
   assert.ok(unique, 'missing unique (provider, paymentId) index');
+  assert.ok(
+    ProcessedWebhook.schema.path('status'),
+    'missing status field used to gate dedupe on applied only',
+  );
+});
+
+test('default isAlreadyApplied only dedupes records with status=applied', async () => {
+  const store = [];
+  const model = {
+    async findOne(filter) {
+      return (
+        store.find(
+          (record) =>
+            record.provider === filter.provider &&
+            record.paymentId === filter.paymentId &&
+            (!filter.status || record.status === filter.status),
+        ) || null
+      );
+    },
+    async create(doc) {
+      store.push({ ...doc });
+      return doc;
+    },
+  };
+
+  // A pending/failed record for the payment must NOT dedupe. Uses the DEFAULT
+  // model-backed isAlreadyApplied / markApplied (no overrides).
+  store.push({ provider: 'mercadopago', paymentId: PAYMENT_ID, status: 'failed' });
+  const handler = createWebhookHandler({
+    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
+    markProcessed: async () => {},
+    processedWebhookModel: model,
+    getPayment: async () => ({ status: 'approved', external_reference: BOOKING_ID }),
+    applyApprovedPayment: async () => ({ applied: true }),
+  });
+  const retryable = await invoke(handler, {
+    headers: signHeaders({
+      secret: SECRET,
+      paymentId: PAYMENT_ID,
+      requestId: 'req-status',
+      ts: nowSeconds(),
+    }),
+    body: paymentBody(),
+  });
+  assert.equal(retryable.statusCode, 200);
+  assert.equal(retryable.payload.applied, true);
+  assert.ok(
+    store.some((record) => record.status === 'applied'),
+    'a successful apply must persist an applied record',
+  );
+
+  // An applied record for the same payment DOES dedupe.
+  let fetchCount = 0;
+  const dup = createWebhookHandler({
+    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
+    markProcessed: async () => {},
+    processedWebhookModel: model,
+    getPayment: async () => {
+      fetchCount += 1;
+      return { status: 'approved', external_reference: BOOKING_ID };
+    },
+    applyApprovedPayment: async () => ({ applied: true }),
+  });
+  const res = await invoke(dup, {
+    headers: signHeaders({
+      secret: SECRET,
+      paymentId: PAYMENT_ID,
+      requestId: 'req-dup-status',
+      ts: nowSeconds(),
+    }),
+    body: paymentBody(),
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.duplicate, true);
+  assert.equal(fetchCount, 0, 'an applied payment must not be fetched again');
 });
 
 // ── Approval flow ────────────────────────────────────────────────────────────
 
-test('a signed approval reaches the transition seam with the credential company', async () => {
-  const marked = [];
-  const applied = [];
-  const handler = createWebhookHandler({
-    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
-    markProcessed: async (doc) => {
-      marked.push(doc);
-    },
-    getPayment: async () => ({
-      id: PAYMENT_ID,
-      status: 'approved',
-      external_reference: BOOKING_ID,
-    }),
-    applyApprovedPayment: async (payload) => {
-      applied.push(payload);
-    },
-  });
+test('a signed approval applies the transition and persists an applied record', async () => {
+  const { deps, applied, legacy } = createDeps();
 
+  const handler = createWebhookHandler(deps);
   const headers = signHeaders({
     secret: SECRET,
     paymentId: PAYMENT_ID,
     requestId: 'req-appr',
     ts: nowSeconds(),
   });
-  // A malicious body-supplied companyId must be ignored.
+  // A malicious body-supplied companyId must be ignored; the query param id is
+  // used for the manifest.
   const res = await invoke(handler, {
     headers,
-    body: paymentBody({ companyId: 'attacker-company' }),
+    query: { 'data.id': PAYMENT_ID },
+    body: paymentBody({ user_id: 'mp-account', companyId: 'attacker-company' }),
   });
 
   assert.equal(res.statusCode, 200);
-  assert.equal(marked.length, 1);
-  assert.equal(String(marked[0].companyId), COMPANY);
-  assert.equal(marked[0].paymentId, PAYMENT_ID);
-  assert.equal(applied.length, 1);
-  assert.equal(String(applied[0].companyId), COMPANY);
-  assert.equal(applied[0].bookingId, BOOKING_ID);
-  assert.equal(applied[0].paymentId, PAYMENT_ID);
-  assert.equal(applied[0].eventType, 'payment.approved');
+  assert.equal(res.payload.applied, true);
+  assert.equal(applied.has(PAYMENT_ID), true);
+  assert.equal(legacy.length, 0, 'legacy pre-apply markProcessed must not be used');
 });
 
-test('a duplicate payment id is ignored without re-applying the transition', async () => {
-  let appliedCount = 0;
+test('a duplicate of the same approved event is deduped', async () => {
+  const { deps, applied } = createDeps();
+  applied.add(PAYMENT_ID);
   let fetchCount = 0;
-  const handler = createWebhookHandler({
-    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
-    markProcessed: async () => {
-      const error = new Error('E11000 duplicate key');
-      error.code = 11000;
-      throw error;
-    },
-    getPayment: async () => {
-      fetchCount += 1;
-      return { status: 'approved', external_reference: BOOKING_ID };
-    },
-    applyApprovedPayment: async () => {
-      appliedCount += 1;
-    },
-  });
+  deps.getPayment = async () => {
+    fetchCount += 1;
+    return { status: 'approved', external_reference: BOOKING_ID };
+  };
+  let applyCount = 0;
+  deps.applyApprovedPayment = async () => {
+    applyCount += 1;
+    return { applied: true };
+  };
 
+  const handler = createWebhookHandler(deps);
   const headers = signHeaders({
     secret: SECRET,
     paymentId: PAYMENT_ID,
@@ -148,25 +237,161 @@ test('a duplicate payment id is ignored without re-applying the transition', asy
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.payload.duplicate, true);
-  assert.equal(appliedCount, 0);
   assert.equal(fetchCount, 0);
+  assert.equal(applyCount, 0);
+});
+
+test('payment.created (pending) then payment.updated (approved) applies the approved event', async () => {
+  const applied = new Set();
+  const legacy = [];
+  let fetchCount = 0;
+  let applyCount = 0;
+  const handler = createWebhookHandler({
+    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
+    isAlreadyApplied: async ({ paymentId }) => applied.has(paymentId),
+    markApplied: async ({ paymentId }) => {
+      applied.add(paymentId);
+    },
+    markProcessed: async (doc) => {
+      legacy.push(doc);
+    },
+    getPayment: async () => {
+      fetchCount += 1;
+      return fetchCount === 1
+        ? { id: PAYMENT_ID, status: 'pending', external_reference: BOOKING_ID }
+        : { id: PAYMENT_ID, status: 'approved', external_reference: BOOKING_ID };
+    },
+    applyApprovedPayment: async () => {
+      applyCount += 1;
+      return { applied: true };
+    },
+  });
+
+  const pendingHeaders = signHeaders({
+    secret: SECRET,
+    paymentId: PAYMENT_ID,
+    requestId: 'req-pending',
+    ts: nowSeconds(),
+  });
+  const first = await invoke(handler, {
+    headers: pendingHeaders,
+    body: { type: 'payment', action: 'payment.created', data: { id: PAYMENT_ID } },
+  });
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.payload.applied, false);
+  assert.equal(applied.has(PAYMENT_ID), false, 'pending must not be persisted');
+
+  const approvedHeaders = signHeaders({
+    secret: SECRET,
+    paymentId: PAYMENT_ID,
+    requestId: 'req-approved',
+    ts: nowSeconds(),
+  });
+  const second = await invoke(handler, {
+    headers: approvedHeaders,
+    body: { type: 'payment', action: 'payment.updated', data: { id: PAYMENT_ID } },
+  });
+
+  assert.equal(second.statusCode, 200);
+  assert.equal(second.payload.applied, true);
+  assert.equal(applied.has(PAYMENT_ID), true);
+  assert.equal(applyCount, 1);
+  assert.equal(legacy.length, 0, 'pending events must not be persisted as processed');
+});
+
+// ── Retryability ─────────────────────────────────────────────────────────────
+
+test('an apply failure returns 5xx and the same event can be retried successfully', async () => {
+  const applied = new Set();
+  let applyCount = 0;
+  let failFirst = true;
+  const handler = createWebhookHandler({
+    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
+    isAlreadyApplied: async ({ paymentId }) => applied.has(paymentId),
+    markApplied: async ({ paymentId }) => {
+      applied.add(paymentId);
+    },
+    markProcessed: async () => {},
+    getPayment: async () => ({
+      status: 'approved',
+      external_reference: BOOKING_ID,
+    }),
+    applyApprovedPayment: async () => {
+      if (failFirst) {
+        failFirst = false;
+        throw new Error('database unavailable');
+      }
+      applyCount += 1;
+      return { applied: true };
+    },
+  });
+
+  const headers = signHeaders({
+    secret: SECRET,
+    paymentId: PAYMENT_ID,
+    requestId: 'req-retry',
+    ts: nowSeconds(),
+  });
+  const first = await invoke(handler, { headers, body: paymentBody() });
+  assert.ok(first.statusCode >= 500, 'a failed apply must be retryable (5xx)');
+  assert.equal(applied.has(PAYMENT_ID), false, 'no applied row may block the retry');
+
+  const second = await invoke(handler, { headers, body: paymentBody() });
+  assert.equal(second.statusCode, 200);
+  assert.equal(second.payload.applied, true);
+  assert.equal(applyCount, 1);
+  assert.equal(applied.has(PAYMENT_ID), true);
+});
+
+test('a MercadoPago fetch failure returns 5xx and leaves no applied row', async () => {
+  const { deps, applied } = createDeps({
+    getPayment: async () => {
+      const error = new Error('MP timeout');
+      error.code = 'ECONNABORTED';
+      throw error;
+    },
+  });
+  const handler = createWebhookHandler(deps);
+  const headers = signHeaders({
+    secret: SECRET,
+    paymentId: PAYMENT_ID,
+    requestId: 'req-fetch-fail',
+    ts: nowSeconds(),
+  });
+  const res = await invoke(handler, { headers, body: paymentBody() });
+
+  assert.ok(res.statusCode >= 500);
+  assert.equal(applied.has(PAYMENT_ID), false);
+});
+
+test('an approved payment the seam refuses to apply (ownership) is not persisted', async () => {
+  const { deps, applied } = createDeps({
+    applyApprovedPayment: async () => ({ applied: false, reason: 'not this club' }),
+  });
+  const handler = createWebhookHandler(deps);
+  const headers = signHeaders({
+    secret: SECRET,
+    paymentId: PAYMENT_ID,
+    requestId: 'req-ownership',
+    ts: nowSeconds(),
+  });
+  const res = await invoke(handler, { headers, body: paymentBody() });
+
+  assert.ok(res.statusCode >= 500);
+  assert.equal(applied.has(PAYMENT_ID), false);
 });
 
 // ── Forgery ──────────────────────────────────────────────────────────────────
 
 test('a forged signature is rejected and the booking is never touched', async () => {
   let appliedCount = 0;
-  let markedCount = 0;
-  const handler = createWebhookHandler({
-    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
-    markProcessed: async () => {
-      markedCount += 1;
-    },
-    getPayment: async () => ({ status: 'approved', external_reference: BOOKING_ID }),
+  const { deps, applied, legacy } = createDeps({
     applyApprovedPayment: async () => {
       appliedCount += 1;
+      return { applied: true };
     },
   });
+  const handler = createWebhookHandler(deps);
 
   const headers = signHeaders({
     secret: 'forged-secret',
@@ -178,18 +403,20 @@ test('a forged signature is rejected and the booking is never touched', async ()
 
   assert.equal(res.statusCode, 401);
   assert.equal(appliedCount, 0);
-  assert.equal(markedCount, 0);
+  assert.equal(applied.has(PAYMENT_ID), false);
+  assert.equal(legacy.length, 0);
 });
 
 test('a payload-only companyId cannot forge an accepted event', async () => {
-  // No resolver override: use the real service against an empty credential
-  // store, so a body-supplied companyId cannot satisfy verification.
   const handler = createWebhookHandler({
     resolveCompanyFromSignature: async () => {
       throw new SignatureError('No matching MercadoPago credential.');
     },
-    markProcessed: async () => {
-      assert.fail('must not mark an unverified event as processed');
+    isAlreadyApplied: async () => {
+      assert.fail('must not check applied state for an unverified event');
+    },
+    markApplied: async () => {
+      assert.fail('must not mark an unverified event as applied');
     },
     getPayment: async () => {
       assert.fail('must not fetch a payment for an unverified event');
@@ -207,9 +434,21 @@ test('a payload-only companyId cannot forge an accepted event', async () => {
   assert.equal(res.statusCode, 401);
 });
 
+test('a missing master key surfaces as 503, not as a 401 signature error', async () => {
+  const handler = createWebhookHandler({
+    resolveCompanyFromSignature: async () => {
+      throw new CryptoConfigError('PAYMENT_SECRET_KEY is not configured.');
+    },
+  });
+
+  const res = await invoke(handler, { headers: {}, body: paymentBody() });
+
+  assert.equal(res.statusCode, 503);
+});
+
 // ── Validation ───────────────────────────────────────────────────────────────
 
-test('a body without a payment id is rejected with 400', async () => {
+test('a request without a payment id is rejected with 400', async () => {
   const handler = createWebhookHandler({
     resolveCompanyFromSignature: async () => {
       assert.fail('must not resolve a company without a payment id');
@@ -221,52 +460,42 @@ test('a body without a payment id is rejected with 400', async () => {
   assert.equal(res.statusCode, 400);
 });
 
-test('a signed but non-approved payment is recorded without applying the transition', async () => {
-  const marked = [];
-  let appliedCount = 0;
-  const handler = createWebhookHandler({
-    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
-    markProcessed: async (doc) => {
-      marked.push(doc);
-    },
-    getPayment: async () => ({
-      id: PAYMENT_ID,
-      status: 'pending',
-      external_reference: BOOKING_ID,
-    }),
-    applyApprovedPayment: async () => {
-      appliedCount += 1;
-    },
-  });
-
+test('the manifest id comes from the query param and is lowercased', async () => {
+  // Signed over the lowercased id, delivered uppercased in the query param.
+  const rawId = 'AbC123';
+  const normalized = rawId.toLowerCase();
   const headers = signHeaders({
     secret: SECRET,
-    paymentId: PAYMENT_ID,
-    requestId: 'req-pending',
+    paymentId: normalized,
+    requestId: 'req-query',
     ts: nowSeconds(),
   });
-  const res = await invoke(handler, { headers, body: paymentBody() });
+
+  const { deps, applied } = createDeps({
+    resolveCompanyFromSignature: async ({ headers: h, paymentId }) => {
+      verifyWebhookSignature({ headers: h, paymentId, secret: SECRET });
+      return { companyId: COMPANY, credential: {} };
+    },
+  });
+  const handler = createWebhookHandler(deps);
+
+  const res = await invoke(handler, {
+    headers,
+    query: { 'data.id': rawId },
+    body: { type: 'payment', action: 'payment.updated', data: { id: rawId } },
+  });
 
   assert.equal(res.statusCode, 200);
-  assert.equal(marked.length, 1);
-  assert.equal(appliedCount, 0);
+  assert.equal(applied.has(normalized), true);
 });
 
-test('non-payment events are recorded but the transition seam is not called', async () => {
-  const marked = [];
-  let appliedCount = 0;
-  const handler = createWebhookHandler({
-    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
-    markProcessed: async (doc) => {
-      marked.push(doc);
-    },
+test('a non-payment event is acknowledged but not persisted', async () => {
+  const { deps, applied, legacy } = createDeps({
     getPayment: async () => {
       assert.fail('must not fetch a payment for a non-payment event');
     },
-    applyApprovedPayment: async () => {
-      appliedCount += 1;
-    },
   });
+  const handler = createWebhookHandler(deps);
 
   const headers = signHeaders({
     secret: SECRET,
@@ -280,18 +509,40 @@ test('non-payment events are recorded but the transition seam is not called', as
   });
 
   assert.equal(res.statusCode, 200);
-  assert.equal(marked.length, 1);
-  assert.equal(marked[0].eventType, 'plan');
-  assert.equal(appliedCount, 0);
+  assert.equal(applied.has(PAYMENT_ID), false);
+  assert.equal(legacy.length, 0);
+});
+
+// ── Rate limit ───────────────────────────────────────────────────────────────
+
+test('the webhook rate limiter returns 429 after the configured burst', () => {
+  assert.ok(Number.isInteger(WEBHOOK_RATE_LIMIT_MAX) && WEBHOOK_RATE_LIMIT_MAX > 0);
+  const ip = '198.51.100.42';
+  let passed = 0;
+  for (let i = 0; i < WEBHOOK_RATE_LIMIT_MAX; i += 1) {
+    webhookRateLimiter({ ip }, createResponse(), () => {
+      passed += 1;
+    });
+  }
+  assert.equal(passed, WEBHOOK_RATE_LIMIT_MAX);
+
+  const blocked = createResponse();
+  let extraPassed = false;
+  webhookRateLimiter({ ip }, blocked, () => {
+    extraPassed = true;
+  });
+  assert.equal(blocked.statusCode, 429);
+  assert.equal(extraPassed, false);
 });
 
 // ── Router / app wiring ──────────────────────────────────────────────────────
 
-test('createWebhookRouter mounts a POST / handler marked as the raw-body webhook', () => {
+test('createWebhookRouter mounts the rate limiter then a POST / handler', () => {
   const router = createWebhookRouter();
   assert.equal(router.isMercadoPagoWebhook, true);
   const route = router.stack.find((layer) => layer.route && layer.route.methods.post);
   assert.ok(route, 'missing POST / webhook route');
+  assert.equal(route.route.stack[0].handle, webhookRateLimiter);
 });
 
 test('app.js mounts the webhook raw body before the global JSON parser', () => {
@@ -310,12 +561,6 @@ test('app.js mounts the webhook raw body before the global JSON parser', () => {
   assert.ok(jsonIndex >= 0, 'global JSON parser not found');
   assert.ok(rawIndex >= 0, 'raw webhook parser not found');
   assert.ok(webhookIndex >= 0, 'webhook router not found');
-  assert.ok(
-    rawIndex < jsonIndex,
-    'raw body parser must run before express.json()',
-  );
-  assert.ok(
-    webhookIndex < jsonIndex,
-    'webhook route must be mounted before express.json()',
-  );
+  assert.ok(rawIndex < jsonIndex, 'raw body parser must run before express.json()');
+  assert.ok(webhookIndex < jsonIndex, 'webhook route must be before express.json()');
 });

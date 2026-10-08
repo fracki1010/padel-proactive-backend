@@ -58,9 +58,11 @@ app.use(
   })
 );
 
-// El webhook de MercadoPago necesita el body RAW para verificar la firma HMAC.
-// Debe montarse ANTES de express.json() para que express.raw() conserve el
-// cuerpo sin parsear (body-parser marca req._body y el json() global lo saltea).
+// El webhook de MercadoPago se monta ANTES de express.json() para conservar el
+// cuerpo tal cual lo envía MP (express.raw marca req._body y el json() global
+// lo saltea). La firma HMAC se verifica sobre el manifiesto id/request-id/ts,
+// NO sobre los bytes del body; el mount raw solo evita que un JSON inesperado
+// rompa el parseo global y deja el payload disponible sin transformar.
 app.use(
   "/webhooks/mercadopago",
   express.raw({ type: "application/json" }),
