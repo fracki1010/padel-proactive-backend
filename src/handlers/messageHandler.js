@@ -240,29 +240,31 @@ const isValidClientName = (value = "") => {
 
 const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult) => {
   if (bookingResult.success) {
-    const baseReply =
-      `✅ *¡Reserva Confirmada!* 🎾\n\n` +
-      `👤 *Jugador:* ${requestedClientName}\n` +
-      `📌 *Cancha:* ${bookingResult.data.courtName}${bookingResult.data.courtType ? ` (${bookingResult.data.courtType})` : ""}\n` +
-      `📅 *Fecha:* ${getFormattedDate(requestedDate)}\n` +
-      `⏰ *Hora:* ${bookingResult.data.startTime} - ${bookingResult.data.endTime}\n` +
-      `💰 *Precio:* $${bookingResult.data.price}`;
-
-    // Pending deposit: append the seña amount and the Checkout Pro link so the
-    // client can pay straight from the chat.
+    // A pending deposit is NOT a confirmed booking, so the header must reflect
+    // the hold state (mirrors `buildDepositPaymentMessage`).
     const deposit = bookingResult.data?.deposit;
+    const header = deposit
+      ? `🎾 *¡Ya casi es tuyo! Falta la seña*`
+      : `✅ *¡Reserva Confirmada!* 🎾`;
+
+    const lines = [
+      header,
+      ``,
+      `👤 *Jugador:* ${requestedClientName}`,
+      `📌 *Cancha:* ${bookingResult.data.courtName}${bookingResult.data.courtType ? ` (${bookingResult.data.courtType})` : ""}`,
+      `📅 *Fecha:* ${getFormattedDate(requestedDate)}`,
+      `⏰ *Hora:* ${bookingResult.data.startTime} - ${bookingResult.data.endTime}`,
+      `💰 *Precio:* $${bookingResult.data.price}`,
+    ];
+
     if (deposit) {
-      const depositLines = [
-        `⏳ *Falta la seña para confirmar tu turno.*`,
-        `💳 *Seña:* $${deposit.amount}`,
-      ];
+      lines.push(`💳 *Seña:* $${deposit.amount}`);
       if (deposit.initPoint) {
-        depositLines.push(`Pagá tu seña acá: ${deposit.initPoint}`);
+        lines.push(`Pagá tu seña acá: ${deposit.initPoint}`);
       }
-      return `${baseReply}\n\n${depositLines.join("\n")}`;
     }
 
-    return baseReply;
+    return lines.join("\n");
   }
 
   if (bookingResult.error === "BUSY") return "🚫 Ese turno ya está ocupado. ¿Te busco otro?";

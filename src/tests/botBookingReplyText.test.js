@@ -38,7 +38,7 @@ test('reply without a deposit keeps the legacy confirmed message', () => {
   assert.equal(reply, expected);
 });
 
-test('reply with a pending deposit appends the seña amount and payment link', () => {
+test('reply with a pending deposit uses the pending header and appends the link', () => {
   const reply = buildBookingReplyText(
     DATE,
     'Ana',
@@ -51,8 +51,9 @@ test('reply with a pending deposit appends the seña amount and payment link', (
     }),
   );
 
-  assert.match(reply, /^✅ \*¡Reserva Confirmada!\* 🎾/);
+  assert.match(reply, /¡Ya casi es tuyo!/);
   assert.match(reply, /Falta la seña/i);
+  assert.doesNotMatch(reply, /Reserva Confirmada/);
   assert.match(reply, /Seña:\* \$5000/);
   assert.match(reply, /https:\/\/mp\/checkout\/pref-x/);
 });
@@ -66,6 +67,8 @@ test('reply with a deposit but no link still states the seña amount', () => {
     }),
   );
 
+  assert.match(reply, /¡Ya casi es tuyo!/);
+  assert.doesNotMatch(reply, /Reserva Confirmada/);
   assert.match(reply, /Seña:\* \$5000/);
   assert.doesNotMatch(reply, /Pagá tu seña/);
   assert.doesNotMatch(reply, /https:\/\//);
