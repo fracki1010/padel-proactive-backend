@@ -411,6 +411,71 @@ test('createDepositPreference passes notification_url and back_urls when provide
   assert.equal(captured.body.back_urls.success, 'https://portal/success');
 });
 
+// ── NEW-1: Checkout Pro term-of-preference trio ──────────────────────────────
+
+test('formatMpDatetime emits ISO-8601 with the Argentina offset MercadoPago expects', () => {
+  const { formatMpDatetime } = require('../services/mercadopago.service');
+
+  assert.equal(
+    formatMpDatetime(new Date('2026-10-08T15:00:00.000Z')),
+    '2026-10-08T12:00:00.000-03:00',
+  );
+  assert.equal(formatMpDatetime('not-a-date'), '');
+});
+
+test('createDepositPreference sends expires + expiration_date_from/to as a trio', async () => {
+  const model = createFakeCredentialModel();
+  await seedCredentials(model);
+
+  const captured = {};
+  const httpClient = {
+    async post(url, body) {
+      captured.body = body;
+      return { data: { id: 'pref-exp', init_point: 'https://mp/checkout/pref-exp' } };
+    },
+  };
+
+  const expiresAt = new Date('2026-10-08T15:00:00.000Z');
+  await createDepositPreference(
+    { companyId: COMPANY_A, booking: { _id: BOOKING_ID }, depositAmount: 5000, expiresAt },
+    { credentialModel: model, httpClient },
+  );
+
+  assert.equal(captured.body.expires, true, 'expires must be true to honour the window');
+  assert.match(
+    captured.body.expiration_date_from,
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}-\d{2}:\d{2}$/,
+    'expiration_date_from must be ISO-8601 with an offset',
+  );
+  assert.equal(
+    captured.body.expiration_date_to,
+    '2026-10-08T12:00:00.000-03:00',
+    'expiration_date_to must match the booking hold deadline in MP format',
+  );
+});
+
+test('createDepositPreference omits the expiration trio when no expiresAt is given', async () => {
+  const model = createFakeCredentialModel();
+  await seedCredentials(model);
+
+  const captured = {};
+  const httpClient = {
+    async post(url, body) {
+      captured.body = body;
+      return { data: { id: 'pref-plain', init_point: 'https://mp/checkout/pref-plain' } };
+    },
+  };
+
+  await createDepositPreference(
+    { companyId: COMPANY_A, booking: { _id: BOOKING_ID }, depositAmount: 5000 },
+    { credentialModel: model, httpClient },
+  );
+
+  assert.equal(captured.body.expires, undefined);
+  assert.equal(captured.body.expiration_date_from, undefined);
+  assert.equal(captured.body.expiration_date_to, undefined);
+});
+
 test('verifyWebhookSignature accepts a millisecond timestamp', () => {
   const paymentId = 'pay-1';
   const ts = String(Date.now());

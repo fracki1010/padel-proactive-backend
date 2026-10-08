@@ -244,3 +244,20 @@ test('createPaymentLink refuses a booking whose deposit is already paid', async 
   assert.equal(res.statusCode, 409);
   assert.equal(state.mpCalls.length, 0);
 });
+
+test('createPaymentLink refuses a link once the deposit hold expired', async () => {
+  resetState();
+  state.booking = {
+    _id: BOOKING_ID,
+    companyId: COMPANY,
+    status: 'pendiente_seña',
+    deposit: { status: 'pendiente', expiresAt: new Date(Date.now() - 1000) },
+  };
+  const res = createResponse();
+
+  await createPaymentLink(baseReq(), res);
+
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.payload.code, 'DEPOSIT_EXPIRED');
+  assert.equal(state.mpCalls.length, 0, 'no preference may be minted for an expired hold');
+});

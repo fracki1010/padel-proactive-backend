@@ -11,6 +11,7 @@ const {
   getPenaltyLimit,
   getPenaltySystemEnabled,
 } = require("./appConfig.service");
+const { markRefundableOnCancel } = require("./deposit.service");
 const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
@@ -705,6 +706,11 @@ const cancelBooking = async ({
 
     // 3. Cancelar
     booking.status = "cancelado";
+    // A paid seña on a cancelled booking needs a manual refund (WARNING 6).
+    const depositPatch = markRefundableOnCancel(booking);
+    if (depositPatch.deposit) {
+      booking.deposit = depositPatch.deposit;
+    }
     await booking.save();
 
     // 4. Penalizar al usuario

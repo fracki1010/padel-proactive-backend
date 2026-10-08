@@ -64,7 +64,12 @@ if (!depositServiceAvailable) {
   );
 }
 
-const defaultApplyApprovedPayment = async ({ companyId, bookingId, paymentId }) => {
+const defaultApplyApprovedPayment = async ({
+  companyId,
+  bookingId,
+  paymentId,
+  amount = null,
+}) => {
   let depositService = null;
   try {
     depositService = require(DEPOSIT_SERVICE_MODULE);
@@ -73,12 +78,74 @@ const defaultApplyApprovedPayment = async ({ companyId, bookingId, paymentId }) 
   }
 
   if (depositService && typeof depositService.approveDeposit === 'function') {
-    return depositService.approveDeposit({
+    // Amount guard: the captured amount must match the configured seña. A
+    // mismatch is NOT silently confirmed — it is flagged for manual review and
+    // acked so MercadoPago stops retrying.
+    if (amount !== null && amount !== undefined && typeof depositService.getBookingForDeposit === 'function') {
+      const current = await depositService.getBookingForDeposit({ companyId, bookingId });
+      const expected = current?.deposit?.amount;
+      if (
+        current &&
+        expected !== null &&
+        expected !== undefined &&
+        Number(amount) !== Number(expected)
+      ) {
+        await depositService.handleAmountMismatch({
+          companyId,
+          bookingId,
+          paymentId,
+          booking: current,
+          expected,
+          received: amount,
+        });
+        return { applied: true, reason: 'amount_mismatch', mismatch: true, booking: current };
+      }
+    }
+
+    const result = await depositService.approveDeposit({
       companyId,
       bookingId,
       paymentId,
       eventType: 'payment.approved',
     });
+
+    if (result?.applied === true) {
+      // Confirm the client + alert the admin, best-effort. The transition is
+      // already durable, so a notification failure must not undo it.
+      await depositService.handleDepositPaid({
+        companyId,
+        booking: result.booking,
+        paymentId,
+      });
+      return result;
+    }
+
+    // The booking was not pending. Distinguish an idempotent retry (already
+    // paid) from a LATE payment (hold expired/cancelled after the capture).
+    const current =
+      typeof depositService.getBookingForDeposit === 'function'
+        ? await depositService.getBookingForDeposit({ companyId, bookingId })
+        : null;
+
+    if (
+      current &&
+      current.status === 'reservado' &&
+      String(current.deposit?.paymentId || '') === String(paymentId)
+    ) {
+      // WARNING 4: if a previous attempt approved but failed to persist the
+      // applied row, this retry must still succeed so the row can be written.
+      return { applied: true, reason: 'already_applied', booking: current };
+    }
+
+    // BLOCKER 1: money captured after the hold died. Do NOT re-book the court;
+    // alert admins for manual review/refund, and ack so MP stops retrying.
+    await depositService.handleLatePayment({
+      companyId,
+      bookingId,
+      paymentId,
+      booking: current || null,
+    });
+    return { applied: true, reason: 'late_payment', late: true, booking: current || null };
   }
 
   console.warn(
@@ -231,6 +298,7 @@ const createWebhookHandler = (dependencies = {}) => {
         companyId,
         bookingId,
         paymentId,
+        amount: payment?.transaction_amount ?? null,
         eventType: 'payment.approved',
       });
     } catch (error) {

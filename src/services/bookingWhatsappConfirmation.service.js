@@ -31,6 +31,34 @@ const buildBookingWhatsappConfirmation = ({ client, court, slot, date }) => {
   );
 };
 
+// Pure builder for the "pending seña" message. `deposit.initPoint` is the
+// MercadoPago Checkout Pro link; when it is absent the message still states the
+// seña amount so the client can be instructed to reopen the booking.
+const buildDepositPaymentMessage = ({ client, court, slot, date, deposit }) => {
+  const clientName = client?.name || "";
+  const courtName = court?.name || "";
+  const startTime = slot?.startTime || "";
+  const endTime = slot?.endTime || "";
+  const amount = deposit?.amount ?? 0;
+  const paymentLink = deposit?.initPoint || "";
+
+  const lines = [
+    `🎾 *¡Ya casi es tuyo! Falta la seña*`,
+    ``,
+    `👤 *${clientName}*`,
+    `📌 *Cancha:* ${courtName}`,
+    `📅 *Fecha:* ${getFormattedDate(date)}`,
+    `⏰ *Hora:* ${startTime}${endTime ? ` a ${endTime}` : ""}`,
+    `💰 *Seña:* $${amount}`,
+  ];
+
+  if (paymentLink) {
+    lines.push(``, `💳 Pagá tu seña acá: ${paymentLink}`);
+  }
+
+  return lines.join("\n");
+};
+
 const sendBookingWhatsappConfirmation = async ({
   companyId = null,
   clientPhone,
@@ -63,5 +91,6 @@ const sendBookingWhatsappConfirmation = async ({
 
 module.exports = {
   buildBookingWhatsappConfirmation,
+  buildDepositPaymentMessage,
   sendBookingWhatsappConfirmation,
 };

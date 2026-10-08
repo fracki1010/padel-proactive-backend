@@ -28,6 +28,26 @@ const DEFAULT_TIMEOUT_MS = 10000;
 const WEBHOOK_PROVIDER = 'mercadopago';
 const SECRET_CACHE_TTL_MS = 30000;
 const SECRET_CACHE_MAX_ENTRIES = 500;
+// Clubs operate in America/Argentina/Buenos_Aires: UTC-3, no DST since 2009.
+const MP_UTC_OFFSET_MINUTES = -3 * 60;
+
+// MercadoPago's term-of-preference window requires ISO-8601 datetimes WITH a
+// timezone offset — their docs use e.g. "2017-02-01T12:00:00.000-04:00", not a
+// bare 'Z'. Renders the instant shifted to the club offset so Checkout Pro
+// honours expiration_date_from/to. Empty string for invalid input.
+const formatMpDatetime = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const shifted = new Date(date.getTime() + MP_UTC_OFFSET_MINUTES * 60 * 1000);
+  const pad = (number, width = 2) => String(number).padStart(width, '0');
+  const sign = MP_UTC_OFFSET_MINUTES < 0 ? '-' : '+';
+  const absOffset = Math.abs(MP_UTC_OFFSET_MINUTES);
+  return (
+    `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}` +
+    `T${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}` +
+    `.${pad(shifted.getUTCMilliseconds(), 3)}${sign}${pad(Math.floor(absOffset / 60))}:${pad(absOffset % 60)}`
+  );
+};
 
 class SignatureError extends Error {
   constructor(message) {
@@ -200,9 +220,12 @@ const resolveActiveCredential = async (companyId, options = {}) => {
 
 // Creates a Checkout Pro preference for a booking's deposit. The amount is the
 // configured fixed seña; `external_reference` carries the booking id so the
-// webhook can link the payment back. The club token is used and never logged.
+// webhook can link the payment back. When `expiresAt` is provided it is sent as
+// `expiration_date_to` so Checkout Pro stops accepting the payment after the
+// booking hold deadline (prevents most late payments). The club token is used
+// and never logged.
 const createDepositPreference = async (payload = {}, options = {}) => {
-  const { companyId, booking, depositAmount, backUrls, notificationUrl } = payload;
+  const { companyId, booking, depositAmount, backUrls, notificationUrl, expiresAt } = payload;
   const credential = await resolveActiveCredential(companyId, options);
   if (!credential || credential.isActive === false) {
     throw new MercadoPagoError('MercadoPago is not configured for this club.', 409);
@@ -232,6 +255,13 @@ const createDepositPreference = async (payload = {}, options = {}) => {
   };
   if (backUrls && typeof backUrls === 'object') {
     body.back_urls = backUrls;
+  }
+  const expirationDate = expiresAt ? new Date(expiresAt) : null;
+  if (expirationDate && !Number.isNaN(expirationDate.getTime())) {
+    // Checkout Pro only honours the window when the full trio is present.
+    body.expires = true;
+    body.expiration_date_from = formatMpDatetime(new Date());
+    body.expiration_date_to = formatMpDatetime(expirationDate);
   }
   // Prefer an explicit caller value, then the shared env configuration. The MP
   // dashboard notification URL is the fallback if neither is set.
@@ -303,6 +333,7 @@ module.exports = {
   buildSignatureManifest,
   computeSignature,
   createDepositPreference,
+  formatMpDatetime,
   getPayment,
   normalizeManifestId,
   resolveCompanyFromSignature,
