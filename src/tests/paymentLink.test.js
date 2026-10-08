@@ -24,6 +24,7 @@ const state = {
   mpError: null,
   mpCalls: [],
   credentialCalls: [],
+  bookingCalls: [],
 };
 
 const resetState = () => {
@@ -35,6 +36,7 @@ const resetState = () => {
   state.mpError = null;
   state.mpCalls = [];
   state.credentialCalls = [];
+  state.bookingCalls = [];
 };
 
 // Patch service seams BEFORE requiring the controller so its destructured
@@ -60,7 +62,10 @@ const Booking = require('../models/booking.model');
 
 Company.findOne = async () => state.company;
 ClientAccount.findById = async () => state.client;
-Booking.findOne = async () => state.booking;
+Booking.findOne = async (filter) => {
+  state.bookingCalls.push(filter);
+  return state.booking;
+};
 
 const { createPaymentLink } = require('../controllers/public.controller');
 const publicRouter = require('../routes/public.routes');
@@ -87,7 +92,7 @@ const baseReq = (overrides = {}) => ({
 
 // ── Route contract ───────────────────────────────────────────────────────────
 
-test('public router exposes POST /bookings/:id/payment-link behind protectClient', () => {
+test('public router exposes POST /bookings/:id/payment-link with a rate limiter and protectClient', () => {
   const layer = publicRouter.stack.find(
     (entry) =>
       entry.route &&
@@ -97,7 +102,29 @@ test('public router exposes POST /bookings/:id/payment-link behind protectClient
   assert.ok(layer, 'missing POST /bookings/:id/payment-link route');
 
   const handlers = layer.route.stack.map((entry) => entry.handle);
-  assert.equal(handlers[0].name, 'protectClient', 'route must be client-protected');
+  assert.equal(
+    handlers[0],
+    publicRouter.paymentLinkRateLimiter,
+    'route must be rate limited',
+  );
+  assert.ok(
+    handlers.some((handler) => handler.name === 'protectClient'),
+    'route must be client-protected',
+  );
+});
+
+test('the payment-link rate limiter returns 429 after the configured burst', () => {
+  const max = publicRouter.PAYMENT_LINK_RATE_LIMIT_MAX;
+  assert.ok(Number.isInteger(max) && max > 0);
+  const limiter = publicRouter.paymentLinkRateLimiter;
+  const ip = '203.0.113.77';
+  const req = { ip };
+  for (let i = 0; i < max; i += 1) {
+    limiter(req, createResponse(), () => {});
+  }
+  const blocked = createResponse();
+  limiter(req, blocked, () => {});
+  assert.equal(blocked.statusCode, 429);
 });
 
 // ── Controller ───────────────────────────────────────────────────────────────
@@ -176,4 +203,44 @@ test('createPaymentLink maps a missing encryption key to 503', async () => {
   await createPaymentLink(baseReq(), res);
 
   assert.equal(res.statusCode, 503);
+});
+
+// ── Booking state + id validation (review findings) ─────────────────────────
+
+test('createPaymentLink rejects a non-ObjectId booking id with 400', async () => {
+  resetState();
+  const res = createResponse();
+
+  await createPaymentLink(baseReq({ params: { slug: 'club', id: 'not-an-id' } }), res);
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(state.bookingCalls.length, 0, 'must not query with an invalid id');
+  assert.equal(state.mpCalls.length, 0);
+});
+
+test('createPaymentLink refuses to mint a link for a confirmed booking', async () => {
+  resetState();
+  state.booking = { _id: BOOKING_ID, companyId: COMPANY, status: 'confirmado' };
+  const res = createResponse();
+
+  await createPaymentLink(baseReq(), res);
+
+  assert.equal(res.statusCode, 409);
+  assert.equal(state.mpCalls.length, 0);
+});
+
+test('createPaymentLink refuses a booking whose deposit is already paid', async () => {
+  resetState();
+  state.booking = {
+    _id: BOOKING_ID,
+    companyId: COMPANY,
+    status: 'reservado',
+    deposit: { status: 'pagado' },
+  };
+  const res = createResponse();
+
+  await createPaymentLink(baseReq(), res);
+
+  assert.equal(res.statusCode, 409);
+  assert.equal(state.mpCalls.length, 0);
 });

@@ -26,6 +26,17 @@ const otpRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 3 }
 const authRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 10 });
 // 40 locks por IP cada 15 minutos — evita abuso del slot lock
 const slotLockRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 40 });
+// 20 links de pago por IP cada 15 minutos — evita mint/abuso de preferencias
+const PAYMENT_LINK_RATE_LIMIT_WINDOW_MS = Number(
+  process.env.PAYMENT_LINK_RATE_LIMIT_WINDOW_MS || 15 * 60_000,
+);
+const PAYMENT_LINK_RATE_LIMIT_MAX = Number(
+  process.env.PAYMENT_LINK_RATE_LIMIT_MAX || 20,
+);
+const paymentLinkRateLimiter = createRateLimiter({
+  windowMs: PAYMENT_LINK_RATE_LIMIT_WINDOW_MS,
+  maxRequests: PAYMENT_LINK_RATE_LIMIT_MAX,
+});
 
 // Info del club (canchas + slots)
 router.get("/", getClubInfo);
@@ -51,7 +62,10 @@ router.put("/auth/me/phone", protectClient, updatePhone);
 // Reservas de clientes
 router.post("/bookings", protectClient, createClientBooking);
 router.get("/bookings", protectClient, getMyBookings);
-router.post("/bookings/:id/payment-link", protectClient, createPaymentLink);
+router.post("/bookings/:id/payment-link", paymentLinkRateLimiter, protectClient, createPaymentLink);
 router.delete("/bookings/:id", protectClient, cancelMyBooking);
 
 module.exports = router;
+module.exports.paymentLinkRateLimiter = paymentLinkRateLimiter;
+module.exports.PAYMENT_LINK_RATE_LIMIT_MAX = PAYMENT_LINK_RATE_LIMIT_MAX;
+module.exports.PAYMENT_LINK_RATE_LIMIT_WINDOW_MS = PAYMENT_LINK_RATE_LIMIT_WINDOW_MS;

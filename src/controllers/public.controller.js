@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
+const mongoose = require("mongoose");
 const Company = require("../models/company.model");
 const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
@@ -1095,6 +1096,9 @@ const cancelMyBooking = async (req, res) => {
   }
 };
 
+// Booking statuses that may (re)generate a deposit payment link.
+const LINK_ALLOWED_STATUSES = new Set(["reservado", "pendiente_seña"]);
+
 // POST /api/public/:slug/bookings/:id/payment-link  (requiere protectClient)
 const createPaymentLink = async (req, res) => {
   try {
@@ -1105,6 +1109,10 @@ const createPaymentLink = async (req, res) => {
 
     if (String(req.clientUser.companyId) !== String(company._id)) {
       return res.status(403).json({ success: false, error: "No autorizado para este club" });
+    }
+
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, error: "Reserva inválida" });
     }
 
     const client = await ClientAccount.findById(req.clientUser.id);
@@ -1123,8 +1131,14 @@ const createPaymentLink = async (req, res) => {
     if (!booking) {
       return res.status(404).json({ success: false, error: "Reserva no encontrada" });
     }
-    if (booking.status === "cancelado") {
-      return res.status(409).json({ success: false, error: "La reserva no está activa" });
+    // Only a booking awaiting its seña may (re)generate a payment link. The
+    // `pendiente_seña` state is introduced in Slice 3; until then `reservado` is
+    // the only payable state and a paid/confirmed booking must not mint a link.
+    if (!LINK_ALLOWED_STATUSES.has(booking.status)) {
+      return res.status(409).json({ success: false, error: "La reserva no admite pago de seña" });
+    }
+    if (booking.deposit && booking.deposit.status === "pagado") {
+      return res.status(409).json({ success: false, error: "La seña ya fue pagada" });
     }
 
     const credential = await getActiveCredential(company._id);
@@ -1145,8 +1159,22 @@ const createPaymentLink = async (req, res) => {
       });
     }
 
+    // Optional club/portal return URL. Without it MercadoPago uses the
+    // dashboard-configured back URLs; notification_url is what delivers the
+    // webhook and is always forwarded when configured.
+    const backUrl = process.env.MERCADOPAGO_BACK_URL || undefined;
+    const backUrls = backUrl
+      ? { success: backUrl, failure: backUrl, pending: backUrl }
+      : undefined;
+
     const preference = await createDepositPreference(
-      { companyId: company._id, booking, depositAmount: settings.depositAmount },
+      {
+        companyId: company._id,
+        booking,
+        depositAmount: settings.depositAmount,
+        backUrls,
+        notificationUrl: process.env.MERCADOPAGO_NOTIFICATION_URL || undefined,
+      },
       { credential },
     );
 
