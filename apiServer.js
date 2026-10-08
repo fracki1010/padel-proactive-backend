@@ -12,6 +12,9 @@ const app = require("./src/app");
 const {
   startAttendanceConfirmationMonitor,
 } = require("./src/services/attendanceConfirmation.service");
+const {
+  startDepositExpiryMonitor,
+} = require("./src/services/depositExpiry.service");
 
 const PORT = process.env.PORT || 3000;
 
@@ -22,6 +25,8 @@ connectDB()
     });
     startAttendanceConfirmationMonitor();
     console.log("✅ Monitor de confirmación de asistencia iniciado.");
+    startDepositExpiryMonitor();
+    console.log("✅ Monitor de expiración de señas iniciado.");
     if (
       String(process.env.ATTENDANCE_DEBUG || "")
         .trim()
