@@ -8,7 +8,10 @@
 //
 // The scan is GLOBAL (not filtered by the company's current `depositEnabled`):
 // a club that disables deposits must not leave outstanding holds holding courts
-// forever. Each expiry is still scoped by the booking's own `companyId`.
+// forever. Each expiry is still scoped by the booking's own `companyId`. The
+// global filter matches the Booking index `{ status, 'deposit.status',
+// 'deposit.expiresAt' }` (status-led — the companyId-led index does not apply
+// to a filter without a companyId).
 
 const Booking = require('../models/booking.model');
 const { isMongoConnected } = require('../config/database');

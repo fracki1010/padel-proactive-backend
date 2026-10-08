@@ -73,6 +73,19 @@ test('booking model exposes pendiente_seña status, a deposit subdoc and deposit
   );
   assert.ok(sweeper, 'missing (companyId, deposit.status, deposit.expiresAt) sweeper index');
 
+  // NEW-2: the sweeper scans GLOBALLY (no companyId in the filter), so its
+  // query needs an index led by status, not companyId.
+  const globalSweep = indexes.find(
+    ([definition]) =>
+      definition.status === 1 &&
+      definition['deposit.status'] === 1 &&
+      definition['deposit.expiresAt'] === 1,
+  );
+  assert.ok(
+    globalSweep,
+    'missing global sweep index {status, deposit.status, deposit.expiresAt}',
+  );
+
   const uniquePayment = indexes.find(
     ([definition, options]) =>
       definition['deposit.paymentId'] === 1 && options?.unique === true,

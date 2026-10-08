@@ -118,6 +118,11 @@ bookingSchema.index({ companyId: 1, canonicalClientId: 1, date: 1 });
 // Expiry sweeper: unpaid deposits whose deadline has passed, scoped per company.
 bookingSchema.index({ companyId: 1, "deposit.status": 1, "deposit.expiresAt": 1 });
 
+// Global sweep (NEW-2): the sweeper scans EVERY pending hold across companies
+// regardless of the current depositEnabled flag, so its filter has no leading
+// companyId — it needs a status-led index to avoid a collection scan.
+bookingSchema.index({ status: 1, "deposit.status": 1, "deposit.expiresAt": 1 });
+
 // A MercadoPago payment may be linked to at most one booking. Partial (not
 // sparse) so the many bookings without a paymentId are excluded even though the
 // subdocument exists with `paymentId: null`.
