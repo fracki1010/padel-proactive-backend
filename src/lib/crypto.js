@@ -8,10 +8,13 @@
 const crypto = require('crypto');
 
 const DEFAULT_KEY_VERSION = 'v1';
+const CURRENT_KEY_ENV = 'PAYMENT_SECRET_KEY';
+const CURRENT_VERSION_ENV = 'PAYMENT_SECRET_KEY_VERSION';
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH_BYTES = 12;
 const KEY_LENGTH_BYTES = 32;
 const HEX_KEY_REGEX = /^[0-9a-fA-F]{64}$/;
+const VERSION_REGEX = /^v?(\d+)$/i;
 
 class CryptoConfigError extends Error {
   constructor(message) {
@@ -29,23 +32,43 @@ class CryptoError extends Error {
   }
 }
 
-const resolveKey = () => {
-  const raw = String(process.env.PAYMENT_SECRET_KEY || '').trim();
-  if (!raw) {
-    throw new CryptoConfigError(
-      'PAYMENT_SECRET_KEY is not configured.',
-    );
+const normalizeVersion = (value) => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const match = VERSION_REGEX.exec(raw);
+  return match ? `v${Number(match[1])}` : null;
+};
+
+// The active key version lives in PAYMENT_SECRET_KEY_VERSION (default v1) and is
+// backed by PAYMENT_SECRET_KEY. Historical keys are read from PAYMENT_SECRET_KEY_V<n>
+// so records encrypted before a rotation can still be decrypted.
+const getCurrentKeyVersion = () =>
+  normalizeVersion(process.env[CURRENT_VERSION_ENV]) || DEFAULT_KEY_VERSION;
+
+const keyEnvForVersion = (version) => {
+  const normalized = normalizeVersion(version);
+  if (!normalized) {
+    throw new CryptoConfigError(`Unsupported key version: ${version}.`);
+  }
+  if (normalized === getCurrentKeyVersion()) return CURRENT_KEY_ENV;
+  return `PAYMENT_SECRET_KEY_${normalized.toUpperCase()}`;
+};
+
+const decodeKey = (raw, envName) => {
+  const value = String(raw ?? '').trim();
+  if (!value) {
+    throw new CryptoConfigError(`${envName} is not configured.`);
   }
 
   let key = null;
-  if (HEX_KEY_REGEX.test(raw)) {
-    key = Buffer.from(raw, 'hex');
+  if (HEX_KEY_REGEX.test(value)) {
+    key = Buffer.from(value, 'hex');
   } else {
-    const utf8 = Buffer.from(raw, 'utf8');
+    const utf8 = Buffer.from(value, 'utf8');
     if (utf8.length === KEY_LENGTH_BYTES) {
       key = utf8;
     } else {
-      const base64 = Buffer.from(raw, 'base64');
+      const base64 = Buffer.from(value, 'base64');
       if (base64.length === KEY_LENGTH_BYTES) {
         key = base64;
       }
@@ -54,19 +77,30 @@ const resolveKey = () => {
 
   if (!key || key.length !== KEY_LENGTH_BYTES) {
     throw new CryptoConfigError(
-      'PAYMENT_SECRET_KEY must decode to 32 bytes (hex, base64 or raw).',
+      `${envName} must decode to 32 bytes (hex, base64 or raw).`,
     );
   }
 
   return key;
 };
 
+const resolveKeyForVersion = (version) => {
+  if (version !== undefined && version !== null && String(version).trim() !== '') {
+    const envName = keyEnvForVersion(version);
+    return decodeKey(process.env[envName], envName);
+  }
+  return decodeKey(process.env[CURRENT_KEY_ENV], CURRENT_KEY_ENV);
+};
+
+const resolveKey = () => resolveKeyForVersion(getCurrentKeyVersion());
+
 const assertKeyConfigured = () => {
   resolveKey();
 };
 
 const encryptSecret = (plaintext) => {
-  const key = resolveKey();
+  const keyVersion = getCurrentKeyVersion();
+  const key = resolveKeyForVersion(keyVersion);
   if (plaintext === undefined || plaintext === null) {
     throw new CryptoError('Cannot encrypt an empty secret.');
   }
@@ -83,15 +117,18 @@ const encryptSecret = (plaintext) => {
     ciphertext: encrypted.toString('base64'),
     iv: iv.toString('base64'),
     authTag: authTag.toString('base64'),
-    keyVersion: DEFAULT_KEY_VERSION,
+    keyVersion,
   };
 };
 
-const decryptSecret = ({ ciphertext, iv, authTag } = {}) => {
-  const key = resolveKey();
+const decryptSecret = ({ ciphertext, iv, authTag, keyVersion } = {}) => {
   if (!ciphertext || !iv || !authTag) {
     throw new CryptoError('Malformed ciphertext payload.');
   }
+
+  // Resolve outside the try so a missing/unknown key surfaces as a
+  // CryptoConfigError (fail-closed config problem) instead of a CryptoError.
+  const key = resolveKeyForVersion(keyVersion);
 
   try {
     const decipher = crypto.createDecipheriv(

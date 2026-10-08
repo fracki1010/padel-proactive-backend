@@ -144,6 +144,104 @@ test('decryptSecret rejects a malformed payload', () => {
   );
 });
 
+// ── Key rotation ─────────────────────────────────────────────────────────────
+
+const withEnv = (overrides, fn) => {
+  const saved = {};
+  for (const key of Object.keys(overrides)) {
+    saved[key] = process.env[key];
+    if (overrides[key] === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = overrides[key];
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    for (const key of Object.keys(overrides)) {
+      if (saved[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = saved[key];
+      }
+    }
+  }
+};
+
+test('stamps the configured current key version', () => {
+  withEnv(
+    { PAYMENT_SECRET_KEY_VERSION: 'v3', PAYMENT_SECRET_KEY: 'e'.repeat(64) },
+    () => {
+      const parts = encryptSecret('stamped-secret');
+      assert.equal(parts.keyVersion, 'v3');
+      assert.equal(decryptSecret(parts), 'stamped-secret');
+    },
+  );
+});
+
+test('decrypts a v1 record after rotating the current key to v2', () => {
+  const v1Key = 'a'.repeat(64);
+  const v2Key = 'd'.repeat(64);
+  let v1Record;
+
+  withEnv(
+    {
+      PAYMENT_SECRET_KEY: v1Key,
+      PAYMENT_SECRET_KEY_VERSION: 'v1',
+      PAYMENT_SECRET_KEY_V1: undefined,
+    },
+    () => {
+      v1Record = encryptSecret('legacy-secret');
+    },
+  );
+  assert.equal(v1Record.keyVersion, 'v1');
+
+  withEnv(
+    {
+      PAYMENT_SECRET_KEY: v2Key,
+      PAYMENT_SECRET_KEY_VERSION: 'v2',
+      PAYMENT_SECRET_KEY_V1: v1Key,
+    },
+    () => {
+      const rotated = encryptSecret('fresh-secret');
+      assert.equal(rotated.keyVersion, 'v2');
+      assert.equal(decryptSecret(rotated), 'fresh-secret');
+      assert.equal(decryptSecret(v1Record), 'legacy-secret');
+    },
+  );
+});
+
+test('fails closed for an unknown key version', () => {
+  const parts = encryptSecret('versioned');
+  assert.throws(
+    () => decryptSecret({ ...parts, keyVersion: 'v99' }),
+    (error) => error instanceof CryptoConfigError,
+  );
+});
+
+test('fails closed when the historical key for a version is missing', () => {
+  withEnv(
+    {
+      PAYMENT_SECRET_KEY: 'a'.repeat(64),
+      PAYMENT_SECRET_KEY_VERSION: 'v2',
+      PAYMENT_SECRET_KEY_V1: undefined,
+    },
+    () => {
+      const parts = {
+        ciphertext: 'aaaa',
+        iv: 'bbbb',
+        authTag: 'cccc',
+        keyVersion: 'v1',
+      };
+      assert.throws(
+        () => decryptSecret(parts),
+        (error) => error instanceof CryptoConfigError,
+      );
+    },
+  );
+});
+
 // ── No plaintext leaks ───────────────────────────────────────────────────────
 
 test('encrypt/decrypt never log the plaintext', () => {
