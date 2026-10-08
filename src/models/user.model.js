@@ -22,6 +22,13 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    // Alternate WhatsApp identities for a verified user (e.g. a Linked-Device
+    // id like "38552364683267@lid"). Links the raw chatId to the real account
+    // without overwriting `whatsappId`.
+    whatsappAliases: {
+      type: [String],
+      default: [],
+    },
     level: {
       type: String,
       enum: ["principiante", "intermedio", "avanzado", "pro"],
@@ -80,6 +87,17 @@ userSchema.index(
   {
     unique: true,
     partialFilterExpression: { phoneNumber: { $exists: true, $ne: "" } },
+  },
+);
+
+// An alias may bind to at most one user per company. MUST be partial: documents
+// with an empty/missing `whatsappAliases` array are indexed as null, so a plain
+// unique index would allow only ONE user without aliases per company (E11000).
+userSchema.index(
+  { companyId: 1, whatsappAliases: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { "whatsappAliases.0": { $exists: true } },
   },
 );
 

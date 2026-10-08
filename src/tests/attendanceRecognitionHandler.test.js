@@ -18,6 +18,8 @@ const state = {
   fallbackAttendanceBooking: null,
   notifications: [],
   userConfirmedCount: 1,
+  registeredUser: null,
+  identityLookups: [],
 };
 
 const makePopulatable = (booking) => ({ populate: async () => booking });
@@ -30,6 +32,10 @@ stubModule("../services/bookingService", {
 });
 stubModule("../services/userService", {
   getUserByWhatsappId: async () => null,
+  getUserByIdentity: async (query) => {
+    state.identityLookups.push(query);
+    return state.registeredUser;
+  },
   saveOrUpdateUser: async () => null,
 });
 stubModule("../services/appConfig.service", {
@@ -69,8 +75,15 @@ stubModule("../models/user.model", {
     attendanceConfirmedCount: state.userConfirmedCount,
   }),
 });
+// Query stub compatible con `await findOne(...)` (thenable → null) y con
+// `findOne(...).select(...).lean()` (→ null).
+const nullableTimeSlotQuery = () => ({
+  select: () => ({ lean: async () => null }),
+  lean: async () => null,
+  then: (resolve) => resolve(null),
+});
 stubModule("../models/timeSlot.model", {
-  findOne: () => null,
+  findOne: () => nullableTimeSlotQuery(),
   find: () => ({ lean: async () => [] }),
 });
 
@@ -96,6 +109,8 @@ const resetState = () => {
   state.fallbackAttendanceBooking = null;
   state.notifications = [];
   state.userConfirmedCount = 1;
+  state.registeredUser = null;
+  state.identityLookups = [];
 };
 
 // ============================================================
@@ -198,4 +213,26 @@ test("'quiero reservar hoy 20' no es interceptado por el fallback de asistencia 
   assert.match(reply, /nombre completo/i);
   assert.doesNotMatch(reply, /gracias por confirmar/i);
   assert.equal(state.notifications.length, 0);
+});
+
+// ============================================================
+// Identidad verificada: un @lid que resuelve al teléfono del cliente
+// reconocido NO debe volver a pedir el nombre.
+// ============================================================
+test("un @lid que resuelve a un cliente verificado se reconoce (no pide nombre)", async () => {
+  resetState();
+  const chatId = "38552364683267@lid";
+  sessionService.clearHistory(chatId);
+  // El resolver de identidad devuelve la cuenta verificada de Matias perez.
+  state.registeredUser = { name: "Matias perez", phoneNumber: "5492622345473" };
+
+  const reply = await handleIncomingMessage(chatId, "quiero reservar hoy 20");
+
+  // Se llamó al resolver con el teléfono resuelto por el worker.
+  assert.equal(state.identityLookups.length, 1);
+  assert.equal(state.identityLookups[0].chatId, chatId);
+  assert.equal(state.identityLookups[0].resolvedPhone, "5491100000000");
+  // El nombre conocido aparece en la respuesta → no se pide "nombre completo".
+  assert.match(reply, /Matias perez/);
+  assert.doesNotMatch(reply, /Antes de reservar, necesito tu \*nombre completo\*/i);
 });

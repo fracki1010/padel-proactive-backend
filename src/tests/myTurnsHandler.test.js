@@ -38,6 +38,7 @@ stubModule("../services/bookingService", {
 });
 stubModule("../services/userService", {
   getUserByWhatsappId: async () => null,
+  getUserByIdentity: async () => null,
   saveOrUpdateUser: async () => null,
 });
 stubModule("../services/appConfig.service", {
