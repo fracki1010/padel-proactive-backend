@@ -8,10 +8,16 @@ const { sendAdminNotification } = require("./notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const {
   getCancellationLockHours,
+  getDepositSettings,
   getPenaltyLimit,
   getPenaltySystemEnabled,
 } = require("./appConfig.service");
-const { markRefundableOnCancel } = require("./deposit.service");
+const {
+  buildDepositFields,
+  buildDepositPaymentLink,
+  markRefundableOnCancel,
+} = require("./deposit.service");
+const { notifyDepositPending } = require("./depositNotification.service");
 const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
@@ -314,7 +320,12 @@ const createNewBooking = async ({
     // =================================================================
     // CREACIÓN DE LA RESERVA
     // =================================================================
-    const newBooking = await Booking.create({
+    const depositSettings = await getDepositSettings(companyId);
+    const depositEnabled =
+      Boolean(depositSettings?.depositEnabled) &&
+      Number(depositSettings?.depositAmount) > 0;
+
+    const bookingFields = {
       ...scope,
       court: selectedCourt._id,
       date: bookingDate,
@@ -325,7 +336,15 @@ const createNewBooking = async ({
       canonicalClientId,
       finalPrice: slot.price, // Congelamos el precio actual
       status: "confirmado",
-    });
+    };
+
+    // Deposits enabled: hold the court as `pendiente_seña` and store the seña,
+    // mirroring the public portal booking path.
+    if (depositEnabled) {
+      Object.assign(bookingFields, buildDepositFields({ settings: depositSettings }));
+    }
+
+    const newBooking = await Booking.create(bookingFields);
 
     // Notificar al admin
     await sendAdminNotification(
@@ -335,6 +354,50 @@ const createNewBooking = async ({
       { bookingId: newBooking._id, companyId },
       { companyId },
     );
+
+    // Deposits enabled: derive the Checkout Pro link and notify the pending
+    // seña. Best-effort by design — the booking is already persisted as a hold,
+    // so an MP/queue failure must not roll it back (the link can be regenerated
+    // from the payment-link endpoint).
+    let depositInfo = null;
+    if (depositEnabled) {
+      const bookingForDeposit =
+        typeof newBooking.toObject === "function"
+          ? { ...newBooking.toObject(), court: selectedCourt, timeSlot: slot }
+          : { ...newBooking, court: selectedCourt, timeSlot: slot };
+
+      depositInfo = {
+        amount: depositSettings.depositAmount,
+        initPoint: "",
+        expiresAt: bookingForDeposit.deposit?.expiresAt || null,
+      };
+
+      try {
+        const link = await buildDepositPaymentLink({
+          companyId,
+          booking: bookingForDeposit,
+          settings: depositSettings,
+          notificationUrl: process.env.MERCADOPAGO_NOTIFICATION_URL || undefined,
+        });
+        depositInfo.initPoint = link.initPoint;
+      } catch (depositError) {
+        console.error(
+          "[bookingService] No se pudo generar el link de seña:",
+          depositError?.message || depositError,
+        );
+      }
+
+      await notifyDepositPending({
+        booking: bookingForDeposit,
+        companyId,
+        initPoint: depositInfo.initPoint,
+      }).catch((notifyError) => {
+        console.error(
+          "[bookingService] No se pudo notificar la seña pendiente:",
+          notifyError?.message || notifyError,
+        );
+      });
+    }
 
     // Retornamos éxito con datos bonitos para el mensaje de WhatsApp
     return {
@@ -346,6 +409,7 @@ const createNewBooking = async ({
         startTime: slot.startTime,
         endTime: slot.endTime,
         price: slot.price,
+        ...(depositInfo ? { deposit: depositInfo } : {}),
       },
     };
   } catch (error) {
