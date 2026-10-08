@@ -35,12 +35,17 @@ const createFakeCredentialModel = () => {
 
   return {
     calls,
-    async findOne(filter) {
-      calls.findOne.push(filter);
+    async findOne(filter, projection) {
+      calls.findOne.push({ filter, projection });
       const doc = store.get(keyOf(filter.companyId));
       if (!doc) return null;
       if (filter.isActive === true && !doc.isActive) return null;
-      return doc;
+      if (!projection) return doc;
+      const projected = { ...doc };
+      for (const key of Object.keys(projection)) {
+        if (projection[key] === 0) delete projected[key];
+      }
+      return projected;
     },
     async findOneAndUpdate(filter, update, options) {
       calls.findOneAndUpdate.push({ filter, update, options });
@@ -77,6 +82,21 @@ test('PaymentCredential defines a unique companyId+provider index', () => {
       options?.unique === true,
   );
   assert.ok(unique, 'missing unique (companyId, provider) index');
+});
+
+test('PaymentCredential does not declare a redundant companyId-only index', () => {
+  const indexes = PaymentCredential.schema.indexes();
+  const standalone = indexes.find(
+    ([definition, options]) =>
+      Object.keys(definition).length === 1 &&
+      definition.companyId === 1 &&
+      !options?.unique,
+  );
+  assert.equal(
+    standalone,
+    undefined,
+    'companyId-only index is redundant with the compound unique index',
+  );
 });
 
 test('PaymentCredential toJSON strips every secret field', () => {
@@ -143,6 +163,23 @@ test('setCredential rejects a missing access token without persisting', async ()
   assert.equal(model.calls.findOneAndUpdate.length, 0);
 });
 
+test('rotating the token preserves an existing webhook secret', async () => {
+  const model = createFakeCredentialModel();
+  const first = await setCredential(
+    COMPANY_A,
+    { accessToken: 'token-v1', webhookSecret: 'wh-secret' },
+    { model },
+  );
+  const secretBefore = first.webhookSecretCiphertext;
+  assert.ok(secretBefore, 'webhook secret must be stored encrypted');
+
+  await setCredential(COMPANY_A, { accessToken: 'token-v2' }, { model });
+
+  const stored = await getActiveCredential(COMPANY_A, { model });
+  assert.equal(stored.webhookSecretCiphertext, secretBefore);
+  assert.equal(decryptCredentialToken(stored), 'token-v2');
+});
+
 // ── Read / masking ───────────────────────────────────────────────────────────
 
 test('getActiveCredential returns the decrypted token for its company', async () => {
@@ -168,13 +205,34 @@ test('getMaskedCredential masks the token and omits all secret fields', async ()
 
   assert.equal(masked.configured, true);
   assert.equal(masked.masked, '••••');
-  assert.equal(masked.last4, '9876');
   assert.equal(masked.mpUserId, 'mp-9');
+  assert.ok(!('last4' in masked), 'masked response must not expose token digits');
 
   const serialized = JSON.stringify(masked);
   assert.ok(!serialized.includes(token), 'masked response leaked the token');
   assert.ok(!('tokenCiphertext' in masked));
   assert.ok(!('token' in masked));
+});
+
+test('getMaskedCredential never loads secret fields from the database', async () => {
+  const model = createFakeCredentialModel();
+  await setCredential(COMPANY_A, { accessToken: 'token-a' }, { model });
+
+  await getMaskedCredential(COMPANY_A, { model });
+
+  const { projection } = model.calls.findOne.at(-1);
+  assert.ok(projection, 'masked read must apply a secret-excluding projection');
+  for (const secret of [
+    'tokenCiphertext',
+    'iv',
+    'authTag',
+    'keyVersion',
+    'webhookSecretCiphertext',
+    'webhookSecretIv',
+    'webhookSecretAuthTag',
+  ]) {
+    assert.equal(projection[secret], 0, `${secret} must be excluded`);
+  }
 });
 
 test('getMaskedCredential reports configured:false when none exists', async () => {
@@ -183,7 +241,7 @@ test('getMaskedCredential reports configured:false when none exists', async () =
   const masked = await getMaskedCredential(COMPANY_B, { model });
 
   assert.equal(masked.configured, false);
-  assert.equal(masked.last4, '');
+  assert.ok(!('last4' in masked));
 });
 
 // ── Cross-company isolation ──────────────────────────────────────────────────
@@ -195,7 +253,7 @@ test('getActiveCredential never returns another company credential', async () =>
   const other = await getActiveCredential(COMPANY_B, { model });
 
   assert.equal(other, null);
-  assert.equal(String(model.calls.findOne.at(-1).companyId), COMPANY_B);
+  assert.equal(String(model.calls.findOne.at(-1).filter.companyId), COMPANY_B);
 });
 
 test('deleteCredential only deactivates the caller company credential', async () => {
