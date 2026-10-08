@@ -15,6 +15,7 @@ const {
   createClientBooking,
   getMyBookings,
   cancelMyBooking,
+  createPaymentLink,
 } = require("../controllers/public.controller");
 const { protectClient } = require("../middleware/clientAuth.middleware");
 const { createRateLimiter } = require("../middleware/rateLimit.middleware");
@@ -50,6 +51,7 @@ router.put("/auth/me/phone", protectClient, updatePhone);
 // Reservas de clientes
 router.post("/bookings", protectClient, createClientBooking);
 router.get("/bookings", protectClient, getMyBookings);
+router.post("/bookings/:id/payment-link", protectClient, createPaymentLink);
 router.delete("/bookings/:id", protectClient, cancelMyBooking);
 
 module.exports = router;
