@@ -46,6 +46,20 @@ const decryptCredentialToken = (credential) => {
   });
 };
 
+// Internal-only: decrypts the stored webhook secret used to verify the
+// MercadoPago webhook HMAC. Throws when the club never configured a secret.
+const decryptWebhookSecret = (credential) => {
+  if (!credential || !credential.webhookSecretCiphertext) {
+    throw new Error('Credential has no webhook secret to decrypt.');
+  }
+  return decryptSecret({
+    ciphertext: credential.webhookSecretCiphertext,
+    iv: credential.webhookSecretIv,
+    authTag: credential.webhookSecretAuthTag,
+    keyVersion: credential.keyVersion,
+  });
+};
+
 // Internal-only: returns the full credential document (including ciphertext).
 const getActiveCredential = async (companyId, options = {}) =>
   resolveModel(options).findOne({
@@ -139,6 +153,7 @@ module.exports = {
   SECRET_PROJECTION,
   buildMaskedCredential,
   decryptCredentialToken,
+  decryptWebhookSecret,
   deleteCredential,
   getActiveCredential,
   getMaskedCredential,
