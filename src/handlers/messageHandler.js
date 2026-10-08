@@ -1512,18 +1512,22 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
     const strictQuestionFlowEnabled = await getStrictQuestionFlowEnabled(companyId);
 
     // 1. Identificar Usuario
-    const registeredUser = await userService.getUserByWhatsappId(chatId, {
+    // Resolve the real phone once, early: it is the key that links a Linked-Device
+    // id (@lid) to the verified client account, and it also feeds canonicalClientPhone.
+    const resolvedSenderPhone = await getNumberByUser(chatId, companyId);
+    const registeredUser = await userService.getUserByIdentity({
+      chatId,
+      resolvedPhone: resolvedSenderPhone,
       companyId,
     });
     let knownName = registeredUser ? registeredUser.name : null;
     if (knownName && !isValidClientName(knownName)) {
       knownName = null;
     }
-    const number = await getNumberByUser(chatId, companyId);
     const registeredPhoneRaw = String(registeredUser?.phoneNumber || "").trim();
     const canonicalClientPhone = normalizeCanonicalClientPhone(
       registeredPhoneRaw,
-      number,
+      resolvedSenderPhone,
       chatId,
     );
 
@@ -1583,7 +1587,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         candidatePhones: buildAttendanceFallbackPhones({
           canonicalClientPhone,
           registeredPhoneRaw,
-          resolvedNumber: number,
+          resolvedNumber: resolvedSenderPhone,
         }),
       });
 
@@ -3052,7 +3056,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         await sendAdminNotification(
           "fixed_turn_request",
           "Solicitud de Turno Fijo",
-          `Cliente: ${requester}\nTeléfono: ${stripPhoneForClientDisplay(number)}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${summary}`,
+          `Cliente: ${requester}\nTeléfono: ${stripPhoneForClientDisplay(resolvedSenderPhone)}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${summary}`,
           { companyId, source: "whatsapp-fixed-turn" },
           { companyId },
         );
@@ -3128,7 +3132,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
           await sendAdminNotification(
             "fixed_turn_request",
             "Solicitud de Turno Fijo",
-            `Cliente: ${requester}\nTeléfono: ${stripPhoneForClientDisplay(number)}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${userMessage}`,
+            `Cliente: ${requester}\nTeléfono: ${stripPhoneForClientDisplay(resolvedSenderPhone)}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${userMessage}`,
             { companyId, source: "whatsapp-fixed-turn-fallback" },
             { companyId },
           );
@@ -3191,7 +3195,7 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
         await sendAdminNotification(
           "fixed_turn_request",
           "Solicitud de Turno Fijo",
-          `Cliente: ${requester}\nTeléfono: ${stripPhoneForClientDisplay(number)}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${userMessage}`,
+          `Cliente: ${requester}\nTeléfono: ${stripPhoneForClientDisplay(resolvedSenderPhone)}\nFecha: ${requestedDate}\nHora: ${requestedTime}\nDetalle: ${userMessage}`,
           { companyId, source: "whatsapp-fixed-turn-fallback" },
           { companyId },
         );
