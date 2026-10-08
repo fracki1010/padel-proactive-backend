@@ -39,6 +39,9 @@ const {
   setWhatsappEnabledConfigOnly,
   setWhatsappCancellationGroupSettings,
   setDailyAvailabilityDigestStatus,
+  getDepositSettings,
+  setDepositSettings,
+  validateDepositSettings,
 } = require("../services/appConfig.service");
 const {
   getWhatsappGroupsSnapshot,
@@ -1267,6 +1270,103 @@ router.post("/client-log", (req, res) => {
     console[level === "error" ? "error" : "log"](`${tag} ${message}`);
   }
   return res.status(200).json({ ok: true });
+});
+
+// ── Deposits (MercadoPago) ──────────────────────────────────────────────────
+
+const { CryptoConfigError } = require("../lib/crypto");
+const {
+  getMaskedCredential,
+  setCredential,
+  deleteCredential,
+} = require("../services/paymentCredential.service");
+
+const respondDepositError = (res, error) => {
+  if (error instanceof CryptoConfigError) {
+    return res.status(503).json({
+      success: false,
+      error: "La encriptación de credenciales de pago no está configurada.",
+    });
+  }
+  const status = Number(error?.statusCode) || 500;
+  return res.status(status).json({ success: false, error: error.message });
+};
+
+// GET /api/config/deposits — settings + masked credential (token is write-only)
+router.get("/deposits", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const settings = await getDepositSettings(companyId);
+    const credentials = await getMaskedCredential(companyId);
+    return res.status(200).json({
+      success: true,
+      data: { ...settings, credentials },
+    });
+  } catch (error) {
+    return respondDepositError(res, error);
+  }
+});
+
+// PUT /api/config/deposits — set deposit config (400 on invalid bounds)
+router.put("/deposits", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const { valid, error, value } = validateDepositSettings(req.body || {});
+    if (!valid) {
+      return res.status(400).json({ success: false, error });
+    }
+
+    await setDepositSettings(value, companyId);
+    const settings = await getDepositSettings(companyId);
+    const credentials = await getMaskedCredential(companyId);
+    return res.status(200).json({
+      success: true,
+      data: { ...settings, credentials },
+    });
+  } catch (error) {
+    return respondDepositError(res, error);
+  }
+});
+
+// PUT /api/config/deposits/credentials — encrypt + upsert the club token
+router.put("/deposits/credentials", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const body = req.body || {};
+    if (!body.accessToken || !String(body.accessToken).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: "El accessToken de MercadoPago es obligatorio.",
+      });
+    }
+
+    await setCredential(companyId, {
+      accessToken: body.accessToken,
+      webhookSecret: body.webhookSecret,
+      mpUserId: body.mpUserId,
+    });
+    const credentials = await getMaskedCredential(companyId);
+    return res.status(200).json({ success: true, data: credentials });
+  } catch (error) {
+    return respondDepositError(res, error);
+  }
+});
+
+// DELETE /api/config/deposits/credentials — soft-deactivate the club token
+router.delete("/deposits/credentials", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const result = await deleteCredential(companyId);
+    if (!result.deleted) {
+      return res.status(404).json({
+        success: false,
+        error: "No hay credencial de MercadoPago configurada.",
+      });
+    }
+    return res.status(200).json({ success: true, data: { deleted: true } });
+  } catch (error) {
+    return respondDepositError(res, error);
+  }
 });
 
 module.exports = router;
