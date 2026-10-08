@@ -240,14 +240,29 @@ const isValidClientName = (value = "") => {
 
 const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult) => {
   if (bookingResult.success) {
-    return (
+    const baseReply =
       `✅ *¡Reserva Confirmada!* 🎾\n\n` +
       `👤 *Jugador:* ${requestedClientName}\n` +
       `📌 *Cancha:* ${bookingResult.data.courtName}${bookingResult.data.courtType ? ` (${bookingResult.data.courtType})` : ""}\n` +
       `📅 *Fecha:* ${getFormattedDate(requestedDate)}\n` +
       `⏰ *Hora:* ${bookingResult.data.startTime} - ${bookingResult.data.endTime}\n` +
-      `💰 *Precio:* $${bookingResult.data.price}`
-    );
+      `💰 *Precio:* $${bookingResult.data.price}`;
+
+    // Pending deposit: append the seña amount and the Checkout Pro link so the
+    // client can pay straight from the chat.
+    const deposit = bookingResult.data?.deposit;
+    if (deposit) {
+      const depositLines = [
+        `⏳ *Falta la seña para confirmar tu turno.*`,
+        `💳 *Seña:* $${deposit.amount}`,
+      ];
+      if (deposit.initPoint) {
+        depositLines.push(`Pagá tu seña acá: ${deposit.initPoint}`);
+      }
+      return `${baseReply}\n\n${depositLines.join("\n")}`;
+    }
+
+    return baseReply;
   }
 
   if (bookingResult.error === "BUSY") return "🚫 Ese turno ya está ocupado. ¿Te busco otro?";
@@ -3227,4 +3242,4 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
   }
 };
 
-module.exports = { handleIncomingMessage };
+module.exports = { buildBookingReplyText, handleIncomingMessage };
