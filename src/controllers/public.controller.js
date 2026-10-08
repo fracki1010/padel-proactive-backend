@@ -957,7 +957,12 @@ const createClientBooking = async (req, res) => {
       // Best-effort link: the booking is already pending, so a transient MP
       // failure must not roll it back; the payment-link endpoint can regenerate.
       const depositExpiresAt = populated.deposit?.expiresAt || null;
-      depositInfo = { amount: depositSettings.depositAmount, expiresAt: depositExpiresAt };
+      depositInfo = {
+        required: populated.deposit?.required ?? true,
+        status: populated.deposit?.status || "pendiente",
+        amount: depositSettings.depositAmount,
+        expiresAt: depositExpiresAt,
+      };
       paymentInfo = { initPoint: "" };
       try {
         const link = await buildDepositPaymentLink({
@@ -1206,6 +1211,20 @@ const createPaymentLink = async (req, res) => {
     if (booking.deposit && booking.deposit.status === "pagado") {
       return res.status(409).json({ success: false, error: "La seña ya fue pagada" });
     }
+    // A hold whose deadline already passed must not mint a live link; the
+    // sweeper will free the court, so a new preference would never be honoured.
+    if (
+      booking.deposit &&
+      booking.deposit.status === "pendiente" &&
+      booking.deposit.expiresAt &&
+      new Date(booking.deposit.expiresAt).getTime() <= Date.now()
+    ) {
+      return res.status(409).json({
+        success: false,
+        error: "La seña venció; el turno ya no admite pago",
+        code: "DEPOSIT_EXPIRED",
+      });
+    }
 
     const credential = await getActiveCredential(company._id);
     if (!credential) {
@@ -1240,6 +1259,7 @@ const createPaymentLink = async (req, res) => {
         depositAmount: settings.depositAmount,
         backUrls,
         notificationUrl: process.env.MERCADOPAGO_NOTIFICATION_URL || undefined,
+        expiresAt: booking.deposit?.expiresAt || undefined,
       },
       { credential },
     );

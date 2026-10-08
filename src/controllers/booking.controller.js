@@ -10,6 +10,7 @@ const {
   enqueueWhatsappCommand,
 } = require("../services/whatsappCommandQueue.service");
 const { getPenaltyLimit } = require("../services/appConfig.service");
+const { markRefundableOnCancel } = require("../services/deposit.service");
 const {
   materializeFixedBookingsForDate,
   materializeFixedBookingsInRange,
@@ -361,6 +362,17 @@ const updateBooking = async (req, res) => {
     };
 
     if (shouldNotifyCancellation) {
+      // A paid seña on a booking cancelled from the panel needs a manual
+      // refund; flag it independently of the notification/penalty flow.
+      const depositPatch = markRefundableOnCancel(previousBooking);
+      if (depositPatch.deposit) {
+        await Booking.updateOne(
+          { _id: updatedBooking._id, ...scope },
+          { $set: { deposit: depositPatch.deposit } },
+        );
+        updatedBooking.deposit = depositPatch.deposit;
+      }
+
       if (applyPenalty) {
         penaltyResult.attempted = true;
         const bookingPhone = String(updatedBooking.clientPhone || "").trim();

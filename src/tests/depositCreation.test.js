@@ -148,6 +148,9 @@ test('a booking created with deposits enabled is pendiente_seña with deposit fi
   assert.equal(state.createdBooking.deposit.required, true);
   assert.ok(state.createdBooking.deposit.expiresAt instanceof Date);
   assert.equal(res.payload.data.deposit.amount, 5000);
+  assert.equal(res.payload.data.deposit.status, 'pendiente');
+  assert.equal(res.payload.data.deposit.required, true);
+  assert.ok(res.payload.data.deposit.expiresAt instanceof Date, 'expiresAt must be present');
   assert.equal(res.payload.data.payment.initPoint, 'https://mp/checkout/pref-x');
   assert.equal(state.pendingNotifications.length, 1, 'the pending deposit must be notified');
 });
