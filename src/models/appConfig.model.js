@@ -92,6 +92,20 @@ const appConfigSchema = new mongoose.Schema(
       enum: ["text", "image"],
       trim: true,
     },
+    depositEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    depositAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    holdMinutes: {
+      type: Number,
+      default: 15,
+      min: 1,
+    },
   },
   {
     timestamps: true,

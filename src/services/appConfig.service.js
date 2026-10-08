@@ -62,8 +62,110 @@ const normalizeCancellationLockHours = (value) => {
   return parsed;
 };
 
+const DEFAULT_DEPOSIT_ENABLED = false;
+const DEFAULT_DEPOSIT_AMOUNT = 0;
+const DEFAULT_HOLD_MINUTES = 15;
+
 const normalizeString = (value) =>
   typeof value === "string" ? value.trim() : String(value || "").trim();
+
+const isBlank = (value) =>
+  value === undefined || value === null || (typeof value === "string" && value.trim() === "");
+
+const normalizeDepositAmount = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return DEFAULT_DEPOSIT_AMOUNT;
+  }
+  return parsed;
+};
+
+const normalizeHoldMinutes = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return DEFAULT_HOLD_MINUTES;
+  }
+  return parsed;
+};
+
+// Pure validator shared by the service and the admin route.
+// Returns { valid, error, value } so callers can map invalid input to HTTP 400.
+const validateDepositSettings = (input = {}) => {
+  const source = input && typeof input === "object" ? input : {};
+  const depositEnabled =
+    typeof source.depositEnabled === "boolean"
+      ? source.depositEnabled
+      : DEFAULT_DEPOSIT_ENABLED;
+
+  const hasAmount = !isBlank(source.depositAmount);
+  const depositAmount = hasAmount
+    ? Number(source.depositAmount)
+    : DEFAULT_DEPOSIT_AMOUNT;
+  if (hasAmount && (!Number.isInteger(depositAmount) || depositAmount < 0)) {
+    return {
+      valid: false,
+      error: "depositAmount must be an integer greater than or equal to 0.",
+    };
+  }
+  if (depositEnabled && depositAmount <= 0) {
+    return {
+      valid: false,
+      error: "depositAmount must be greater than 0 when deposits are enabled.",
+    };
+  }
+
+  const hasHoldMinutes = !isBlank(source.holdMinutes);
+  const holdMinutes = hasHoldMinutes
+    ? Number(source.holdMinutes)
+    : DEFAULT_HOLD_MINUTES;
+  if (!Number.isInteger(holdMinutes) || holdMinutes < 1) {
+    return {
+      valid: false,
+      error: "holdMinutes must be an integer greater than or equal to 1.",
+    };
+  }
+
+  return {
+    valid: true,
+    error: null,
+    value: { depositEnabled, depositAmount, holdMinutes },
+  };
+};
+
+const resolveConfigModel = (options) =>
+  (options && options.model) || AppConfig;
+
+const getDepositSettings = async (companyId = null, options = {}) => {
+  const config = await resolveConfigModel(options).findOne(
+    buildConfigFilter(companyId),
+  );
+  return {
+    depositEnabled: Boolean(config?.depositEnabled),
+    depositAmount: normalizeDepositAmount(config?.depositAmount),
+    holdMinutes: normalizeHoldMinutes(config?.holdMinutes),
+  };
+};
+
+const setDepositSettings = async (settings = {}, companyId = null, options = {}) => {
+  const { valid, error, value } = validateDepositSettings(settings);
+  if (!valid) {
+    const validationError = new Error(error);
+    validationError.statusCode = 400;
+    throw validationError;
+  }
+
+  return resolveConfigModel(options).findOneAndUpdate(
+    buildConfigFilter(companyId),
+    {
+      $set: {
+        depositEnabled: value.depositEnabled,
+        depositAmount: value.depositAmount,
+        holdMinutes: value.holdMinutes,
+      },
+    },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+  );
+};
 const normalizeDailyAvailabilityDigestHour = (value) => {
   const normalized = normalizeString(value);
   return DAILY_HOUR_REGEX.test(normalized)
@@ -392,6 +494,9 @@ module.exports = {
   DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
   DEFAULT_CANCELLATION_LOCK_HOURS,
   DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
+  DEFAULT_DEPOSIT_AMOUNT,
+  DEFAULT_DEPOSIT_ENABLED,
+  DEFAULT_HOLD_MINUTES,
   DEFAULT_PENALTY_LIMIT,
   DEFAULT_PENALTY_SYSTEM_ENABLED,
   DEFAULT_STRICT_QUESTION_FLOW_ENABLED,
@@ -419,4 +524,7 @@ module.exports = {
   setWhatsappCancellationGroupSettings,
   setDailyAvailabilityDigestStatus,
   setDailyAvailabilityDigestLastSentDate,
+  validateDepositSettings,
+  getDepositSettings,
+  setDepositSettings,
 };
