@@ -13,8 +13,9 @@ const {
   decryptCredentialToken,
   decryptWebhookSecret,
   getActiveCredential,
-  listActiveCredentials,
+  listActiveCredentialsForWebhook,
 } = require('./paymentCredential.service');
+const { CryptoConfigError } = require('../lib/crypto');
 
 const MP_API_BASE_URL =
   process.env.MERCADOPAGO_API_BASE_URL || 'https://api.mercadopago.com';
@@ -22,8 +23,11 @@ const CHECKOUT_PREFERENCES_PATH = '/checkout/preferences';
 const PAYMENTS_PATH = '/v1/payments';
 const CURRENCY_ID = 'ARS';
 const SIGNATURE_TOLERANCE_SECONDS = 300;
+const MILLISECONDS_THRESHOLD = 1e12;
 const DEFAULT_TIMEOUT_MS = 10000;
 const WEBHOOK_PROVIDER = 'mercadopago';
+const SECRET_CACHE_TTL_MS = 30000;
+const SECRET_CACHE_MAX_ENTRIES = 500;
 
 class SignatureError extends Error {
   constructor(message) {
@@ -75,13 +79,25 @@ const parseSignatureHeader = (header) => {
 };
 
 const isFreshTimestamp = (ts, nowMs) => {
-  const seconds = Number(ts);
-  if (!Number.isFinite(seconds)) return false;
+  const value = Number(ts);
+  if (!Number.isFinite(value)) return false;
+  // MP may send seconds (10 digits) or milliseconds (13 digits); normalize to
+  // seconds before applying the skew window.
+  const seconds =
+    value > MILLISECONDS_THRESHOLD ? Math.floor(value / 1000) : Math.floor(value);
   return Math.abs(Math.floor(nowMs / 1000) - seconds) <= SIGNATURE_TOLERANCE_SECONDS;
 };
 
+// Per the MercadoPago spec the manifest id is the payment id from the query
+// param (`data.id` / `id`) and MUST be lowercased when alphanumeric.
+const normalizeManifestId = (value) => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  return /[a-z]/i.test(raw) ? raw.toLowerCase() : raw;
+};
+
 const buildSignatureManifest = ({ paymentId, requestId, ts }) =>
-  `id:${paymentId};request-id:${requestId};ts:${ts};`;
+  `id:${normalizeManifestId(paymentId) || ''};request-id:${requestId};ts:${ts};`;
 
 const computeSignature = ({ secret, paymentId, requestId, ts }) =>
   crypto
@@ -116,18 +132,45 @@ const verifyWebhookSignature = ({ headers = {}, paymentId, secret, now = Date.no
   return true;
 };
 
+// Small bounded TTL cache of decrypted webhook secrets, keyed by the stored
+// ciphertext, so repeated webhook bursts do not re-decrypt on every request.
+// Never caches failures; entries are dropped after the TTL.
+const webhookSecretCache = new Map();
+
+const decryptWebhookSecretCached = (credential) => {
+  const cacheKey = `${credential.companyId}:${credential.webhookSecretCiphertext}:${credential.keyVersion}`;
+  const now = Date.now();
+  const cached = webhookSecretCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const value = decryptWebhookSecret(credential);
+  if (webhookSecretCache.size >= SECRET_CACHE_MAX_ENTRIES) {
+    const oldestKey = webhookSecretCache.keys().next().value;
+    webhookSecretCache.delete(oldestKey);
+  }
+  webhookSecretCache.set(cacheKey, { value, expiresAt: now + SECRET_CACHE_TTL_MS });
+  return value;
+};
+
 // Derives the company from the credential whose webhook secret verifies the
-// signature. The payload is NEVER trusted for company identity.
-const resolveCompanyFromSignature = async ({ headers, paymentId, now }, options = {}) => {
-  const credentials = await listActiveCredentials({
-    model: resolveCredentialModel(options),
-  });
+// signature. The payload is NEVER trusted for identity. `mpUserId` (the MP
+// account id) is a cheap LOOKUP hint that only narrows the candidate set.
+const resolveCompanyFromSignature = async (
+  { headers, paymentId, mpUserId, now },
+  options = {},
+) => {
+  const credentials = await listActiveCredentialsForWebhook(
+    { mpUserId },
+    { model: resolveCredentialModel(options) },
+  );
 
   for (const credential of credentials) {
     let secret;
     try {
-      secret = decryptWebhookSecret(credential);
-    } catch {
+      secret = decryptWebhookSecretCached(credential);
+    } catch (error) {
+      // A missing/misconfigured master key is a 503, not an unmatched 401.
+      if (error instanceof CryptoConfigError) throw error;
       continue;
     }
     try {
@@ -155,7 +198,7 @@ const resolveActiveCredential = async (companyId, options = {}) => {
 // configured fixed seña; `external_reference` carries the booking id so the
 // webhook can link the payment back. The club token is used and never logged.
 const createDepositPreference = async (payload = {}, options = {}) => {
-  const { companyId, booking, depositAmount, backUrls } = payload;
+  const { companyId, booking, depositAmount, backUrls, notificationUrl } = payload;
   const credential = await resolveActiveCredential(companyId, options);
   if (!credential || credential.isActive === false) {
     throw new MercadoPagoError('MercadoPago is not configured for this club.', 409);
@@ -186,8 +229,14 @@ const createDepositPreference = async (payload = {}, options = {}) => {
   if (backUrls && typeof backUrls === 'object') {
     body.back_urls = backUrls;
   }
-  if (options.notificationUrl) {
-    body.notification_url = options.notificationUrl;
+  // Prefer an explicit caller value, then the shared env configuration. The MP
+  // dashboard notification URL is the fallback if neither is set.
+  const resolvedNotificationUrl =
+    notificationUrl ||
+    options.notificationUrl ||
+    process.env.MERCADOPAGO_NOTIFICATION_URL;
+  if (resolvedNotificationUrl) {
+    body.notification_url = resolvedNotificationUrl;
   }
 
   try {
@@ -247,6 +296,7 @@ module.exports = {
   computeSignature,
   createDepositPreference,
   getPayment,
+  normalizeManifestId,
   resolveCompanyFromSignature,
   verifyWebhookSignature,
 };

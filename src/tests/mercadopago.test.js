@@ -15,10 +15,13 @@ const crypto = require('node:crypto');
 process.env.PAYMENT_SECRET_KEY = process.env.PAYMENT_SECRET_KEY || 'c'.repeat(64);
 
 const { setCredential } = require('../services/paymentCredential.service');
+const { CryptoConfigError } = require('../lib/crypto');
 const {
   SignatureError,
+  buildSignatureManifest,
   createDepositPreference,
   getPayment,
+  normalizeManifestId,
   verifyWebhookSignature,
   resolveCompanyFromSignature,
 } = require('../services/mercadopago.service');
@@ -36,8 +39,10 @@ const SECRET_B = 'webhook-secret-company-b';
 const createFakeCredentialModel = () => {
   const store = new Map();
   const keyOf = (companyId) => String(companyId);
+  const calls = { find: [] };
   return {
     store,
+    calls,
     async findOne(filter, projection) {
       const doc = store.get(keyOf(filter.companyId));
       if (!doc) return null;
@@ -62,10 +67,11 @@ const createFakeCredentialModel = () => {
       Object.assign(doc, update.$set);
       return { matchedCount: 1, modifiedCount: 1 };
     },
-    async find(filter) {
-      return [...store.values()].filter((doc) =>
-        filter.isActive === true ? doc.isActive : true,
-      );
+    async find(filter, projection) {
+      calls.find.push({ filter, projection });
+      return [...store.values()]
+        .filter((doc) => (filter.isActive === true ? doc.isActive : true))
+        .filter((doc) => (filter.mpUserId ? doc.mpUserId === filter.mpUserId : true));
     },
   };
 };
@@ -73,12 +79,12 @@ const createFakeCredentialModel = () => {
 const seedCredentials = async (model) => {
   await setCredential(
     COMPANY_A,
-    { accessToken: TOKEN_A, webhookSecret: SECRET_A },
+    { accessToken: TOKEN_A, webhookSecret: SECRET_A, mpUserId: 'mp-account-a' },
     { model },
   );
   await setCredential(
     COMPANY_B,
-    { accessToken: TOKEN_B, webhookSecret: SECRET_B },
+    { accessToken: TOKEN_B, webhookSecret: SECRET_B, mpUserId: 'mp-account-b' },
     { model },
   );
 };
@@ -345,4 +351,163 @@ test('resolveCompanyFromSignature rejects a signature that matches no club', asy
     resolveCompanyFromSignature({ headers, paymentId }, { credentialModel: model }),
     (error) => error instanceof SignatureError,
   );
+});
+
+// ── Review fixes ─────────────────────────────────────────────────────────────
+
+test('createDepositPreference passes notification_url and back_urls when provided', async () => {
+  const model = createFakeCredentialModel();
+  await seedCredentials(model);
+
+  const captured = {};
+  const httpClient = {
+    async post(url, body) {
+      captured.body = body;
+      return { data: { id: 'pref-n', init_point: 'https://mp/checkout/pref-n' } };
+    },
+  };
+
+  await createDepositPreference(
+    {
+      companyId: COMPANY_A,
+      booking: { _id: BOOKING_ID },
+      depositAmount: 5000,
+      backUrls: {
+        success: 'https://portal/success',
+        failure: 'https://portal/failure',
+        pending: 'https://portal/pending',
+      },
+    },
+    {
+      credentialModel: model,
+      httpClient,
+      notificationUrl: 'https://api.example.com/webhooks/mercadopago',
+    },
+  );
+
+  assert.equal(
+    captured.body.notification_url,
+    'https://api.example.com/webhooks/mercadopago',
+  );
+  assert.equal(captured.body.back_urls.success, 'https://portal/success');
+});
+
+test('verifyWebhookSignature accepts a millisecond timestamp', () => {
+  const paymentId = 'pay-1';
+  const ts = String(Date.now());
+  const headers = signHeaders({
+    secret: SECRET_A,
+    paymentId,
+    requestId: 'req-ms',
+    ts,
+  });
+
+  assert.equal(
+    verifyWebhookSignature({ headers, paymentId, secret: SECRET_A }),
+    true,
+  );
+});
+
+test('verifyWebhookSignature rejects a stale millisecond timestamp', () => {
+  const paymentId = 'pay-1';
+  const ts = String(Date.now() - 10 * 60 * 1000);
+  const headers = signHeaders({
+    secret: SECRET_A,
+    paymentId,
+    requestId: 'req-ms-stale',
+    ts,
+  });
+
+  assert.throws(
+    () => verifyWebhookSignature({ headers, paymentId, secret: SECRET_A }),
+    (error) => error instanceof SignatureError,
+  );
+});
+
+test('normalizeManifestId lowercases alphanumeric ids and the manifest uses it', () => {
+  assert.equal(normalizeManifestId('AbC123'), 'abc123');
+  assert.equal(normalizeManifestId(12345), '12345');
+  assert.equal(normalizeManifestId(''), null);
+  assert.equal(
+    buildSignatureManifest({ paymentId: 'AbC123', requestId: 'r1', ts: '99' }),
+    'id:abc123;request-id:r1;ts:99;',
+  );
+});
+
+test('resolveCompanyFromSignature surfaces a missing master key as CryptoConfigError', async () => {
+  const model = {
+    async find() {
+      return [
+        {
+          companyId: COMPANY_A,
+          mpUserId: '',
+          isActive: true,
+          webhookSecretCiphertext: 'ct',
+          webhookSecretIv: 'iv',
+          webhookSecretAuthTag: 'tag',
+          // Unknown key version with no historical env key -> CryptoConfigError.
+          keyVersion: 'v99',
+        },
+      ];
+    },
+  };
+
+  await assert.rejects(
+    resolveCompanyFromSignature(
+      { headers: {}, paymentId: 'pay-x' },
+      { credentialModel: model },
+    ),
+    (error) => error instanceof CryptoConfigError,
+  );
+});
+
+test('resolveCompanyFromSignature with a hint only queries the hinted MP account', async () => {
+  const model = createFakeCredentialModel();
+  await seedCredentials(model);
+
+  const paymentId = 'pay-hint';
+  const headers = signHeaders({
+    secret: SECRET_B,
+    paymentId,
+    requestId: 'req-hint',
+    ts: nowSeconds(),
+  });
+
+  const match = await resolveCompanyFromSignature(
+    { headers, paymentId, mpUserId: 'mp-account-b' },
+    { credentialModel: model },
+  );
+
+  assert.equal(String(match.companyId), COMPANY_B);
+  const lastFind = model.calls.find.at(-1);
+  assert.equal(lastFind.filter.mpUserId, 'mp-account-b');
+  // Field selection: the club access token is never selected for webhooks;
+  // only the webhook-secret fields are included.
+  assert.ok(
+    !('tokenCiphertext' in lastFind.projection),
+    'webhook query must not select the access token',
+  );
+  assert.equal(lastFind.projection.webhookSecretCiphertext, 1);
+});
+
+test('resolveCompanyFromSignature falls back to a bounded scan without a hint', async () => {
+  const model = createFakeCredentialModel();
+  await seedCredentials(model);
+
+  const paymentId = 'pay-nohint';
+  const headers = signHeaders({
+    secret: SECRET_A,
+    paymentId,
+    requestId: 'req-nohint',
+    ts: nowSeconds(),
+  });
+
+  const match = await resolveCompanyFromSignature(
+    { headers, paymentId },
+    { credentialModel: model },
+  );
+
+  assert.equal(String(match.companyId), COMPANY_A);
+  const lastFind = model.calls.find.at(-1);
+  assert.equal(lastFind.filter.mpUserId, undefined);
 });

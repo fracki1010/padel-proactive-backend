@@ -13,6 +13,19 @@ const { encryptSecret, decryptSecret } = require('../lib/crypto');
 
 const PAYMENT_PROVIDER = 'mercadopago';
 const MASKED_TOKEN = '••••';
+const WEBHOOK_SCAN_LIMIT = 50;
+
+// Field selection for webhook signature verification: only what is needed to
+// decrypt the webhook secret. The club access token is never loaded.
+const WEBHOOK_CANDIDATE_PROJECTION = {
+  companyId: 1,
+  mpUserId: 1,
+  isActive: 1,
+  webhookSecretCiphertext: 1,
+  webhookSecretIv: 1,
+  webhookSecretAuthTag: 1,
+  keyVersion: 1,
+};
 
 // Never loaded by the HTTP-facing masked read, so request-time responses cannot
 // accidentally serialize ciphertext or key material.
@@ -147,6 +160,23 @@ const deleteCredential = async (companyId, options = {}) => {
 const listActiveCredentials = async (options = {}) =>
   resolveModel(options).find({ provider: PAYMENT_PROVIDER, isActive: true });
 
+// Webhook candidates: optionally narrowed by the MP account id (a cheap lookup
+// hint, never trusted for identity) and always bounded so a forged request
+// cannot scan every club. Only secret-verification fields are selected.
+const listActiveCredentialsForWebhook = async ({ mpUserId } = {}, options = {}) => {
+  const filter = { provider: PAYMENT_PROVIDER, isActive: true };
+  const hint = mpUserId === undefined || mpUserId === null ? '' : String(mpUserId).trim();
+  if (hint) filter.mpUserId = hint;
+
+  const credentials = await resolveModel(options).find(
+    filter,
+    WEBHOOK_CANDIDATE_PROJECTION,
+  );
+  return Array.isArray(credentials)
+    ? credentials.slice(0, WEBHOOK_SCAN_LIMIT)
+    : credentials;
+};
+
 module.exports = {
   MASKED_TOKEN,
   PAYMENT_PROVIDER,
@@ -158,5 +188,6 @@ module.exports = {
   getActiveCredential,
   getMaskedCredential,
   listActiveCredentials,
+  listActiveCredentialsForWebhook,
   setCredential,
 };
