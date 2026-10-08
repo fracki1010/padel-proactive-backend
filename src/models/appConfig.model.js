@@ -92,6 +92,22 @@ const appConfigSchema = new mongoose.Schema(
       enum: ["text", "image"],
       trim: true,
     },
+    depositEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    depositAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 10000000,
+    },
+    holdMinutes: {
+      type: Number,
+      default: 15,
+      min: 1,
+      max: 1440,
+    },
   },
   {
     timestamps: true,
@@ -101,3 +117,5 @@ const appConfigSchema = new mongoose.Schema(
 appConfigSchema.index({ companyId: 1, key: 1 }, { unique: true });
 
 module.exports = mongoose.model("AppConfig", appConfigSchema);
+module.exports.MAX_DEPOSIT_AMOUNT = 10000000;
+module.exports.MAX_HOLD_MINUTES = 1440;
