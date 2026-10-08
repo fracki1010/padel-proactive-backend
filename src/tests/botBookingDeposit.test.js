@@ -2,13 +2,16 @@
 
 // WhatsApp bot booking creation + deposit (seña) plumbing:
 // - deposits enabled -> booking is created as `pendiente_seña` with the fixed
-//   server-side deposit amount, a Checkout Pro link is derived and the pending
-//   deposit is notified (mirrors the portal path in public.controller.js)
+//   server-side deposit amount and paymentStatus `pendiente`, a Checkout Pro
+//   link is derived (the REAL `buildDepositPaymentLink`) and the pending deposit
+//   is notified ADMIN-only (the bot chat reply carries the link, so no duplicate
+//   client WhatsApp message)
 // - deposits disabled -> unchanged `confirmado` flow (regression)
 // - MercadoPago failure -> booking still created, link is best-effort
 //
 // Data access and external services are replaced with fakes so no database,
-// queue or MercadoPago network call happens.
+// queue or MercadoPago network call happens. Only the MercadoPago HTTP boundary
+// is faked; the deposit link builder under test is the real one.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -22,13 +25,8 @@ const FUTURE_DATE = '2099-01-01';
 const state = {
   settings: { depositEnabled: true, depositAmount: 5000, holdMinutes: 15 },
   createdBooking: null,
-  linkCalls: [],
+  preferenceCalls: [],
   linkShouldThrow: false,
-  linkResult: {
-    initPoint: 'https://mp/checkout/pref-x',
-    preferenceId: 'pref-x',
-    amount: 5000,
-  },
   pendingNotifications: [],
   adminNotifications: [],
 };
@@ -36,13 +34,8 @@ const state = {
 const resetState = () => {
   state.settings = { depositEnabled: true, depositAmount: 5000, holdMinutes: 15 };
   state.createdBooking = null;
-  state.linkCalls = [];
+  state.preferenceCalls = [];
   state.linkShouldThrow = false;
-  state.linkResult = {
-    initPoint: 'https://mp/checkout/pref-x',
-    preferenceId: 'pref-x',
-    amount: 5000,
-  };
   state.pendingNotifications = [];
   state.adminNotifications = [];
 };
@@ -58,8 +51,59 @@ const stubModule = (requestPath, exportsObj) => {
   return resolved;
 };
 
-// Inject seams BEFORE requiring bookingService so its destructured references
-// capture the fakes.
+// `Booking.find` is used both awaited (busy bookings) and chained with
+// `.select().lean()` (same-client slot probe); the array satisfies both.
+const makeFindResult = (items) => {
+  items.select = () => items;
+  items.lean = async () => items;
+  return items;
+};
+
+// Inject the model seams BEFORE requiring the real deposit.service so its
+// module-level `Booking` binding and the stubbed MercadoPago client are used.
+stubModule('../models/booking.model', {
+  countDocuments: async () => 0,
+  find: () => makeFindResult([]),
+  findOne: async () => null,
+  updateOne: async () => ({ matchedCount: 1 }),
+  create: async (doc) => {
+    const created = { _id: BOOKING_ID, ...doc };
+    state.createdBooking = created;
+    return created;
+  },
+});
+stubModule('../models/court.model', {
+  COURT_TYPES: ['Techada', 'VIP'],
+  find: async () => [],
+  findOne: async () => ({ _id: COURT_ID, name: 'Cancha 1', courtType: null }),
+});
+stubModule('../models/timeSlot.model', {
+  findOne: async () => ({
+    _id: SLOT_ID,
+    startTime: '20:00',
+    endTime: '21:00',
+    price: 25000,
+  }),
+});
+stubModule('../models/user.model', { findOne: async () => null });
+stubModule('../models/admin.model', {
+  find: () => ({ select: () => ({ lean: async () => [] }) }),
+});
+
+// Fake ONLY the MercadoPago HTTP boundary; the real `buildDepositPaymentLink`
+// runs and is exercised below.
+stubModule('../services/mercadopago.service', {
+  createDepositPreference: async (payload) => {
+    state.preferenceCalls.push(payload);
+    if (state.linkShouldThrow) throw new Error('MercadoPago unavailable');
+    return {
+      preferenceId: 'pref-x',
+      initPoint: 'https://mp/checkout/pref-x',
+      sandboxInitPoint: '',
+    };
+  },
+});
+
 stubModule('../services/appConfig.service', {
   getDepositSettings: async () => ({ ...state.settings }),
   getCancellationLockHours: async () => 0,
@@ -87,52 +131,13 @@ stubModule('../services/whatsappCommandQueue.service', {
   enqueueWhatsappCommand: async () => ({ command: { _id: 'cmd-x' } }),
 });
 
-// Keep the real pure `buildDepositFields`; fake only the I/O boundary.
+// Real `buildDepositFields` and `buildDepositPaymentLink`; only the cancel
+// refund helper is stubbed (unused here).
 const realDepositService = require('../services/deposit.service');
 stubModule('../services/deposit.service', {
   buildDepositFields: realDepositService.buildDepositFields,
-  buildDepositPaymentLink: async (payload) => {
-    state.linkCalls.push(payload);
-    if (state.linkShouldThrow) throw new Error('MercadoPago unavailable');
-    return state.linkResult;
-  },
+  buildDepositPaymentLink: realDepositService.buildDepositPaymentLink,
   markRefundableOnCancel: () => ({ refundable: false, deposit: null }),
-});
-
-// `Booking.find` is used both awaited (busy bookings) and chained with
-// `.select().lean()` (same-client slot probe); the array satisfies both.
-const makeFindResult = (items) => {
-  items.select = () => items;
-  items.lean = async () => items;
-  return items;
-};
-
-stubModule('../models/booking.model', {
-  countDocuments: async () => 0,
-  find: () => makeFindResult([]),
-  findOne: async () => null,
-  create: async (doc) => {
-    const created = { _id: BOOKING_ID, ...doc };
-    state.createdBooking = created;
-    return created;
-  },
-});
-stubModule('../models/court.model', {
-  COURT_TYPES: ['Techada', 'VIP'],
-  find: async () => [],
-  findOne: async () => ({ _id: COURT_ID, name: 'Cancha 1', courtType: null }),
-});
-stubModule('../models/timeSlot.model', {
-  findOne: async () => ({
-    _id: SLOT_ID,
-    startTime: '20:00',
-    endTime: '21:00',
-    price: 25000,
-  }),
-});
-stubModule('../models/user.model', { findOne: async () => null });
-stubModule('../models/admin.model', {
-  find: () => ({ select: () => ({ lean: async () => [] }) }),
 });
 
 const { createNewBooking } = require('../services/bookingService');
@@ -155,6 +160,7 @@ test('bot booking with deposits enabled is pendiente_seña with a payment link',
 
   assert.equal(result.success, true);
   assert.equal(state.createdBooking.status, 'pendiente_seña');
+  assert.equal(state.createdBooking.paymentStatus, 'pendiente');
   assert.equal(state.createdBooking.deposit.status, 'pendiente');
   assert.equal(state.createdBooking.deposit.amount, 5000);
   assert.equal(state.createdBooking.deposit.required, true);
@@ -167,9 +173,30 @@ test('bot booking with deposits enabled is pendiente_seña with a payment link',
   assert.equal(result.data.deposit.initPoint, 'https://mp/checkout/pref-x');
   assert.ok(result.data.deposit.expiresAt instanceof Date);
 
-  assert.equal(state.linkCalls.length, 1, 'the Checkout Pro link must be derived once');
+  // SUGGESTION 6: the REAL `buildDepositPaymentLink` ran end-to-end against the
+  // in-memory booking and handed the right shape to the MercadoPago boundary.
+  assert.equal(state.preferenceCalls.length, 1, 'the Checkout Pro preference must be built once');
+  const preferencePayload = state.preferenceCalls[0];
+  assert.equal(String(preferencePayload.booking._id), BOOKING_ID);
+  assert.equal(preferencePayload.booking.status, 'pendiente_seña');
+  assert.equal(preferencePayload.depositAmount, 5000);
+  assert.equal(preferencePayload.companyId, COMPANY);
+  assert.ok(
+    preferencePayload.expiresAt instanceof Date,
+    'the hold expiry must ride to the MercadoPago preference',
+  );
+  assert.equal(
+    preferencePayload.expiresAt.getTime(),
+    state.createdBooking.deposit.expiresAt.getTime(),
+  );
+
   assert.equal(state.pendingNotifications.length, 1, 'the pending deposit must be notified');
   assert.equal(state.pendingNotifications[0].initPoint, 'https://mp/checkout/pref-x');
+  assert.equal(
+    state.pendingNotifications[0].notifyClient,
+    false,
+    'the bot chat reply carries the link, so the client message is skipped',
+  );
 });
 
 test('bot booking with deposits disabled keeps the confirmado flow', async () => {
@@ -180,9 +207,10 @@ test('bot booking with deposits disabled keeps the confirmado flow', async () =>
 
   assert.equal(result.success, true);
   assert.equal(state.createdBooking.status, 'confirmado');
+  assert.equal(state.createdBooking.paymentStatus, undefined);
   assert.equal(state.createdBooking.deposit, undefined);
   assert.equal(result.data.deposit, undefined);
-  assert.equal(state.linkCalls.length, 0);
+  assert.equal(state.preferenceCalls.length, 0);
   assert.equal(state.pendingNotifications.length, 0);
   assert.equal(state.adminNotifications.length, 1, 'the new booking is still announced to admins');
 });
@@ -195,6 +223,7 @@ test('MercadoPago failure still creates the pending booking (best-effort link)',
 
   assert.equal(result.success, true);
   assert.equal(state.createdBooking.status, 'pendiente_seña');
+  assert.equal(state.createdBooking.paymentStatus, 'pendiente');
   assert.equal(state.createdBooking.deposit.amount, 5000);
   assert.equal(result.data.deposit.initPoint, '');
   assert.equal(
@@ -203,4 +232,5 @@ test('MercadoPago failure still creates the pending booking (best-effort link)',
     'the pending deposit is still notified (without a link)',
   );
   assert.equal(state.pendingNotifications[0].initPoint, '');
+  assert.equal(state.pendingNotifications[0].notifyClient, false);
 });

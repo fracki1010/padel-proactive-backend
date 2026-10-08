@@ -339,9 +339,11 @@ const createNewBooking = async ({
     };
 
     // Deposits enabled: hold the court as `pendiente_seña` and store the seña,
-    // mirroring the public portal booking path.
+    // mirroring the public portal booking path (which also flags the payment as
+    // pending).
     if (depositEnabled) {
       Object.assign(bookingFields, buildDepositFields({ settings: depositSettings }));
+      bookingFields.paymentStatus = "pendiente";
     }
 
     const newBooking = await Booking.create(bookingFields);
@@ -355,10 +357,14 @@ const createNewBooking = async ({
       { companyId },
     );
 
-    // Deposits enabled: derive the Checkout Pro link and notify the pending
-    // seña. Best-effort by design — the booking is already persisted as a hold,
-    // so an MP/queue failure must not roll it back (the link can be regenerated
-    // from the payment-link endpoint).
+    // Deposits enabled: derive the Checkout Pro link and notify the ADMIN of the
+    // pending seña. Best-effort by design — the booking is already persisted as a
+    // hold, so an MP/queue failure must not roll it back. The bot chat reply
+    // carries the link, so the client WhatsApp message is skipped here to avoid
+    // sending the link twice. There is no bot self-service regeneration: the
+    // payment-link endpoint is portal-only, so a missing link means the hold
+    // simply expires (the sweeper frees the court) and the admin `deposit_pending`
+    // alert prompts a manual follow-up.
     let depositInfo = null;
     if (depositEnabled) {
       const bookingForDeposit =
@@ -391,6 +397,8 @@ const createNewBooking = async ({
         booking: bookingForDeposit,
         companyId,
         initPoint: depositInfo.initPoint,
+        // Admin-only: the bot reply already carries the link (FIX 2).
+        notifyClient: false,
       }).catch((notifyError) => {
         console.error(
           "[bookingService] No se pudo notificar la seña pendiente:",

@@ -107,6 +107,29 @@ test('notifyDepositPending alerts the admin and enqueues the client link', async
   assert.equal(enqueued[0].payload.to, '5491100000000@c.us');
 });
 
+test('notifyDepositPending with notifyClient=false alerts the admin only (bot path)', async () => {
+  const { notifyDepositPending } = require('../services/depositNotification.service');
+  const { deps, adminCalls, enqueued } = makeDeps();
+
+  await notifyDepositPending(
+    {
+      booking: sampleBooking(),
+      companyId: COMPANY,
+      initPoint: 'https://mp/checkout/pref-x',
+      notifyClient: false,
+    },
+    deps,
+  );
+
+  assert.equal(adminCalls.length, 1);
+  assert.equal(adminCalls[0].type, 'deposit_pending');
+  assert.equal(
+    enqueued.length,
+    0,
+    'the bot chat reply already carries the link, so no duplicate client message',
+  );
+});
+
 test('notifyDepositPaid and notifyDepositExpired use their notification types', async () => {
   const {
     notifyDepositPaid,
