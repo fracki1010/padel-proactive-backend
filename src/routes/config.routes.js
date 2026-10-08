@@ -1,5 +1,7 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
+const { requireRole } = require("../middleware/auth.middleware");
 const Booking = require("../models/booking.model");
 const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
@@ -41,7 +43,6 @@ const {
   setDailyAvailabilityDigestStatus,
   getDepositSettings,
   setDepositSettings,
-  validateDepositSettings,
 } = require("../services/appConfig.service");
 const {
   getWhatsappGroupsSnapshot,
@@ -52,9 +53,16 @@ const {
 } = require("../services/workerHeartbeat.service");
 const DAILY_HOUR_REGEX = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
+const toObjectId = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  if (value instanceof mongoose.Types.ObjectId) return value;
+  if (!mongoose.Types.ObjectId.isValid(value)) return null;
+  return new mongoose.Types.ObjectId(String(value));
+};
+
 const resolveCompanyId = (req) => {
   if (req.user?.role === "super_admin") {
-    return req.query.companyId || req.body.companyId || null;
+    return toObjectId(req.query.companyId || req.body.companyId || null);
   }
   return req.user?.companyId || null;
 };
@@ -1293,80 +1301,91 @@ const respondDepositError = (res, error) => {
 };
 
 // GET /api/config/deposits — settings + masked credential (token is write-only)
-router.get("/deposits", async (req, res) => {
-  try {
-    const companyId = resolveCompanyId(req);
-    const settings = await getDepositSettings(companyId);
-    const credentials = await getMaskedCredential(companyId);
-    return res.status(200).json({
-      success: true,
-      data: { ...settings, credentials },
-    });
-  } catch (error) {
-    return respondDepositError(res, error);
-  }
-});
-
-// PUT /api/config/deposits — set deposit config (400 on invalid bounds)
-router.put("/deposits", async (req, res) => {
-  try {
-    const companyId = resolveCompanyId(req);
-    const { valid, error, value } = validateDepositSettings(req.body || {});
-    if (!valid) {
-      return res.status(400).json({ success: false, error });
+router.get(
+  "/deposits",
+  requireRole("admin", "super_admin"),
+  async (req, res) => {
+    try {
+      const companyId = resolveCompanyId(req);
+      const settings = await getDepositSettings(companyId);
+      const credentials = await getMaskedCredential(companyId);
+      return res.status(200).json({
+        success: true,
+        data: { ...settings, credentials },
+      });
+    } catch (error) {
+      return respondDepositError(res, error);
     }
+  },
+);
 
-    await setDepositSettings(value, companyId);
-    const settings = await getDepositSettings(companyId);
-    const credentials = await getMaskedCredential(companyId);
-    return res.status(200).json({
-      success: true,
-      data: { ...settings, credentials },
-    });
-  } catch (error) {
-    return respondDepositError(res, error);
-  }
-});
+// PUT /api/config/deposits — merge deposit config (400 on invalid bounds)
+router.put(
+  "/deposits",
+  requireRole("admin", "super_admin"),
+  async (req, res) => {
+    try {
+      const companyId = resolveCompanyId(req);
+      await setDepositSettings(req.body || {}, companyId);
+      const settings = await getDepositSettings(companyId);
+      const credentials = await getMaskedCredential(companyId);
+      return res.status(200).json({
+        success: true,
+        data: { ...settings, credentials },
+      });
+    } catch (error) {
+      return respondDepositError(res, error);
+    }
+  },
+);
 
 // PUT /api/config/deposits/credentials — encrypt + upsert the club token
-router.put("/deposits/credentials", async (req, res) => {
-  try {
-    const companyId = resolveCompanyId(req);
-    const body = req.body || {};
-    if (!body.accessToken || !String(body.accessToken).trim()) {
-      return res.status(400).json({
-        success: false,
-        error: "El accessToken de MercadoPago es obligatorio.",
-      });
-    }
+router.put(
+  "/deposits/credentials",
+  requireRole("admin", "super_admin"),
+  async (req, res) => {
+    try {
+      const companyId = resolveCompanyId(req);
+      const body = req.body || {};
+      if (!body.accessToken || !String(body.accessToken).trim()) {
+        return res.status(400).json({
+          success: false,
+          error: "El accessToken de MercadoPago es obligatorio.",
+        });
+      }
 
-    await setCredential(companyId, {
-      accessToken: body.accessToken,
-      webhookSecret: body.webhookSecret,
-      mpUserId: body.mpUserId,
-    });
-    const credentials = await getMaskedCredential(companyId);
-    return res.status(200).json({ success: true, data: credentials });
-  } catch (error) {
-    return respondDepositError(res, error);
-  }
-});
+      await setCredential(companyId, {
+        accessToken: body.accessToken,
+        webhookSecret: body.webhookSecret,
+        mpUserId: body.mpUserId,
+      });
+      const credentials = await getMaskedCredential(companyId);
+      return res.status(200).json({ success: true, data: credentials });
+    } catch (error) {
+      return respondDepositError(res, error);
+    }
+  },
+);
 
 // DELETE /api/config/deposits/credentials — soft-deactivate the club token
-router.delete("/deposits/credentials", async (req, res) => {
-  try {
-    const companyId = resolveCompanyId(req);
-    const result = await deleteCredential(companyId);
-    if (!result.deleted) {
-      return res.status(404).json({
-        success: false,
-        error: "No hay credencial de MercadoPago configurada.",
-      });
+router.delete(
+  "/deposits/credentials",
+  requireRole("admin", "super_admin"),
+  async (req, res) => {
+    try {
+      const companyId = resolveCompanyId(req);
+      const result = await deleteCredential(companyId);
+      if (!result.deleted) {
+        return res.status(404).json({
+          success: false,
+          error: "No hay credencial de MercadoPago configurada.",
+        });
+      }
+      return res.status(200).json({ success: true, data: { deleted: true } });
+    } catch (error) {
+      return respondDepositError(res, error);
     }
-    return res.status(200).json({ success: true, data: { deleted: true } });
-  } catch (error) {
-    return respondDepositError(res, error);
-  }
-});
+  },
+);
 
 module.exports = router;
