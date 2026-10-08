@@ -10,6 +10,14 @@ const { createRateLimiter } = require("./middleware/rateLimit.middleware");
 
 const app = express();
 
+// Behind the Caddy reverse proxy, set TRUST_PROXY_HOPS (>0) so req.ip reflects
+// the real client and the rate limiters work. Default off: no spoofable
+// X-Forwarded-For trust unless explicitly configured.
+const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS || 0);
+if (trustProxyHops > 0) {
+  app.set("trust proxy", trustProxyHops);
+}
+
 const normalizeOrigin = (value = "") => {
   try {
     return new URL(value).origin.toLowerCase();
@@ -57,6 +65,18 @@ app.use(
     credentials: true,
   })
 );
+
+// El webhook de MercadoPago se monta ANTES de express.json() para conservar el
+// cuerpo tal cual lo envía MP (express.raw marca req._body y el json() global
+// lo saltea). La firma HMAC se verifica sobre el manifiesto id/request-id/ts,
+// NO sobre los bytes del body; el mount raw solo evita que un JSON inesperado
+// rompa el parseo global y deja el payload disponible sin transformar.
+app.use(
+  "/webhooks/mercadopago",
+  express.raw({ type: "application/json" }),
+  require("./routes/webhook.routes"),
+);
+
 app.use(express.json());
 
 // Rutas

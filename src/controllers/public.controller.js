@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
+const mongoose = require("mongoose");
 const Company = require("../models/company.model");
 const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
@@ -29,7 +30,7 @@ const {
   sendBookingWhatsappConfirmation,
 } = require("../services/bookingWhatsappConfirmation.service");
 const { getWhatsappIdByPhone } = require("../utils/getWhatsappIdByPhone");
-const { getCancellationLockHours } = require("../services/appConfig.service");
+const { getCancellationLockHours, getDepositSettings } = require("../services/appConfig.service");
 const {
   buildActiveAnnouncementsQuery,
 } = require("../services/announcement.service");
@@ -41,6 +42,13 @@ const {
   resolveClientByVerifiedPhone,
   completeRegistration: createClientRegistration,
 } = require("../services/clientAuth.service");
+const {
+  getActiveCredential,
+} = require("../services/paymentCredential.service");
+const {
+  createDepositPreference,
+} = require("../services/mercadopago.service");
+const { CryptoConfigError } = require("../lib/crypto");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 // Duración de la sesión del cliente del portal (default: 1 año).
@@ -1088,6 +1096,114 @@ const cancelMyBooking = async (req, res) => {
   }
 };
 
+// Booking statuses that may (re)generate a deposit payment link.
+const LINK_ALLOWED_STATUSES = new Set(["reservado", "pendiente_seña"]);
+
+// POST /api/public/:slug/bookings/:id/payment-link  (requiere protectClient)
+const createPaymentLink = async (req, res) => {
+  try {
+    const company = await resolveCompany(req.params.slug);
+    if (!company) {
+      return res.status(404).json({ success: false, error: "Club no encontrado" });
+    }
+
+    if (String(req.clientUser.companyId) !== String(company._id)) {
+      return res.status(403).json({ success: false, error: "No autorizado para este club" });
+    }
+
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, error: "Reserva inválida" });
+    }
+
+    const client = await ClientAccount.findById(req.clientUser.id);
+    if (!client) return res.status(404).json({ success: false, error: "Cuenta no encontrada" });
+
+    const clientPhone = await resolveClientPhone(client);
+    if (!clientPhone) {
+      return res.status(400).json({ success: false, error: "Debés verificar tu teléfono antes de reservar" });
+    }
+
+    const booking = await Booking.findOne({
+      _id: req.params.id,
+      companyId: company._id,
+      clientPhone: phoneMatchQuery(clientPhone),
+    });
+    if (!booking) {
+      return res.status(404).json({ success: false, error: "Reserva no encontrada" });
+    }
+    // Only a booking awaiting its seña may (re)generate a payment link. The
+    // `pendiente_seña` state is introduced in Slice 3; until then `reservado` is
+    // the only payable state and a paid/confirmed booking must not mint a link.
+    if (!LINK_ALLOWED_STATUSES.has(booking.status)) {
+      return res.status(409).json({ success: false, error: "La reserva no admite pago de seña" });
+    }
+    if (booking.deposit && booking.deposit.status === "pagado") {
+      return res.status(409).json({ success: false, error: "La seña ya fue pagada" });
+    }
+
+    const credential = await getActiveCredential(company._id);
+    if (!credential) {
+      return res.status(409).json({
+        success: false,
+        error: "MercadoPago no está configurado para este club",
+        code: "DEPOSIT_NOT_CONFIGURED",
+      });
+    }
+
+    const settings = await getDepositSettings(company._id);
+    if (!settings.depositEnabled || settings.depositAmount <= 0) {
+      return res.status(409).json({
+        success: false,
+        error: "La seña no está habilitada para este club",
+        code: "DEPOSIT_NOT_CONFIGURED",
+      });
+    }
+
+    // Optional club/portal return URL. Without it MercadoPago uses the
+    // dashboard-configured back URLs; notification_url is what delivers the
+    // webhook and is always forwarded when configured.
+    const backUrl = process.env.MERCADOPAGO_BACK_URL || undefined;
+    const backUrls = backUrl
+      ? { success: backUrl, failure: backUrl, pending: backUrl }
+      : undefined;
+
+    const preference = await createDepositPreference(
+      {
+        companyId: company._id,
+        booking,
+        depositAmount: settings.depositAmount,
+        backUrls,
+        notificationUrl: process.env.MERCADOPAGO_NOTIFICATION_URL || undefined,
+      },
+      { credential },
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        initPoint: preference.initPoint,
+        preferenceId: preference.preferenceId,
+        amount: settings.depositAmount,
+      },
+    });
+  } catch (err) {
+    if (err instanceof CryptoConfigError || err?.code === "CRYPTO_CONFIG_ERROR") {
+      return res.status(503).json({
+        success: false,
+        error: "La encriptación de credenciales de pago no está configurada.",
+      });
+    }
+    if (err && err.code === "MERCADOPAGO_ERROR") {
+      return res.status(err.statusCode || 502).json({
+        success: false,
+        error: "No se pudo generar el link de pago. Intentá nuevamente.",
+      });
+    }
+    console.error("[public.controller]", err);
+    return res.status(500).json({ success: false, error: "Error interno" });
+  }
+};
+
 module.exports = {
   getClubInfo,
   getAvailability,
@@ -1103,4 +1219,5 @@ module.exports = {
   createClientBooking,
   getMyBookings,
   cancelMyBooking,
+  createPaymentLink,
 };

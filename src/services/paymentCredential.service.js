@@ -13,6 +13,19 @@ const { encryptSecret, decryptSecret } = require('../lib/crypto');
 
 const PAYMENT_PROVIDER = 'mercadopago';
 const MASKED_TOKEN = '••••';
+const WEBHOOK_SCAN_LIMIT = 50;
+
+// Field selection for webhook signature verification: only what is needed to
+// decrypt the webhook secret. The club access token is never loaded.
+const WEBHOOK_CANDIDATE_PROJECTION = {
+  companyId: 1,
+  mpUserId: 1,
+  isActive: 1,
+  webhookSecretCiphertext: 1,
+  webhookSecretIv: 1,
+  webhookSecretAuthTag: 1,
+  keyVersion: 1,
+};
 
 // Never loaded by the HTTP-facing masked read, so request-time responses cannot
 // accidentally serialize ciphertext or key material.
@@ -42,6 +55,20 @@ const decryptCredentialToken = (credential) => {
     ciphertext: credential.tokenCiphertext,
     iv: credential.iv,
     authTag: credential.authTag,
+    keyVersion: credential.keyVersion,
+  });
+};
+
+// Internal-only: decrypts the stored webhook secret used to verify the
+// MercadoPago webhook HMAC. Throws when the club never configured a secret.
+const decryptWebhookSecret = (credential) => {
+  if (!credential || !credential.webhookSecretCiphertext) {
+    throw new Error('Credential has no webhook secret to decrypt.');
+  }
+  return decryptSecret({
+    ciphertext: credential.webhookSecretCiphertext,
+    iv: credential.webhookSecretIv,
+    authTag: credential.webhookSecretAuthTag,
     keyVersion: credential.keyVersion,
   });
 };
@@ -133,15 +160,41 @@ const deleteCredential = async (companyId, options = {}) => {
 const listActiveCredentials = async (options = {}) =>
   resolveModel(options).find({ provider: PAYMENT_PROVIDER, isActive: true });
 
+// Webhook candidates: optionally narrowed by the MP account id (a cheap lookup
+// hint, never trusted for identity) and always bounded so a forged request
+// cannot scan every club. Only secret-verification fields are selected.
+//
+// LIMITATION: when no hint is sent the query is bounded to WEBHOOK_SCAN_LIMIT
+// candidates, so clubs beyond that count are not reached — those sign requests
+// MUST include the MP account id (`body.user_id`), which MercadoPago always
+// sends with payment events, narrowing to a single candidate.
+const listActiveCredentialsForWebhook = async ({ mpUserId } = {}, options = {}) => {
+  const filter = { provider: PAYMENT_PROVIDER, isActive: true };
+  const hint = mpUserId === undefined || mpUserId === null ? '' : String(mpUserId).trim();
+  if (hint) filter.mpUserId = hint;
+
+  // Real database `.limit` (not a JS slice) so the query itself is bounded; the
+  // slice is only a fallback for in-memory fakes used by tests.
+  const query = resolveModel(options).find(filter, WEBHOOK_CANDIDATE_PROJECTION);
+  const bounded =
+    query && typeof query.limit === 'function' ? query.limit(WEBHOOK_SCAN_LIMIT) : query;
+  const credentials = await bounded;
+  return Array.isArray(credentials)
+    ? credentials.slice(0, WEBHOOK_SCAN_LIMIT)
+    : credentials;
+};
+
 module.exports = {
   MASKED_TOKEN,
   PAYMENT_PROVIDER,
   SECRET_PROJECTION,
   buildMaskedCredential,
   decryptCredentialToken,
+  decryptWebhookSecret,
   deleteCredential,
   getActiveCredential,
   getMaskedCredential,
   listActiveCredentials,
+  listActiveCredentialsForWebhook,
   setCredential,
 };
