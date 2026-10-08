@@ -3,6 +3,7 @@ const {
   normalizePhoneDigits,
   normalizeWhatsappId,
   toE164,
+  isLidIdentifier,
 } = require("../whatsapp/domain/clientIdentity");
 const { matchBookingsByClient: matchBookingsByIdentity } = require("../services/bookingMatching.service");
 
@@ -23,6 +24,8 @@ const normalizeChatIdKey = (value = "") => normalizeWhatsappIdKey(value);
 
 const normalizeCanonicalClientPhone = (...values) => {
   for (const value of values) {
+    // A Linked-Device ID is not a phone number: never fabricate one from it.
+    if (isLidIdentifier(value)) continue;
     const digits = normalizePhoneDigits(value);
     if (digits) return digits;
   }

@@ -69,3 +69,20 @@ test("normalizeCanonicalClientPhone resuelve el primer valor usable", () => {
     "5492611234567",
   );
 });
+
+test("normalizeCanonicalClientPhone ignora @lid sin resolver", () => {
+  assert.equal(normalizeCanonicalClientPhone("38552364683267@lid"), "");
+  assert.equal(normalizeCanonicalClientPhone("", "38552364683267@lid"), "");
+  // A resolved phone in the chain still wins over the unresolved @lid.
+  assert.equal(
+    normalizeCanonicalClientPhone("", "5492622345473", "38552364683267@lid"),
+    "5492622345473",
+  );
+});
+
+test("normalizeClientIdentity no fabrica phone desde un @lid", () => {
+  const id = normalizeClientIdentity({ chatId: "38552364683267@lid" });
+
+  assert.equal(id.canonicalPhone, "");
+  assert.equal(id.canonicalPhoneDigits, "");
+});
