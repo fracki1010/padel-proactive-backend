@@ -10,6 +10,14 @@ const { createRateLimiter } = require("./middleware/rateLimit.middleware");
 
 const app = express();
 
+// Behind the Caddy reverse proxy, set TRUST_PROXY_HOPS (>0) so req.ip reflects
+// the real client and the rate limiters work. Default off: no spoofable
+// X-Forwarded-For trust unless explicitly configured.
+const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS || 0);
+if (trustProxyHops > 0) {
+  app.set("trust proxy", trustProxyHops);
+}
+
 const normalizeOrigin = (value = "") => {
   try {
     return new URL(value).origin.toLowerCase();

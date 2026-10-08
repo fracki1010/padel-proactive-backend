@@ -513,6 +513,134 @@ test('a non-payment event is acknowledged but not persisted', async () => {
   assert.equal(legacy.length, 0);
 });
 
+// ── Fail-closed seam + deployment dependency ─────────────────────────────────
+
+test('a seam that does not confirm applied:true is fail-closed (undefined)', async () => {
+  const { deps, applied } = createDeps({
+    applyApprovedPayment: async () => undefined,
+  });
+  const handler = createWebhookHandler(deps);
+  const headers = signHeaders({
+    secret: SECRET,
+    paymentId: PAYMENT_ID,
+    requestId: 'req-seam-undefined',
+    ts: nowSeconds(),
+  });
+  const res = await invoke(handler, { headers, body: paymentBody() });
+
+  assert.equal(res.statusCode, 503);
+  assert.equal(applied.has(PAYMENT_ID), false, 'no applied row without a confirmed transition');
+});
+
+test('a seam that returns an empty object is fail-closed', async () => {
+  const { deps, applied } = createDeps({
+    applyApprovedPayment: async () => ({}),
+  });
+  const handler = createWebhookHandler(deps);
+  const headers = signHeaders({
+    secret: SECRET,
+    paymentId: PAYMENT_ID,
+    requestId: 'req-seam-empty',
+    ts: nowSeconds(),
+  });
+  const res = await invoke(handler, { headers, body: paymentBody() });
+
+  assert.equal(res.statusCode, 503);
+  assert.equal(applied.has(PAYMENT_ID), false);
+});
+
+test('an unavailable transition seam returns a specific retryable 503', async () => {
+  const { deps, applied } = createDeps({
+    applyApprovedPayment: async () => ({
+      applied: false,
+      reason: 'deposit_service_not_deployed',
+    }),
+  });
+  const handler = createWebhookHandler(deps);
+  const headers = signHeaders({
+    secret: SECRET,
+    paymentId: PAYMENT_ID,
+    requestId: 'req-seam-unwired',
+    ts: nowSeconds(),
+  });
+  const res = await invoke(handler, { headers, body: paymentBody() });
+
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.payload.code, 'DEPOSIT_TRANSITION_UNAVAILABLE');
+  assert.equal(applied.has(PAYMENT_ID), false);
+});
+
+test('the webhook never hands a projected credential to getPayment', async () => {
+  const captured = {};
+  const { deps } = createDeps({
+    getPayment: async (args) => {
+      captured.args = args;
+      return { status: 'approved', external_reference: BOOKING_ID };
+    },
+  });
+  const handler = createWebhookHandler(deps);
+  const headers = signHeaders({
+    secret: SECRET,
+    paymentId: PAYMENT_ID,
+    requestId: 'req-no-projected-cred',
+    ts: nowSeconds(),
+  });
+  const res = await invoke(handler, { headers, body: paymentBody() });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(captured.args.companyId, COMPANY);
+  assert.equal(captured.args.paymentId, PAYMENT_ID);
+  assert.equal(
+    captured.args.credential,
+    undefined,
+    'getPayment must load the full credential itself',
+  );
+});
+
+test('concurrent duplicates may both run the seam — Slice 3 approveDeposit must be idempotent', async () => {
+  const applied = new Set();
+  let seamCalls = 0;
+  const handler = createWebhookHandler({
+    resolveCompanyFromSignature: makeResolver(SECRET, COMPANY),
+    isAlreadyApplied: async ({ paymentId }) => applied.has(paymentId),
+    markApplied: async ({ paymentId }) => {
+      if (applied.has(paymentId)) {
+        const error = new Error('E11000 duplicate key');
+        error.code = 11000;
+        throw error;
+      }
+      applied.add(paymentId);
+    },
+    markProcessed: async () => {},
+    getPayment: async () => ({ status: 'approved', external_reference: BOOKING_ID }),
+    applyApprovedPayment: async () => {
+      seamCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { applied: true };
+    },
+  });
+
+  const headers = signHeaders({
+    secret: SECRET,
+    paymentId: PAYMENT_ID,
+    requestId: 'req-concurrent',
+    ts: nowSeconds(),
+  });
+  const [first, second] = await Promise.all([
+    invoke(handler, { headers, body: paymentBody() }),
+    invoke(handler, { headers, body: paymentBody() }),
+  ]);
+
+  // Documents the double-apply window: the seam is invoked twice because the
+  // applied row is only written afterwards. Slice 3's approveDeposit MUST be
+  // idempotent/atomic to make this safe.
+  assert.equal(seamCalls, 2);
+  assert.deepEqual([first.statusCode, second.statusCode], [200, 200]);
+  const payloads = [first.payload, second.payload];
+  assert.ok(payloads.some((p) => p.applied === true));
+  assert.ok(payloads.some((p) => p.duplicate === true));
+});
+
 // ── Rate limit ───────────────────────────────────────────────────────────────
 
 test('the webhook rate limiter returns 429 after the configured burst', () => {

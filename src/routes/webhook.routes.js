@@ -40,13 +40,34 @@ const webhookRateLimiter = createRateLimiter({
 });
 
 // Booking transition seam. Slice 3 wires `deposit.service.approveDeposit` to
-// move the booking to `reservado` + `deposit.status=pagado` atomically. When the
-// seam is not wired it reports `applied:false`, so the handler returns 503 and
-// MercadoPago retries; the approved payment is therefore not lost.
+// move the booking to `reservado` + `deposit.status=pagado` atomically.
+//
+// DEPLOYMENT ORDER (mandatory): if `services/deposit.service` is not deployed,
+// the seam returns `{applied:false}` -> the handler responds 503 and MercadoPago
+// retries. Retries are finite, so Slice 2 MUST be deployed together with (or
+// after) Slice 3's `approveDeposit`; otherwise approved deposits are eventually
+// lost. A startup warning is emitted when the service is absent.
+const DEPOSIT_SERVICE_MODULE = '../services/deposit.service';
+const depositServiceAvailable = (() => {
+  try {
+    require.resolve(DEPOSIT_SERVICE_MODULE);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+if (!depositServiceAvailable) {
+  console.warn(
+    '[mercadopago-webhook] deposit.service (Slice 3) is NOT deployed. Approved ' +
+      'payments will return 503 and be retried by MercadoPago until it is. Deploy ' +
+      'Slice 2 together with, or after, Slice 3.',
+  );
+}
+
 const defaultApplyApprovedPayment = async ({ companyId, bookingId, paymentId }) => {
   let depositService = null;
   try {
-    depositService = require('../services/deposit.service');
+    depositService = require(DEPOSIT_SERVICE_MODULE);
   } catch {
     depositService = null;
   }
@@ -63,7 +84,7 @@ const defaultApplyApprovedPayment = async ({ companyId, bookingId, paymentId }) 
   console.warn(
     `[mercadopago-webhook] booking transition seam not wired (Slice 3): booking=${bookingId} payment=${paymentId}`,
   );
-  return { applied: false, reason: 'deposit service not wired' };
+  return { applied: false, reason: 'deposit_service_not_deployed' };
 };
 
 const parseRawBody = (body) => {
@@ -174,11 +195,10 @@ const createWebhookHandler = (dependencies = {}) => {
 
     let payment;
     try {
-      payment = await fetchPayment({
-        companyId,
-        paymentId,
-        credential: match.credential,
-      });
+      // Do NOT pass `match.credential`: it is the projected webhook candidate,
+      // which excludes the access token. getPayment loads the full credential
+      // by companyId itself.
+      payment = await fetchPayment({ companyId, paymentId });
     } catch (error) {
       // Retryable: no row is persisted, so MP will resend and we try again.
       console.error('[mercadopago-webhook] payment fetch failed:', error?.message);
@@ -218,11 +238,16 @@ const createWebhookHandler = (dependencies = {}) => {
       return res.status(503).json({ success: false, error: 'Temporary failure' });
     }
 
-    // `applied:false` means the seam did not commit the transition (not wired
-    // yet, or the booking is not owned by the matched company). Do not persist,
-    // so MP retries and a real approved payment is never lost.
-    if (result && result.applied === false) {
-      return res.status(503).json({ success: false, error: 'Transition not applied' });
+    // Fail-closed: persist an applied row ONLY when the seam explicitly confirms
+    // the transition (`result.applied === true`). `undefined`/`{}`/`true` mean
+    // no confirmed commit; return 503 so MP retries and no row blocks the retry.
+    if (!result || result.applied !== true) {
+      return res.status(503).json({
+        success: false,
+        error: 'Deposit transition service is not available yet.',
+        code: 'DEPOSIT_TRANSITION_UNAVAILABLE',
+        reason: result?.reason || 'transition_not_confirmed',
+      });
     }
 
     try {
