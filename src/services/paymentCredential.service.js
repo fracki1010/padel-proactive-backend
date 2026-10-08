@@ -163,15 +163,22 @@ const listActiveCredentials = async (options = {}) =>
 // Webhook candidates: optionally narrowed by the MP account id (a cheap lookup
 // hint, never trusted for identity) and always bounded so a forged request
 // cannot scan every club. Only secret-verification fields are selected.
+//
+// LIMITATION: when no hint is sent the query is bounded to WEBHOOK_SCAN_LIMIT
+// candidates, so clubs beyond that count are not reached — those sign requests
+// MUST include the MP account id (`body.user_id`), which MercadoPago always
+// sends with payment events, narrowing to a single candidate.
 const listActiveCredentialsForWebhook = async ({ mpUserId } = {}, options = {}) => {
   const filter = { provider: PAYMENT_PROVIDER, isActive: true };
   const hint = mpUserId === undefined || mpUserId === null ? '' : String(mpUserId).trim();
   if (hint) filter.mpUserId = hint;
 
-  const credentials = await resolveModel(options).find(
-    filter,
-    WEBHOOK_CANDIDATE_PROJECTION,
-  );
+  // Real database `.limit` (not a JS slice) so the query itself is bounded; the
+  // slice is only a fallback for in-memory fakes used by tests.
+  const query = resolveModel(options).find(filter, WEBHOOK_CANDIDATE_PROJECTION);
+  const bounded =
+    query && typeof query.limit === 'function' ? query.limit(WEBHOOK_SCAN_LIMIT) : query;
+  const credentials = await bounded;
   return Array.isArray(credentials)
     ? credentials.slice(0, WEBHOOK_SCAN_LIMIT)
     : credentials;

@@ -135,6 +135,10 @@ const verifyWebhookSignature = ({ headers = {}, paymentId, secret, now = Date.no
 // Small bounded TTL cache of decrypted webhook secrets, keyed by the stored
 // ciphertext, so repeated webhook bursts do not re-decrypt on every request.
 // Never caches failures; entries are dropped after the TTL.
+// STALENESS: a deactivated/rotated club secret stays verifiable for up to the
+// TTL (30s) — acceptable for replay/forgery windows. No cross-club leak: the
+// key includes companyId + ciphertext, so one club's secret never verifies
+// another club's signature.
 const webhookSecretCache = new Map();
 
 const decryptWebhookSecretCached = (credential) => {
@@ -262,10 +266,14 @@ const createDepositPreference = async (payload = {}, options = {}) => {
   }
 };
 
-// Fetches a payment by id with the club token.
-const getPayment = async ({ companyId, paymentId, credential }, options = {}) => {
-  const activeCredential =
-    credential || (await resolveActiveCredential(companyId, options));
+// Fetches a payment by id with the club token. It ALWAYS loads the full
+// credential by companyId: webhook signature verification uses a projected
+// candidate that intentionally excludes tokenCiphertext/iv/authTag, so a caller
+// must never hand that projected document here to derive the token.
+const getPayment = async ({ companyId, paymentId }, options = {}) => {
+  const activeCredential = await getActiveCredential(companyId, {
+    model: resolveCredentialModel(options),
+  });
   if (!activeCredential || activeCredential.isActive === false) {
     throw new MercadoPagoError('MercadoPago is not configured for this club.', 409);
   }

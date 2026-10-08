@@ -14,7 +14,10 @@ const crypto = require('node:crypto');
 
 process.env.PAYMENT_SECRET_KEY = process.env.PAYMENT_SECRET_KEY || 'c'.repeat(64);
 
-const { setCredential } = require('../services/paymentCredential.service');
+const {
+  listActiveCredentialsForWebhook,
+  setCredential,
+} = require('../services/paymentCredential.service');
 const { CryptoConfigError } = require('../lib/crypto');
 const {
   SignatureError,
@@ -71,7 +74,23 @@ const createFakeCredentialModel = () => {
       calls.find.push({ filter, projection });
       return [...store.values()]
         .filter((doc) => (filter.isActive === true ? doc.isActive : true))
-        .filter((doc) => (filter.mpUserId ? doc.mpUserId === filter.mpUserId : true));
+        .filter((doc) => (filter.mpUserId ? doc.mpUserId === filter.mpUserId : true))
+        .map((doc) => {
+          if (!projection) return doc;
+          const include = Object.keys(projection).filter(
+            (key) => projection[key] === 1,
+          );
+          if (include.length) {
+            const projected = { _id: doc._id };
+            for (const key of include) projected[key] = doc[key];
+            return projected;
+          }
+          const projected = { ...doc };
+          for (const key of Object.keys(projection)) {
+            if (projection[key] === 0) delete projected[key];
+          }
+          return projected;
+        });
     },
   };
 };
@@ -510,4 +529,73 @@ test('resolveCompanyFromSignature falls back to a bounded scan without a hint', 
   assert.equal(String(match.companyId), COMPANY_A);
   const lastFind = model.calls.find.at(-1);
   assert.equal(lastFind.filter.mpUserId, undefined);
+});
+
+// ── Re-judge fixes ───────────────────────────────────────────────────────────
+
+test('getPayment loads the full credential even when handed the webhook-projected candidate', async () => {
+  const model = createFakeCredentialModel();
+  await seedCredentials(model);
+
+  const paymentId = 'pay-full';
+  const headers = signHeaders({
+    secret: SECRET_A,
+    paymentId,
+    requestId: 'req-full',
+    ts: nowSeconds(),
+  });
+  // Real webhook signature verification yields the PROJECTED candidate.
+  const match = await resolveCompanyFromSignature(
+    { headers, paymentId },
+    { credentialModel: model },
+  );
+  assert.equal(
+    match.credential.tokenCiphertext,
+    undefined,
+    'the signature candidate must not carry the access token',
+  );
+  assert.ok(match.credential.webhookSecretCiphertext);
+
+  const captured = {};
+  const httpClient = {
+    async get(url, config) {
+      captured.url = url;
+      captured.config = config;
+      return {
+        data: { id: paymentId, status: 'approved', external_reference: BOOKING_ID },
+      };
+    },
+  };
+
+  // Mimics the webhook call shape: the projected candidate is passed but the
+  // service must load the full credential itself to decrypt the token.
+  const payment = await getPayment(
+    { companyId: match.companyId, paymentId, credential: match.credential },
+    { credentialModel: model, httpClient },
+  );
+
+  assert.equal(payment.status, 'approved');
+  assert.equal(captured.config.headers.Authorization, `Bearer ${TOKEN_A}`);
+});
+
+test('listActiveCredentialsForWebhook bounds the query with a real database limit', async () => {
+  const calls = {};
+  const model = {
+    find(filter, projection) {
+      calls.filter = filter;
+      calls.projection = projection;
+      return {
+        limit(value) {
+          calls.limit = value;
+          return Promise.resolve([]);
+        },
+      };
+    },
+  };
+
+  await listActiveCredentialsForWebhook({ mpUserId: 'mp-a' }, { model });
+
+  assert.equal(calls.limit, 50, 'must use a real .limit, not a JS slice');
+  assert.equal(calls.filter.mpUserId, 'mp-a');
+  assert.ok(!('tokenCiphertext' in calls.projection));
 });
