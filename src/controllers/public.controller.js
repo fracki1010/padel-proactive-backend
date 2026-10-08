@@ -48,6 +48,14 @@ const {
 const {
   createDepositPreference,
 } = require("../services/mercadopago.service");
+const {
+  buildDepositFields,
+  buildDepositPaymentLink,
+  markRefundableOnCancel,
+} = require("../services/deposit.service");
+const {
+  notifyDepositPending,
+} = require("../services/depositNotification.service");
 const { CryptoConfigError } = require("../lib/crypto");
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -878,6 +886,11 @@ const createClientBooking = async (req, res) => {
       return res.status(409).json({ success: false, error: "Ese turno ya está reservado" });
     }
 
+    const depositSettings = await getDepositSettings(company._id);
+    const depositEnabled =
+      Boolean(depositSettings?.depositEnabled) &&
+      Number(depositSettings?.depositAmount) > 0;
+
     const bookingFields = {
       clientName: client.name,
       clientPhone,
@@ -886,6 +899,11 @@ const createClientBooking = async (req, res) => {
       finalPrice: slot.price || 0,
       isFixed: false,
     };
+
+    // Deposits enabled: hold the court as `pendiente_seña` and store the seña.
+    if (depositEnabled) {
+      Object.assign(bookingFields, buildDepositFields({ settings: depositSettings }));
+    }
 
     let booking;
     try {
@@ -932,18 +950,60 @@ const createClientBooking = async (req, res) => {
 
     // Confirmar el turno al cliente por WhatsApp. Best-effort: si el encolado
     // falla, la reserva ya está persistida y se responde 201 igual.
-    await sendBookingWhatsappConfirmation({
-      companyId: company._id,
-      clientPhone,
-      client,
-      court: populated.court,
-      slot: populated.timeSlot,
-      date: toIsoDateOnly(searchDate),
-    });
+    let depositInfo = null;
+    let paymentInfo = null;
+
+    if (depositEnabled) {
+      // Best-effort link: the booking is already pending, so a transient MP
+      // failure must not roll it back; the payment-link endpoint can regenerate.
+      const depositExpiresAt = populated.deposit?.expiresAt || null;
+      depositInfo = { amount: depositSettings.depositAmount, expiresAt: depositExpiresAt };
+      paymentInfo = { initPoint: "" };
+      try {
+        const link = await buildDepositPaymentLink({
+          companyId: company._id,
+          booking: populated,
+          settings: depositSettings,
+          notificationUrl: process.env.MERCADOPAGO_NOTIFICATION_URL || undefined,
+        });
+        paymentInfo = { initPoint: link.initPoint };
+      } catch (depositErr) {
+        console.error(
+          "[createClientBooking] No se pudo generar el link de seña:",
+          depositErr?.message || depositErr,
+        );
+      }
+
+      await notifyDepositPending({
+        booking: populated,
+        companyId: company._id,
+        initPoint: paymentInfo.initPoint,
+      }).catch((notifyErr) => {
+        console.error(
+          "[createClientBooking] No se pudo notificar la seña pendiente:",
+          notifyErr?.message || notifyErr,
+        );
+      });
+    } else {
+      await sendBookingWhatsappConfirmation({
+        companyId: company._id,
+        clientPhone,
+        client,
+        court: populated.court,
+        slot: populated.timeSlot,
+        date: toIsoDateOnly(searchDate),
+      });
+    }
+
+    const responseData = { ...populated.toObject(), date: toIsoDateOnly(populated.date) };
+    if (depositEnabled) {
+      responseData.deposit = depositInfo;
+      responseData.payment = paymentInfo;
+    }
 
     return res.status(201).json({
       success: true,
-      data: { ...populated.toObject(), date: toIsoDateOnly(populated.date) },
+      data: responseData,
     });
   } catch (err) {
     console.error("[public.controller]", err);
@@ -1046,6 +1106,12 @@ const cancelMyBooking = async (req, res) => {
     }
 
     booking.status = "cancelado";
+    // A booking cancelled within policy: a paid seña is flagged refundable
+    // (admin executes the refund — O1); an unpaid hold has nothing to refund.
+    const depositPatch = markRefundableOnCancel(booking);
+    if (depositPatch.deposit) {
+      booking.deposit = depositPatch.deposit;
+    }
     await booking.save();
 
     // Notificar al admin por WhatsApp
