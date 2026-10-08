@@ -1,0 +1,147 @@
+'use strict';
+
+// Credential lifecycle for per-company payment providers (MercadoPago).
+// Tokens and webhook secrets are encrypted with AES-256-GCM before they touch
+// the database. The HTTP-facing API only ever consumes `getMaskedCredential`,
+// which strips every secret and never loads ciphertext from the database.
+// `getActiveCredential` and `decryptCredentialToken` are internal accessors for
+// payment services (e.g. building a Checkout preference) and MUST NOT be wired
+// into a response. All reads and writes are scoped by companyId.
+
+const PaymentCredential = require('../models/paymentCredential.model');
+const { encryptSecret, decryptSecret } = require('../lib/crypto');
+
+const PAYMENT_PROVIDER = 'mercadopago';
+const MASKED_TOKEN = '••••';
+
+// Never loaded by the HTTP-facing masked read, so request-time responses cannot
+// accidentally serialize ciphertext or key material.
+const SECRET_PROJECTION = {
+  tokenCiphertext: 0,
+  iv: 0,
+  authTag: 0,
+  keyVersion: 0,
+  webhookSecretCiphertext: 0,
+  webhookSecretIv: 0,
+  webhookSecretAuthTag: 0,
+};
+
+const resolveModel = (options) => (options && options.model) || PaymentCredential;
+
+const buildCredentialFilter = (companyId) => ({
+  companyId,
+  provider: PAYMENT_PROVIDER,
+});
+
+// Internal-only: decrypts the stored access token for payment providers.
+const decryptCredentialToken = (credential) => {
+  if (!credential || !credential.tokenCiphertext) {
+    throw new Error('Credential has no token to decrypt.');
+  }
+  return decryptSecret({
+    ciphertext: credential.tokenCiphertext,
+    iv: credential.iv,
+    authTag: credential.authTag,
+    keyVersion: credential.keyVersion,
+  });
+};
+
+// Internal-only: returns the full credential document (including ciphertext).
+const getActiveCredential = async (companyId, options = {}) =>
+  resolveModel(options).findOne({
+    ...buildCredentialFilter(companyId),
+    isActive: true,
+  });
+
+const setCredential = async (companyId, payload = {}, options = {}) => {
+  const model = resolveModel(options);
+  const accessToken = String(payload?.accessToken || '').trim();
+  if (!accessToken) {
+    const error = new Error('accessToken is required.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const tokenParts = encryptSecret(accessToken);
+  const update = {
+    companyId,
+    provider: PAYMENT_PROVIDER,
+    tokenCiphertext: tokenParts.ciphertext,
+    iv: tokenParts.iv,
+    authTag: tokenParts.authTag,
+    keyVersion: tokenParts.keyVersion,
+    isActive: true,
+  };
+
+  // Merge semantics: only replace the webhook secret when a new one is sent, and
+  // only update the MP user id when the caller provided it. Rotating the access
+  // token must not wipe the existing encrypted webhook secret.
+  const webhookSecret = String(payload?.webhookSecret || '').trim();
+  if (webhookSecret) {
+    const secretParts = encryptSecret(webhookSecret);
+    update.webhookSecretCiphertext = secretParts.ciphertext;
+    update.webhookSecretIv = secretParts.iv;
+    update.webhookSecretAuthTag = secretParts.authTag;
+  }
+  if (payload?.mpUserId !== undefined && payload?.mpUserId !== null) {
+    update.mpUserId = String(payload.mpUserId).trim();
+  }
+
+  return model.findOneAndUpdate(
+    buildCredentialFilter(companyId),
+    { $set: update },
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
+  );
+};
+
+// Public representation: no token, no ciphertext, no token digits.
+const buildMaskedCredential = (credential) => {
+  if (!credential) {
+    return {
+      configured: false,
+      provider: PAYMENT_PROVIDER,
+      masked: '',
+      mpUserId: '',
+    };
+  }
+
+  return {
+    configured: true,
+    provider: credential.provider || PAYMENT_PROVIDER,
+    masked: MASKED_TOKEN,
+    mpUserId: String(credential.mpUserId || ''),
+  };
+};
+
+const getMaskedCredential = async (companyId, options = {}) => {
+  const credential = await resolveModel(options).findOne(
+    { ...buildCredentialFilter(companyId), isActive: true },
+    SECRET_PROJECTION,
+  );
+  return buildMaskedCredential(credential);
+};
+
+const deleteCredential = async (companyId, options = {}) => {
+  const model = resolveModel(options);
+  const result = await model.updateOne(
+    { ...buildCredentialFilter(companyId), isActive: true },
+    { $set: { isActive: false } },
+  );
+  return { deleted: Number(result?.matchedCount || 0) > 0 };
+};
+
+const listActiveCredentials = async (options = {}) =>
+  resolveModel(options).find({ provider: PAYMENT_PROVIDER, isActive: true });
+
+module.exports = {
+  MASKED_TOKEN,
+  PAYMENT_PROVIDER,
+  SECRET_PROJECTION,
+  buildMaskedCredential,
+  decryptCredentialToken,
+  deleteCredential,
+  getActiveCredential,
+  getMaskedCredential,
+  listActiveCredentials,
+  setCredential,
+};
