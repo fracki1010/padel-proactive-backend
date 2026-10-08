@@ -68,7 +68,7 @@ const enqueueClientMessage = async ({ companyId, phone, message, enqueue }) => {
 };
 
 const notifyDepositPending = async (
-  { booking, companyId = null, initPoint = '' },
+  { booking, companyId = null, initPoint = '', notifyClient = true },
   deps = {},
 ) => {
   const { sendAdminNotification, enqueueWhatsappCommand: enqueue } = resolveDeps(deps);
@@ -85,6 +85,13 @@ const notifyDepositPending = async (
       { companyId },
     ),
   );
+
+  // The bot path already carries the Checkout Pro link in the chat reply, so it
+  // opts out of the queued client message to avoid delivering the link twice.
+  // The portal path still needs the enqueued client message.
+  if (!notifyClient) {
+    return { notified: true, adminNotified: adminResult.ok, chatId: null };
+  }
 
   const message = buildDepositPaymentMessage({
     client: { name: booking?.clientName },

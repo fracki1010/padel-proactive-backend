@@ -15,6 +15,7 @@ const DAY_NAMES_ES = [
 const STATUS_LABELS = {
   confirmado: "✅ Estado: Confirmada",
   reservado: "⏳ Estado: Reservada (pendiente de confirmación)",
+  pendiente_seña: "⏳ Estado: Pendiente de seña (sin pagar)",
   suspendido: "🚫 Estado: Suspendida",
 };
 

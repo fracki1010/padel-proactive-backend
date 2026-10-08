@@ -240,14 +240,31 @@ const isValidClientName = (value = "") => {
 
 const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult) => {
   if (bookingResult.success) {
-    return (
-      `✅ *¡Reserva Confirmada!* 🎾\n\n` +
-      `👤 *Jugador:* ${requestedClientName}\n` +
-      `📌 *Cancha:* ${bookingResult.data.courtName}${bookingResult.data.courtType ? ` (${bookingResult.data.courtType})` : ""}\n` +
-      `📅 *Fecha:* ${getFormattedDate(requestedDate)}\n` +
-      `⏰ *Hora:* ${bookingResult.data.startTime} - ${bookingResult.data.endTime}\n` +
-      `💰 *Precio:* $${bookingResult.data.price}`
-    );
+    // A pending deposit is NOT a confirmed booking, so the header must reflect
+    // the hold state (mirrors `buildDepositPaymentMessage`).
+    const deposit = bookingResult.data?.deposit;
+    const header = deposit
+      ? `🎾 *¡Ya casi es tuyo! Falta la seña*`
+      : `✅ *¡Reserva Confirmada!* 🎾`;
+
+    const lines = [
+      header,
+      ``,
+      `👤 *Jugador:* ${requestedClientName}`,
+      `📌 *Cancha:* ${bookingResult.data.courtName}${bookingResult.data.courtType ? ` (${bookingResult.data.courtType})` : ""}`,
+      `📅 *Fecha:* ${getFormattedDate(requestedDate)}`,
+      `⏰ *Hora:* ${bookingResult.data.startTime} - ${bookingResult.data.endTime}`,
+      `💰 *Precio:* $${bookingResult.data.price}`,
+    ];
+
+    if (deposit) {
+      lines.push(`💳 *Seña:* $${deposit.amount}`);
+      if (deposit.initPoint) {
+        lines.push(`Pagá tu seña acá: ${deposit.initPoint}`);
+      }
+    }
+
+    return lines.join("\n");
   }
 
   if (bookingResult.error === "BUSY") return "🚫 Ese turno ya está ocupado. ¿Te busco otro?";
@@ -3227,4 +3244,4 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
   }
 };
 
-module.exports = { handleIncomingMessage };
+module.exports = { buildBookingReplyText, handleIncomingMessage };

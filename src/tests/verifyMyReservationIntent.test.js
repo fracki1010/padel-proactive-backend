@@ -148,6 +148,16 @@ test("buildExistingBookingStatusReply: estado reservado + pago pendiente", () =>
   assert.doesNotMatch(reply, /Estado: Confirmada/);
 });
 
+test("buildExistingBookingStatusReply: hold pendiente_seña renders the unpaid seña state", () => {
+  const reply = buildExistingBookingStatusReply({
+    ...individualBooking,
+    status: "pendiente_seña",
+    paymentStatus: "pendiente",
+  });
+  assert.match(reply, /Pendiente de seña/i);
+  assert.doesNotMatch(reply, /Estado: Confirmada/);
+});
+
 test("buildExistingBookingStatusReply: turno fijo muestra el día recurrente", () => {
   const reply = buildExistingBookingStatusReply({
     type: "fixed",
