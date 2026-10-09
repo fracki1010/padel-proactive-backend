@@ -218,3 +218,342 @@ test('getDepositSettings defaults the exempt list to empty when unset', async ()
 
   assert.deepEqual(settings.depositExemptPhones, []);
 });
+
+// ── Admin endpoint (spec: deposit-exemption-admin-api) ───────────────────────
+
+const userRouter = require('../routes/user.routes');
+const {
+  setDepositExemption,
+  getUserById,
+} = require('../controllers/user.controller');
+
+const getRoute = (router, path, method) => {
+  const layer = router.stack.find(
+    (entry) =>
+      entry.route &&
+      entry.route.path === path &&
+      entry.route.methods[method.toLowerCase()],
+  );
+  assert.ok(layer, `missing route ${method} ${path}`);
+  return layer.route;
+};
+
+const getHandlers = (router, path, method) =>
+  getRoute(router, path, method).stack.map((entry) => entry.handle);
+
+const runMiddleware = (middleware, req, res) => {
+  let nextCalled = false;
+  middleware(req, res, () => {
+    nextCalled = true;
+  });
+  return nextCalled;
+};
+
+const createResponse = () => {
+  const captured = {};
+  return {
+    captured,
+    status(code) {
+      captured.statusCode = code;
+      return this;
+    },
+    json(body) {
+      captured.body = body;
+      return this;
+    },
+  };
+};
+
+const makeUser = (overrides = {}) => ({
+  _id: 'u1',
+  companyId: COMPANY_A,
+  phoneNumber: PHONE_549,
+  name: 'Ana',
+  ...overrides,
+});
+
+// Mongoose-query-like thenable: `findOne(...)` supports `.populate()` chains
+// and can be awaited directly; a filter mismatch resolves to null (404 path).
+const makeUserModel = (users) => {
+  const store = new Map(users.map((user) => [String(user._id), user]));
+  const emptyChain = () => {
+    const chain = { populate: () => chain, then: (resolve) => resolve(null) };
+    return chain;
+  };
+  return {
+    findOne(filter) {
+      const user = store.get(String(filter._id)) || null;
+      const outOfCompany =
+        user &&
+        filter.companyId &&
+        String(user.companyId) !== String(filter.companyId);
+      if (!user || outOfCompany) return emptyChain();
+      const resolved = { ...user, toObject: () => ({ ...user }) };
+      const chain = {
+        populate: () => chain,
+        then: (resolve) => resolve(resolved),
+      };
+      return chain;
+    },
+  };
+};
+
+const fakeClientAccountModel = {
+  findOne: () => ({ select: async () => null }),
+};
+
+const writeState = { addCalls: [], removeCalls: [] };
+const resetWrites = () => {
+  writeState.addCalls = [];
+  writeState.removeCalls = [];
+};
+const makeDeps = (users) => ({
+  UserModel: makeUserModel(users),
+  addExemptPhone: async (companyId, phone) => {
+    writeState.addCalls.push({ companyId, phone });
+  },
+  removeExemptPhone: async (companyId, phone) => {
+    writeState.removeCalls.push({ companyId, phone });
+  },
+});
+
+// -- Route contract + authorization --
+
+test('PUT /users/:id/deposit-exempt exists behind an authz middleware', () => {
+  const handlers = getHandlers(userRouter, '/:id/deposit-exempt', 'put');
+  assert.ok(handlers.length >= 2, 'the route must carry an authz middleware');
+});
+
+test('the deposit-exempt route rejects a client token with 403', () => {
+  const authz = getHandlers(userRouter, '/:id/deposit-exempt', 'put')[0];
+  const res = createResponse();
+
+  const allowed = runMiddleware(
+    authz,
+    { user: { type: 'client', companyId: COMPANY_A } },
+    res,
+  );
+
+  assert.equal(allowed, false);
+  assert.equal(res.captured.statusCode, 403);
+});
+
+test('admin and super_admin roles pass the deposit-exempt authz gate', () => {
+  const authz = getHandlers(userRouter, '/:id/deposit-exempt', 'put')[0];
+
+  assert.equal(
+    runMiddleware(
+      authz,
+      { user: { role: 'admin', companyId: COMPANY_A } },
+      createResponse(),
+    ),
+    true,
+  );
+  assert.equal(
+    runMiddleware(authz, { user: { role: 'super_admin' } }, createResponse()),
+    true,
+  );
+});
+
+// -- Handler behavior --
+
+test('an admin can enable the exemption for a user in their company', async () => {
+  resetWrites();
+  const res = createResponse();
+
+  await setDepositExemption(
+    {
+      params: { id: 'u1' },
+      body: { enabled: true },
+      user: { role: 'admin', companyId: COMPANY_A },
+    },
+    res,
+    makeDeps([makeUser()]),
+  );
+
+  assert.equal(res.captured.statusCode, 200);
+  assert.deepEqual(res.captured.body, {
+    success: true,
+    data: { depositExempt: true },
+  });
+  assert.deepEqual(writeState.addCalls, [
+    { companyId: COMPANY_A, phone: PHONE_549 },
+  ]);
+  assert.equal(writeState.removeCalls.length, 0);
+});
+
+test('an admin can disable the exemption (idempotent toggle)', async () => {
+  resetWrites();
+  const res = createResponse();
+
+  await setDepositExemption(
+    {
+      params: { id: 'u1' },
+      body: { enabled: false },
+      user: { role: 'admin', companyId: COMPANY_A },
+    },
+    res,
+    makeDeps([makeUser()]),
+  );
+
+  assert.equal(res.captured.statusCode, 200);
+  assert.deepEqual(res.captured.body.data, { depositExempt: false });
+  assert.deepEqual(writeState.removeCalls, [
+    { companyId: COMPANY_A, phone: PHONE_549 },
+  ]);
+  assert.equal(writeState.addCalls.length, 0);
+});
+
+test('enabling twice returns 200 both times without diverging', async () => {
+  resetWrites();
+  const deps = makeDeps([makeUser()]);
+  const req = {
+    params: { id: 'u1' },
+    body: { enabled: true },
+    user: { role: 'admin', companyId: COMPANY_A },
+  };
+
+  const first = createResponse();
+  await setDepositExemption(req, first, deps);
+  const second = createResponse();
+  await setDepositExemption(req, second, deps);
+
+  assert.equal(first.captured.statusCode, 200);
+  assert.equal(second.captured.statusCode, 200);
+  assert.deepEqual(second.captured.body, first.captured.body);
+});
+
+test('a missing or non-boolean enabled is rejected with 400 and no write', async () => {
+  for (const body of [{}, { enabled: 'yes' }, { enabled: 1 }, { enabled: null }]) {
+    resetWrites();
+    const res = createResponse();
+
+    await setDepositExemption(
+      {
+        params: { id: 'u1' },
+        body,
+        user: { role: 'admin', companyId: COMPANY_A },
+      },
+      res,
+      makeDeps([makeUser()]),
+    );
+
+    assert.equal(res.captured.statusCode, 400, `body ${JSON.stringify(body)}`);
+    assert.equal(writeState.addCalls.length, 0);
+    assert.equal(writeState.removeCalls.length, 0);
+  }
+});
+
+test('a user without a canonical phone cannot be exempted (400)', async () => {
+  resetWrites();
+  const res = createResponse();
+
+  await setDepositExemption(
+    {
+      params: { id: 'u1' },
+      body: { enabled: true },
+      user: { role: 'admin', companyId: COMPANY_A },
+    },
+    res,
+    makeDeps([makeUser({ phoneNumber: '' })]),
+  );
+
+  assert.equal(res.captured.statusCode, 400);
+  assert.equal(writeState.addCalls.length, 0);
+});
+
+test('an admin cannot exempt a user from another company (404)', async () => {
+  resetWrites();
+  const res = createResponse();
+
+  await setDepositExemption(
+    {
+      params: { id: 'u2' },
+      body: { enabled: true },
+      user: { role: 'admin', companyId: COMPANY_A },
+    },
+    res,
+    makeDeps([makeUser({ _id: 'u2', companyId: COMPANY_B })]),
+  );
+
+  assert.equal(res.captured.statusCode, 404);
+  assert.equal(writeState.addCalls.length, 0);
+});
+
+test('an unknown user returns 404 without writing', async () => {
+  resetWrites();
+  const res = createResponse();
+
+  await setDepositExemption(
+    {
+      params: { id: 'missing' },
+      body: { enabled: true },
+      user: { role: 'admin', companyId: COMPANY_A },
+    },
+    res,
+    makeDeps([makeUser()]),
+  );
+
+  assert.equal(res.captured.statusCode, 404);
+  assert.equal(writeState.addCalls.length, 0);
+});
+
+test('a super_admin writes the exemption to the target user company', async () => {
+  resetWrites();
+  const res = createResponse();
+
+  await setDepositExemption(
+    {
+      params: { id: 'u2' },
+      body: { enabled: true },
+      query: {},
+      user: { role: 'super_admin' },
+    },
+    res,
+    makeDeps([makeUser({ _id: 'u2', companyId: COMPANY_B })]),
+  );
+
+  assert.equal(res.captured.statusCode, 200);
+  assert.deepEqual(writeState.addCalls, [
+    { companyId: COMPANY_B, phone: PHONE_549 },
+  ]);
+});
+
+// -- Detail payload --
+
+test('GET /api/users/:id exposes depositExempt from the AppConfig', async () => {
+  const res = createResponse();
+
+  await getUserById(
+    { params: { id: 'u1' }, user: { role: 'admin', companyId: COMPANY_A } },
+    res,
+    {
+      UserModel: makeUserModel([makeUser()]),
+      ClientAccountModel: fakeClientAccountModel,
+      getTrustedConfirmationCount: async () => 3,
+      isDepositExemptForCompany: async () => true,
+    },
+  );
+
+  assert.equal(res.captured.statusCode, 200);
+  assert.equal(res.captured.body.data.depositExempt, true);
+  assert.equal(res.captured.body.data.isVerified, false);
+});
+
+test('GET /api/users/:id reports depositExempt false for a non-exempt phone', async () => {
+  const res = createResponse();
+
+  await getUserById(
+    { params: { id: 'u1' }, user: { role: 'admin', companyId: COMPANY_A } },
+    res,
+    {
+      UserModel: makeUserModel([makeUser()]),
+      ClientAccountModel: fakeClientAccountModel,
+      getTrustedConfirmationCount: async () => 3,
+      isDepositExemptForCompany: async () => false,
+    },
+  );
+
+  assert.equal(res.captured.statusCode, 200);
+  assert.equal(res.captured.body.data.depositExempt, false);
+});

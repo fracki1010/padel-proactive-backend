@@ -6,6 +6,9 @@ const {
 } = require("../services/fixedTurnsMaterialization.service");
 const {
   getTrustedClientConfirmationCount,
+  isDepositExempt,
+  addDepositExemptPhone,
+  removeDepositExemptPhone,
 } = require("../services/appConfig.service");
 const {
   getWhatsappIdByPhone,
@@ -14,6 +17,7 @@ const {
   buildVerifiedUserIdSet,
   isUserVerified,
   shouldBlockVerifiedPhoneEdit,
+  canonicalPhoneKey,
 } = require("../services/clientVerification.service");
 const toIsoDateOnly = (value) => {
   const date = value instanceof Date ? value : new Date(value);
@@ -123,6 +127,7 @@ const getUserById = async (req, res, deps = {}) => {
     UserModel = User,
     ClientAccountModel = ClientAccount,
     getTrustedConfirmationCount = getTrustedClientConfirmationCount,
+    isDepositExemptForCompany = isDepositExempt,
   } = deps;
   try {
     const companyId = resolveCompanyId(req);
@@ -144,10 +149,18 @@ const getUserById = async (req, res, deps = {}) => {
       linkedUserId: user._id,
     }).select("linkedUserId");
 
+    // Exemption is computed from the user's own company AppConfig (no extra
+    // hot-path query for bookings; this is an admin detail read).
+    const depositExempt = await isDepositExemptForCompany(
+      user.companyId || companyId,
+      user.phoneNumber,
+    );
+
     return res.status(200).json({
       success: true,
       data: enrichUserWithReliability(user, trustedClientConfirmationCount, {
         isVerified: Boolean(linkedAccount),
+        depositExempt: Boolean(depositExempt),
       }),
     });
   } catch (error) {
@@ -414,6 +427,62 @@ const adjustAttendanceConfirmedCount = async (req, res) => {
   }
 };
 
+// PUT /api/users/:id/deposit-exempt  { enabled: boolean }
+// Admin-only (enforced at the route), company-scoped. Writes the canonical
+// phone key onto the target user's company AppConfig; idempotent by design.
+const setDepositExemption = async (req, res, deps = {}) => {
+  const {
+    UserModel = User,
+    addExemptPhone = addDepositExemptPhone,
+    removeExemptPhone = removeDepositExemptPhone,
+  } = deps;
+  try {
+    const companyId = resolveCompanyId(req);
+    const enabled = req.body?.enabled;
+
+    if (typeof enabled !== "boolean") {
+      return res
+        .status(400)
+        .json({ success: false, error: "enabled must be a boolean." });
+    }
+
+    const user = await UserModel.findOne({
+      _id: req.params.id,
+      ...companyScope(req, companyId),
+    });
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Usuario no encontrado" });
+    }
+
+    if (!canonicalPhoneKey(user.phoneNumber)) {
+      return res.status(400).json({
+        success: false,
+        error: "El usuario no tiene un teléfono válido para eximir.",
+      });
+    }
+
+    // Always scope the write to the target user's own company so a super_admin
+    // can never mis-scope the exemption onto another tenant.
+    const targetCompanyId = user.companyId || companyId;
+    if (enabled) {
+      await addExemptPhone(targetCompanyId, user.phoneNumber);
+    } else {
+      await removeExemptPhone(targetCompanyId, user.phoneNumber);
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: { depositExempt: enabled },
+    });
+  } catch (error) {
+    const status = Number(error?.statusCode) || 500;
+    return res.status(status).json({ success: false, error: error.message });
+  }
+};
+
 module.exports = {
   getUsers,
   getUserById,
@@ -423,4 +492,5 @@ module.exports = {
   getUserHistory,
   clearPenalties,
   adjustAttendanceConfirmedCount,
+  setDepositExemption,
 };

@@ -123,9 +123,11 @@ test('getUserById expone isVerified=true cuando existe ClientAccount vinculada',
     UserModel: makeUserModel({ currentUser: { _id: 'u-1', name: 'Ana', phoneNumber: '5492622517447' } }),
     ClientAccountModel: makeClientAccountModel({ linked: [{ linkedUserId: 'u-1' }] }),
     getTrustedConfirmationCount: async () => 3,
+    isDepositExemptForCompany: async () => false,
   });
 
   assert.equal(res.payload.data.isVerified, true);
+  assert.equal(res.payload.data.depositExempt, false);
 });
 
 // ── updateUser: phone lock ──────────────────────────────────────────────────
