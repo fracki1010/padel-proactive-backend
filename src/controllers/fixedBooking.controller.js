@@ -72,6 +72,13 @@ const createFixedBooking = async (req, res) => {
         .status(400)
         .json({ success: false, error: "status inválido (active o paused)" });
     }
+    const normalizedClientName =
+      typeof clientName === "string" ? clientName.trim() : "";
+    if (!normalizedClientName) {
+      return res
+        .status(400)
+        .json({ success: false, error: "El turno fijo debe tener un cliente" });
+    }
 
     const [courtExists, slotExists] = await Promise.all([
       Court.exists({ _id: court, companyId }),
@@ -94,7 +101,7 @@ const createFixedBooking = async (req, res) => {
       court,
       timeSlot,
       weekday,
-      clientName: (clientName || "").trim(),
+      clientName: normalizedClientName,
       notes: (notes || "").trim(),
       status: normalizedStatus,
     });
@@ -151,7 +158,16 @@ const updateFixedBooking = async (req, res) => {
       }
       updates.timeSlot = timeSlot;
     }
-    if (clientName !== undefined) updates.clientName = (clientName || "").trim();
+    if (clientName !== undefined) {
+      const normalizedClientName =
+        typeof clientName === "string" ? clientName.trim() : "";
+      if (!normalizedClientName) {
+        return res
+          .status(400)
+          .json({ success: false, error: "El turno fijo debe tener un cliente" });
+      }
+      updates.clientName = normalizedClientName;
+    }
     if (notes !== undefined) updates.notes = (notes || "").trim();
     if (status !== undefined) {
       if (!VALID_STATUSES.includes(status)) {
