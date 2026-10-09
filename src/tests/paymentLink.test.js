@@ -261,3 +261,56 @@ test('createPaymentLink refuses a link once the deposit hold expired', async () 
   assert.equal(res.payload.code, 'DEPOSIT_EXPIRED');
   assert.equal(state.mpCalls.length, 0, 'no preference may be minted for an expired hold');
 });
+
+// ── Exemption gate (money consistency, review finding #3) ────────────────────
+
+test('createPaymentLink never mints a link for an exempt client booking', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: ['5491100000000'],
+  };
+  const res = createResponse();
+
+  await createPaymentLink(baseReq(), res);
+
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.payload.code, 'DEPOSIT_NOT_REQUIRED');
+  assert.equal(state.mpCalls.length, 0, 'an exempt booking must never get a payment link');
+});
+
+test('an exempt booking is refused even when the list stores the 54-variant key', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: ['541100000000'],
+  };
+  const res = createResponse();
+
+  await createPaymentLink(baseReq(), res);
+
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.payload.code, 'DEPOSIT_NOT_REQUIRED');
+  assert.equal(state.mpCalls.length, 0);
+});
+
+test('createPaymentLink still mints for a non-exempt client when the list is populated', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: ['5499999999999'],
+  };
+  const res = createResponse();
+
+  await createPaymentLink(baseReq(), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.data.initPoint, 'https://mp/checkout/pref-x');
+  assert.equal(state.mpCalls.length, 1);
+});

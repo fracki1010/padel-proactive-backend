@@ -108,6 +108,10 @@ const appConfigSchema = new mongoose.Schema(
       min: 1,
       max: 1440,
     },
+    depositExemptPhones: {
+      type: [String],
+      default: [],
+    },
   },
   {
     timestamps: true,

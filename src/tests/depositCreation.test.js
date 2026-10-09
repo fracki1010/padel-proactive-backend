@@ -15,7 +15,7 @@ const SLOT_ID = '64b0000000000000000000s1';
 const BOOKING_ID = '64b0000000000000000000c3';
 
 const state = {
-  settings: { depositEnabled: true, depositAmount: 5000, holdMinutes: 15 },
+  settings: { depositEnabled: true, depositAmount: 5000, holdMinutes: 15, depositExemptPhones: [] },
   createdBooking: null,
   bookingCalls: [],
   pendingNotifications: [],
@@ -23,7 +23,7 @@ const state = {
 };
 
 const resetState = () => {
-  state.settings = { depositEnabled: true, depositAmount: 5000, holdMinutes: 15 };
+  state.settings = { depositEnabled: true, depositAmount: 5000, holdMinutes: 15, depositExemptPhones: [] };
   state.createdBooking = null;
   state.bookingCalls = [];
   state.pendingNotifications = [];
@@ -167,6 +167,66 @@ test('a booking created with deposits disabled keeps the reservado flow', async 
   assert.equal(state.createdBooking.deposit, undefined);
   assert.equal(state.confirmations, 1, 'the classic confirmation is still sent');
   assert.equal(state.pendingNotifications.length, 0);
+});
+
+// ── exemption gate ───────────────────────────────────────────────────────────
+
+test('an exempt client is created directly reservado with no deposit plumbing', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: ['5491100000000'],
+  };
+  const res = createResponse();
+
+  await createClientBooking(createReq(), res);
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(state.createdBooking.status, 'reservado');
+  assert.equal(state.createdBooking.deposit, undefined);
+  assert.equal(state.createdBooking.paymentStatus, 'pendiente');
+  assert.equal(state.confirmations, 1, 'the classic confirmation is still sent');
+  assert.equal(state.pendingNotifications.length, 0);
+  assert.equal(res.payload.data.deposit, undefined);
+  assert.equal(res.payload.data.payment, undefined);
+});
+
+test('a 54-variant exemption matches the 549 portal phone at the gate', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: ['541100000000'],
+  };
+  const res = createResponse();
+
+  await createClientBooking(createReq(), res);
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(state.createdBooking.status, 'reservado');
+  assert.equal(state.createdBooking.deposit, undefined);
+  assert.equal(state.pendingNotifications.length, 0);
+});
+
+test('a non-exempt phone still gets the deposit hold', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: ['5499999999999'],
+  };
+  const res = createResponse();
+
+  await createClientBooking(createReq(), res);
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(state.createdBooking.status, 'pendiente_seña');
+  assert.equal(state.createdBooking.deposit.amount, 5000);
+  assert.equal(state.pendingNotifications.length, 1);
 });
 
 // ── cancel ───────────────────────────────────────────────────────────────────

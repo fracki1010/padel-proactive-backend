@@ -30,7 +30,7 @@ const {
   sendBookingWhatsappConfirmation,
 } = require("../services/bookingWhatsappConfirmation.service");
 const { getWhatsappIdByPhone } = require("../utils/getWhatsappIdByPhone");
-const { getCancellationLockHours, getDepositSettings } = require("../services/appConfig.service");
+const { getCancellationLockHours, getDepositSettings, isPhoneExempt } = require("../services/appConfig.service");
 const {
   buildActiveAnnouncementsQuery,
 } = require("../services/announcement.service");
@@ -887,9 +887,12 @@ const createClientBooking = async (req, res) => {
     }
 
     const depositSettings = await getDepositSettings(company._id);
+    // The exemption rides the already-loaded settings doc: no extra query.
+    // A phone in the exempt list falls back to the direct `reservado` flow.
     const depositEnabled =
       Boolean(depositSettings?.depositEnabled) &&
-      Number(depositSettings?.depositAmount) > 0;
+      Number(depositSettings?.depositAmount) > 0 &&
+      !isPhoneExempt(depositSettings?.depositExemptPhones, clientPhone);
 
     const bookingFields = {
       clientName: client.name,
@@ -1241,6 +1244,16 @@ const createPaymentLink = async (req, res) => {
         success: false,
         error: "La seña no está habilitada para este club",
         code: "DEPOSIT_NOT_CONFIGURED",
+      });
+    }
+    // An exempt client never owes a seña: refuse to mint a link even if the
+    // booking slipped into a payable state. Guards against charging an exempt
+    // booking.
+    if (isPhoneExempt(settings.depositExemptPhones, clientPhone)) {
+      return res.status(409).json({
+        success: false,
+        error: "Esta reserva no requiere seña",
+        code: "DEPOSIT_NOT_REQUIRED",
       });
     }
 

@@ -254,6 +254,7 @@ test('getDepositSettings returns defaults for an empty config', async () => {
     depositEnabled: false,
     depositAmount: 0,
     holdMinutes: 15,
+    depositExemptPhones: [],
   });
 });
 
@@ -267,6 +268,7 @@ test('getDepositSettings echoes stored values', async () => {
     depositEnabled: true,
     depositAmount: 8000,
     holdMinutes: 30,
+    depositExemptPhones: [],
   });
 });
 
@@ -285,6 +287,12 @@ test('AppConfig exposes the deposit fields with safe defaults', () => {
   assert.equal(AppConfig.schema.path('depositEnabled').defaultValue, false);
   assert.equal(AppConfig.schema.path('depositAmount').defaultValue, 0);
   assert.equal(AppConfig.schema.path('holdMinutes').defaultValue, 15);
+});
+
+test('AppConfig exposes depositExemptPhones defaulting to an empty list', () => {
+  const path = AppConfig.schema.path('depositExemptPhones');
+  assert.deepEqual(path.options.default, []);
+  assert.equal(path.instance, 'Array');
 });
 
 test('AppConfig enforces the deposit upper bounds in the schema', () => {

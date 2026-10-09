@@ -1,4 +1,5 @@
 const AppConfig = require("../models/appConfig.model");
+const { canonicalPhoneKey } = require("./clientVerification.service");
 
 const MAX_DEPOSIT_AMOUNT = AppConfig.MAX_DEPOSIT_AMOUNT;
 const MAX_HOLD_MINUTES = AppConfig.MAX_HOLD_MINUTES;
@@ -174,6 +175,81 @@ const validateDepositSettings = (input = {}) => resolveDepositUpdate(input, {});
 const resolveConfigModel = (options) =>
   (options && options.model) || AppConfig;
 
+// Canonicalizes a stored exempt-phone list: every entry runs through
+// `canonicalPhoneKey` (funnel rule) and duplicates collapse. Missing/unknown
+// values degrade to an empty list so reads never crash on legacy docs.
+const canonicalizeExemptPhones = (value) => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  for (const phone of value) {
+    const key = canonicalPhoneKey(phone);
+    if (key) seen.add(key);
+  }
+  return [...seen];
+};
+
+// PURE: a phone is exempt only when `normalizedPhones` is an array containing
+// its canonical key. Both the list entries and the lookup phone run through
+// `canonicalPhoneKey`, so the 54/549 variants match at every layer (including
+// callers that hand in a not-yet-canonicalized list). A missing/non-array list
+// is never exempt (safe default).
+const isPhoneExempt = (normalizedPhones, phone) => {
+  if (!Array.isArray(normalizedPhones)) return false;
+  const key = canonicalPhoneKey(phone);
+  if (!key) return false;
+  return normalizedPhones.some((entry) => canonicalPhoneKey(entry) === key);
+};
+
+const assertExemptPhone = (phone) => {
+  const canonical = canonicalPhoneKey(phone);
+  // Same floor as the phone-edit guard: keys shorter than 7 digits cannot be a
+  // real number and must never become an exemption.
+  if (!canonical || canonical.length < 7) {
+    const validationError = new Error(
+      "A valid phone number is required for the exemption.",
+    );
+    validationError.statusCode = 400;
+    throw validationError;
+  }
+  return canonical;
+};
+
+const getDepositExemptPhones = async (companyId = null, options = {}) => {
+  const config = await resolveConfigModel(options).findOne(
+    buildConfigFilter(companyId),
+  );
+  return canonicalizeExemptPhones(config?.depositExemptPhones);
+};
+
+// Atomic add ($addToSet): the phone is canonicalized before persisting so a
+// later read always sees the same key regardless of the 54/549 variant used.
+const addDepositExemptPhone = async (companyId = null, phone, options = {}) => {
+  const canonical = assertExemptPhone(phone);
+  const config = await resolveConfigModel(options).findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $addToSet: { depositExemptPhones: canonical } },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+  );
+  return canonicalizeExemptPhones(config?.depositExemptPhones);
+};
+
+// Atomic remove ($pull). No upsert: removing from a missing config is a no-op.
+const removeDepositExemptPhone = async (companyId = null, phone, options = {}) => {
+  const canonical = assertExemptPhone(phone);
+  const config = await resolveConfigModel(options).findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $pull: { depositExemptPhones: canonical } },
+    { returnDocument: "after" },
+  );
+  return canonicalizeExemptPhones(config?.depositExemptPhones);
+};
+
+// Loads the company exempt list and delegates to the pure `isPhoneExempt`.
+const isDepositExempt = async (companyId = null, phone, options = {}) => {
+  const phones = await getDepositExemptPhones(companyId, options);
+  return isPhoneExempt(phones, phone);
+};
+
 const getDepositSettings = async (companyId = null, options = {}) => {
   const config = await resolveConfigModel(options).findOne(
     buildConfigFilter(companyId),
@@ -182,6 +258,9 @@ const getDepositSettings = async (companyId = null, options = {}) => {
     depositEnabled: Boolean(config?.depositEnabled),
     depositAmount: normalizeDepositAmount(config?.depositAmount),
     holdMinutes: normalizeHoldMinutes(config?.holdMinutes),
+    depositExemptPhones: canonicalizeExemptPhones(
+      config?.depositExemptPhones,
+    ),
   };
 };
 
@@ -576,4 +655,9 @@ module.exports = {
   resolveDepositUpdate,
   getDepositSettings,
   setDepositSettings,
+  getDepositExemptPhones,
+  addDepositExemptPhone,
+  removeDepositExemptPhone,
+  isDepositExempt,
+  isPhoneExempt,
 };

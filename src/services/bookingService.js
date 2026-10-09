@@ -11,6 +11,7 @@ const {
   getDepositSettings,
   getPenaltyLimit,
   getPenaltySystemEnabled,
+  isPhoneExempt,
 } = require("./appConfig.service");
 const {
   buildDepositFields,
@@ -321,9 +322,13 @@ const createNewBooking = async ({
     // CREACIÓN DE LA RESERVA
     // =================================================================
     const depositSettings = await getDepositSettings(companyId);
+    // Exempt phones skip the deposit hold entirely: no `pendiente_seña`, no
+    // Checkout Pro link and no pending notification. The exemption rides the
+    // settings doc already loaded above, so the hot path adds no query.
     const depositEnabled =
       Boolean(depositSettings?.depositEnabled) &&
-      Number(depositSettings?.depositAmount) > 0;
+      Number(depositSettings?.depositAmount) > 0 &&
+      !isPhoneExempt(depositSettings?.depositExemptPhones, normalizedClientPhone);
 
     const bookingFields = {
       ...scope,
