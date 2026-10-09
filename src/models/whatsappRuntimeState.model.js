@@ -7,6 +7,14 @@ const whatsappRuntimeStateSchema = new mongoose.Schema(
       ref: "Company",
       default: null,
     },
+    // Per-company bot phone number (digits only), written by the WhatsApp
+    // worker. Exposed to the portal as the club contact for admin-only
+    // cancellations of paid-deposit bookings.
+    phone: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     enabled: {
       type: Boolean,
       default: false,

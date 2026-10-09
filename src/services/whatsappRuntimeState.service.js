@@ -3,6 +3,7 @@ const WhatsappRuntimeState = require("../models/whatsappRuntimeState.model");
 const createBaseState = () => ({
   enabled: false,
   status: "disabled",
+  phone: "",
   qr: null,
   hasQr: false,
   loadingPercent: null,
@@ -32,6 +33,7 @@ const normalizeStateDoc = (doc = null) => {
   const normalized = {
     enabled: Boolean(doc.enabled),
     status: String(doc.status || "disabled"),
+    phone: typeof doc.phone === "string" ? doc.phone : "",
     qr: typeof doc.qr === "string" ? doc.qr : null,
     hasQr: Boolean(doc.hasQr),
     loadingPercent:
@@ -79,6 +81,7 @@ const saveWhatsappRuntimeState = async (companyId = null, state = {}) => {
   const normalizedState = {
     enabled: Boolean(state.enabled),
     status: String(state.status || "disabled"),
+    phone: typeof state.phone === "string" ? state.phone.trim() : "",
     qr: typeof state.qr === "string" ? state.qr : null,
     hasQr: Boolean(state.hasQr),
     loadingPercent:

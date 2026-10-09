@@ -3,7 +3,8 @@
 // Portal booking creation + cancellation deposit tests:
 // - create with deposits enabled -> `pendiente_seña` + deposit subdoc
 // - create with deposits disabled -> unchanged `reservado`
-// - cancel within policy -> a paid deposit is marked refundable (reembolsado)
+// - cancel a PAID deposit -> blocked (409 CANCEL_REQUIRES_ADMIN + club contact)
+// - cancel any other deposit state -> unchanged self-cancel behaviour
 // Persistence, slot locks, MP and notifications are replaced with fakes.
 
 const { test } = require('node:test');
@@ -41,6 +42,7 @@ const fixedBookingService = require('../services/fixedBooking.service');
 const whatsappQueue = require('../services/whatsappCommandQueue.service');
 const depositService = require('../services/deposit.service');
 const depositNotificationService = require('../services/depositNotification.service');
+const whatsappRuntimeStateService = require('../services/whatsappRuntimeState.service');
 
 appConfigService.getDepositSettings = async () => ({ ...state.settings });
 appConfigService.getCancellationLockHours = async () => 2;
@@ -53,6 +55,7 @@ bookingWhatsapp.sendBookingWhatsappConfirmation = async () => {
   return { ok: true };
 };
 bookingService.getCancellationContactPhone = async () => '';
+whatsappRuntimeStateService.getWhatsappRuntimeState = async () => ({ phone: '5492622345473' });
 fixedBookingService.findConflictingFixedForBooking = async () => null;
 whatsappQueue.enqueueWhatsappCommand = async () => ({ command: { _id: 'cmd-x' } });
 depositService.buildDepositPaymentLink = async () => ({
@@ -233,7 +236,7 @@ test('a non-exempt phone still gets the deposit hold', async () => {
 
 // ── cancel ───────────────────────────────────────────────────────────────────
 
-test('cancelling a booking with a paid deposit marks it refundable', async () => {
+test('cancelling a booking with a paid deposit is blocked with the club contact', async () => {
   resetState();
   const booking = {
     _id: BOOKING_ID,
@@ -254,9 +257,36 @@ test('cancelling a booking with a paid deposit marks it refundable', async () =>
   const res = createResponse();
   await cancelMyBooking({ params: { slug: 'club', id: BOOKING_ID }, clientUser: { id: 'client-1' } }, res);
 
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.payload.success, false);
+  assert.equal(res.payload.error, 'CANCEL_REQUIRES_ADMIN');
+  assert.equal(res.payload.contactPhone, '5492622345473');
+  assert.equal(booking.status, 'reservado', 'the booking must not be cancelled');
+  assert.equal(booking.saved, undefined, 'the booking must not be persisted');
+});
+
+test('a booking without a paid deposit still self-cancels from the portal', async () => {
+  resetState();
+  const booking = {
+    _id: BOOKING_ID,
+    companyId: COMPANY,
+    status: 'reservado',
+    date: futureDate,
+    timeSlot: SLOT_ID,
+    court: COURT_ID,
+    clientName: 'Ana',
+    deposit: { status: 'refund_pending', amount: 5000, refundable: true },
+    async save() {
+      this.saved = true;
+      return this;
+    },
+  };
+  Booking.findOne = async () => booking;
+
+  const res = createResponse();
+  await cancelMyBooking({ params: { slug: 'club', id: BOOKING_ID }, clientUser: { id: 'client-1' } }, res);
+
   assert.equal(res.payload.success, true);
   assert.equal(booking.status, 'cancelado');
-  assert.equal(booking.deposit.status, 'refund_pending');
-  assert.equal(booking.deposit.refundable, true);
   assert.equal(booking.saved, true);
 });

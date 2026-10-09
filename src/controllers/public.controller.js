@@ -61,6 +61,9 @@ const {
 const {
   notifyDepositPending,
 } = require("../services/depositNotification.service");
+const {
+  getWhatsappRuntimeState,
+} = require("../services/whatsappRuntimeState.service");
 const { CryptoConfigError } = require("../lib/crypto");
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -125,6 +128,18 @@ const resolveCompany = async (slug) => {
   return Company.findOne({ slug: slug.toLowerCase(), isActive: true });
 };
 
+// Best-effort read of the club's WhatsApp bot phone from its runtime state.
+// This is the club admin contact used when a client cannot self-cancel. A read
+// failure must never break the endpoint: fall back to an empty contact.
+const resolveClubContactPhone = async (companyId) => {
+  try {
+    const state = await getWhatsappRuntimeState(companyId);
+    return state?.phone || "";
+  } catch {
+    return "";
+  }
+};
+
 const signClientToken = (client, companyId) =>
   jwt.sign(
     { id: client._id, email: client.email, companyId, type: "client" },
@@ -169,16 +184,17 @@ const getClubInfo = async (req, res) => {
       return res.status(404).json({ success: false, error: "Club no encontrado" });
     }
 
-    const [courts, slots, cancellationLockHours] = await Promise.all([
+    const [courts, slots, cancellationLockHours, contactPhone] = await Promise.all([
       Court.find({ companyId: company._id, isActive: true }).sort({ name: 1 }),
       TimeSlot.find({ companyId: company._id, isActive: true }).sort({ order: 1, startTime: 1 }),
       getCancellationLockHours(company._id),
+      resolveClubContactPhone(company._id),
     ]);
 
     return res.json({
       success: true,
       data: {
-        club: { name: company.name, address: company.address, coverImage: company.coverImage || "", companyId: company._id.toString() },
+        club: { name: company.name, address: company.address, coverImage: company.coverImage || "", companyId: company._id.toString(), contactPhone },
         courts,
         slots,
         cancellationLockHours,
@@ -1126,6 +1142,20 @@ const cancelMyBooking = async (req, res) => {
     }
     if (booking.status === "cancelado") {
       return res.status(409).json({ success: false, error: "La reserva ya está cancelada" });
+    }
+
+    // A paid seña cannot be self-cancelled from the portal: the club must
+    // handle it (refund/penalty). Return 409 with the club's bot contact so the
+    // UI can route the client to WhatsApp or a phone call. This gate sits
+    // before any cancellation side effect, so a blocked attempt never mutates
+    // the booking nor notifies the admin.
+    if (booking.deposit?.status === "pagado") {
+      const contactPhone = await resolveClubContactPhone(company._id);
+      return res.status(409).json({
+        success: false,
+        error: "CANCEL_REQUIRES_ADMIN",
+        contactPhone,
+      });
     }
 
     const slot = await TimeSlot.findById(booking.timeSlot).lean();
