@@ -29,7 +29,9 @@ const fixedBookingSchema = new mongoose.Schema(
       required: true,
       enum: [0, 1, 2, 3, 4, 5, 6],
     },
-    clientName: { type: String, default: "" },
+    // Every fixed turn is owned by a client: the name is required end-to-end
+    // (model, controller, UI) so the card never shows an anonymous block.
+    clientName: { type: String, required: true, trim: true },
     notes: { type: String, default: "" },
     status: {
       type: String,

@@ -6,6 +6,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const mongoose = require('mongoose');
 
 const FixedBooking = require('../models/fixedBooking.model');
 const {
@@ -13,6 +14,7 @@ const {
   getConflicts,
   getWeekdayFromDate,
 } = require('../services/fixedBooking.service');
+const fixedBookingController = require('../controllers/fixedBooking.controller');
 
 // UTC dates: 2026-10-04 domingo, 2026-10-06 martes, 2026-10-10 sábado.
 test('getWeekdayFromDate (model) maps a UTC date to the JS weekday (0=DOM .. 6=SÁB)', () => {
@@ -130,4 +132,103 @@ test('getConflicts scopes by company+weekday+court+slot, only active, and exclud
   } finally {
     FixedBooking.find = originalFind;
   }
+});
+
+// ---------------------------------------------------------------------------
+// clientName is REQUIRED end-to-end: the controller must reject empty names
+// with a 400 BEFORE any DB write, and the model must validate it too.
+// ---------------------------------------------------------------------------
+
+const buildReq = (overrides = {}) => ({
+  user: { companyId: 'company-1' },
+  body: {},
+  params: {},
+  query: {},
+  ...overrides,
+});
+
+const buildRes = () => {
+  const res = {};
+  res.status = (code) => {
+    res.statusCode = code;
+    return res;
+  };
+  res.json = (payload) => {
+    res.payload = payload;
+    return res;
+  };
+  res.send = () => res;
+  return res;
+};
+
+const CLIENT_REQUIRED = {
+  success: false,
+  error: 'El turno fijo debe tener un cliente',
+};
+
+test('createFixedBooking rejects a missing, empty or whitespace-only clientName with 400', async () => {
+  const id = new mongoose.Types.ObjectId().toString();
+  for (const clientName of [undefined, '', '   ']) {
+    const res = buildRes();
+    await fixedBookingController.createFixedBooking(
+      buildReq({
+        body: { court: id, timeSlot: id, weekday: 2, clientName },
+      }),
+      res,
+    );
+    assert.equal(res.statusCode, 400);
+    assert.deepEqual(res.payload, CLIENT_REQUIRED);
+  }
+});
+
+test('updateFixedBooking rejects clearing clientName to empty with 400', async () => {
+  const originalFindOne = FixedBooking.findOne;
+  FixedBooking.findOne = async () => ({
+    _id: 'fixed-1',
+    companyId: 'company-1',
+    clientName: 'Juan',
+  });
+
+  try {
+    const id = new mongoose.Types.ObjectId().toString();
+    for (const clientName of ['', '   ']) {
+      const res = buildRes();
+      await fixedBookingController.updateFixedBooking(
+        buildReq({ params: { id }, body: { clientName } }),
+        res,
+      );
+      assert.equal(res.statusCode, 400);
+      assert.deepEqual(res.payload, CLIENT_REQUIRED);
+    }
+  } finally {
+    FixedBooking.findOne = originalFindOne;
+  }
+});
+
+test('FixedBooking model validation rejects a turn without clientName', async () => {
+  const id = new mongoose.Types.ObjectId();
+  const doc = new FixedBooking({
+    companyId: id,
+    court: id,
+    timeSlot: id,
+    weekday: 2,
+  });
+  await assert.rejects(doc.validate(), (error) => {
+    assert.equal(error.name, 'ValidationError');
+    assert.ok(error.errors?.clientName, 'expected a clientName validation error');
+    return true;
+  });
+});
+
+test('FixedBooking model trims clientName on assignment', async () => {
+  const id = new mongoose.Types.ObjectId();
+  const doc = new FixedBooking({
+    companyId: id,
+    court: id,
+    timeSlot: id,
+    weekday: 2,
+    clientName: '  Juan Pérez  ',
+  });
+  await doc.validate();
+  assert.equal(doc.clientName, 'Juan Pérez');
 });
