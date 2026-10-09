@@ -189,12 +189,15 @@ const canonicalizeExemptPhones = (value) => {
 };
 
 // PURE: a phone is exempt only when `normalizedPhones` is an array containing
-// its canonical key. A missing/non-array list is never exempt (safe default).
+// its canonical key. Both the list entries and the lookup phone run through
+// `canonicalPhoneKey`, so the 54/549 variants match at every layer (including
+// callers that hand in a not-yet-canonicalized list). A missing/non-array list
+// is never exempt (safe default).
 const isPhoneExempt = (normalizedPhones, phone) => {
   if (!Array.isArray(normalizedPhones)) return false;
   const key = canonicalPhoneKey(phone);
   if (!key) return false;
-  return normalizedPhones.includes(key);
+  return normalizedPhones.some((entry) => canonicalPhoneKey(entry) === key);
 };
 
 const assertExemptPhone = (phone) => {

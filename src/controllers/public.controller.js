@@ -30,7 +30,7 @@ const {
   sendBookingWhatsappConfirmation,
 } = require("../services/bookingWhatsappConfirmation.service");
 const { getWhatsappIdByPhone } = require("../utils/getWhatsappIdByPhone");
-const { getCancellationLockHours, getDepositSettings } = require("../services/appConfig.service");
+const { getCancellationLockHours, getDepositSettings, isPhoneExempt } = require("../services/appConfig.service");
 const {
   buildActiveAnnouncementsQuery,
 } = require("../services/announcement.service");
@@ -887,9 +887,12 @@ const createClientBooking = async (req, res) => {
     }
 
     const depositSettings = await getDepositSettings(company._id);
+    // The exemption rides the already-loaded settings doc: no extra query.
+    // A phone in the exempt list falls back to the direct `reservado` flow.
     const depositEnabled =
       Boolean(depositSettings?.depositEnabled) &&
-      Number(depositSettings?.depositAmount) > 0;
+      Number(depositSettings?.depositAmount) > 0 &&
+      !isPhoneExempt(depositSettings?.depositExemptPhones, clientPhone);
 
     const bookingFields = {
       clientName: client.name,

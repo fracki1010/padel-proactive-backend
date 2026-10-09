@@ -16,6 +16,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
+// Capture the REAL pure helper before the appConfig.service module is stubbed.
+const { isPhoneExempt } = require('../services/appConfig.service');
+
 const COMPANY = '64b0000000000000000000a1';
 const COURT_ID = '64b0000000000000000000c1';
 const SLOT_ID = '64b0000000000000000000s1';
@@ -23,7 +26,7 @@ const BOOKING_ID = '64b0000000000000000000c3';
 const FUTURE_DATE = '2099-01-01';
 
 const state = {
-  settings: { depositEnabled: true, depositAmount: 5000, holdMinutes: 15 },
+  settings: { depositEnabled: true, depositAmount: 5000, holdMinutes: 15, depositExemptPhones: [] },
   createdBooking: null,
   preferenceCalls: [],
   linkShouldThrow: false,
@@ -32,7 +35,7 @@ const state = {
 };
 
 const resetState = () => {
-  state.settings = { depositEnabled: true, depositAmount: 5000, holdMinutes: 15 };
+  state.settings = { depositEnabled: true, depositAmount: 5000, holdMinutes: 15, depositExemptPhones: [] };
   state.createdBooking = null;
   state.preferenceCalls = [];
   state.linkShouldThrow = false;
@@ -109,6 +112,7 @@ stubModule('../services/appConfig.service', {
   getCancellationLockHours: async () => 0,
   getPenaltyLimit: async () => 2,
   getPenaltySystemEnabled: async () => false,
+  isPhoneExempt,
 });
 stubModule('../services/fixedTurnsMaterialization.service', {
   materializeFixedBookingsForDate: async () => {},
@@ -142,7 +146,7 @@ stubModule('../services/deposit.service', {
 
 const { createNewBooking } = require('../services/bookingService');
 
-const createBotBooking = () =>
+const createBotBooking = (overrides = {}) =>
   createNewBooking({
     companyId: COMPANY,
     courtName: 'Cancha 1',
@@ -151,6 +155,7 @@ const createBotBooking = () =>
     clientName: 'Ana',
     clientPhone: '5491100000000',
     clientWhatsappId: '5491100000000@c.us',
+    ...overrides,
   });
 
 test('bot booking with deposits enabled is pendiente_seña with a payment link', async () => {
@@ -213,6 +218,68 @@ test('bot booking with deposits disabled keeps the confirmado flow', async () =>
   assert.equal(state.preferenceCalls.length, 0);
   assert.equal(state.pendingNotifications.length, 0);
   assert.equal(state.adminNotifications.length, 1, 'the new booking is still announced to admins');
+});
+
+// ── exemption gate ───────────────────────────────────────────────────────────
+
+test('bot booking for an exempt phone skips the deposit hold and payment link', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: ['5491100000000'],
+  };
+
+  const result = await createBotBooking();
+
+  assert.equal(result.success, true);
+  assert.equal(state.createdBooking.status, 'confirmado');
+  assert.equal(state.createdBooking.paymentStatus, undefined);
+  assert.equal(state.createdBooking.deposit, undefined);
+  assert.equal(result.data.deposit, undefined);
+  assert.equal(state.preferenceCalls.length, 0, 'no Checkout Pro preference is built');
+  assert.equal(state.pendingNotifications.length, 0, 'no pending-deposit notification');
+  assert.equal(state.adminNotifications.length, 1, 'the new booking is still announced to admins');
+});
+
+test('a 54-variant exemption matches the 549 bot phone at the gate', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: ['541100000000'],
+  };
+
+  const result = await createBotBooking();
+
+  assert.equal(result.success, true);
+  assert.equal(state.createdBooking.status, 'confirmado');
+  assert.equal(state.createdBooking.deposit, undefined);
+  assert.equal(state.preferenceCalls.length, 0);
+  assert.equal(state.pendingNotifications.length, 0);
+});
+
+test('an unknown bot phone keeps the normal deposit flow', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: ['5491100000000'],
+  };
+
+  const result = await createBotBooking({
+    clientPhone: '5491188888888',
+    clientWhatsappId: '5491188888888@c.us',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(state.createdBooking.status, 'pendiente_seña');
+  assert.equal(state.createdBooking.deposit.amount, 5000);
+  assert.equal(state.preferenceCalls.length, 1);
+  assert.equal(state.pendingNotifications.length, 1);
 });
 
 test('MercadoPago failure still creates the pending booking (best-effort link)', async () => {

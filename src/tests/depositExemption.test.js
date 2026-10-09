@@ -118,8 +118,9 @@ test('a 549 booking matches an exemption stored from the 54 variant', async () =
   await addDepositExemptPhone(COMPANY_A, PHONE_54, { model });
 
   // Read funnel: the stored 54 variant is canonicalized on read, so a 549
-  // booking is exempt. The pure helper canonicalizes the phone argument.
+  // booking is exempt. The pure helper canonicalizes both sides of the match.
   assert.equal(await isDepositExempt(COMPANY_A, PHONE_549, { model }), true);
+  assert.equal(isPhoneExempt([PHONE_54], PHONE_549), true);
   assert.equal(isPhoneExempt([PHONE_549], PHONE_54), true);
   assert.equal(isPhoneExempt([PHONE_549], PHONE_549), true);
 });
