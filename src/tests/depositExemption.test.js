@@ -32,6 +32,9 @@ const COMPANY_B = '64b0000000000000000000b2';
 const PHONE_549 = '5491100000000';
 const PHONE_54 = '541100000000';
 const PHONE_B = '5492200000000';
+const USER_A_ID = '64b0000000000000000000f1';
+const USER_B_ID = '64b0000000000000000000f2';
+const MISSING_USER_ID = '64b0000000000000000000ff';
 
 // In-memory AppConfig fake honouring the $addToSet/$pull semantics the service
 // depends on (plus upsert for adds). Docs are keyed by companyId.
@@ -176,6 +179,19 @@ test('an empty phone is rejected on add and the list is unchanged', async () => 
   assert.deepEqual(model.getDoc(COMPANY_A).depositExemptPhones, [PHONE_549]);
 });
 
+test('a canonical key shorter than 7 digits is rejected on add', async () => {
+  const model = makeFakeConfigModel();
+  model.setDoc(COMPANY_A, { depositExemptPhones: [PHONE_549] });
+
+  await assert.rejects(
+    addDepositExemptPhone(COMPANY_A, '123456', { model }),
+    (error) => error.statusCode === 400,
+  );
+
+  assert.deepEqual(model.getDoc(COMPANY_A).depositExemptPhones, [PHONE_549]);
+  assert.equal(model.calls.findOneAndUpdate.length, 0);
+});
+
 // ── Missing-array tolerance (spec: read-set tolerance) ───────────────────────
 
 test('isPhoneExempt returns false for a missing or non-array phone list', () => {
@@ -265,7 +281,7 @@ const createResponse = () => {
 };
 
 const makeUser = (overrides = {}) => ({
-  _id: 'u1',
+  _id: USER_A_ID,
   companyId: COMPANY_A,
   phoneNumber: PHONE_549,
   name: 'Ana',
@@ -282,6 +298,7 @@ const makeUserModel = (users) => {
   };
   return {
     findOne(filter) {
+      writeState.userFindCalls.push(filter);
       const user = store.get(String(filter._id)) || null;
       const outOfCompany =
         user &&
@@ -302,10 +319,11 @@ const fakeClientAccountModel = {
   findOne: () => ({ select: async () => null }),
 };
 
-const writeState = { addCalls: [], removeCalls: [] };
+const writeState = { addCalls: [], removeCalls: [], userFindCalls: [] };
 const resetWrites = () => {
   writeState.addCalls = [];
   writeState.removeCalls = [];
+  writeState.userFindCalls = [];
 };
 const makeDeps = (users) => ({
   UserModel: makeUserModel(users),
@@ -363,7 +381,7 @@ test('an admin can enable the exemption for a user in their company', async () =
 
   await setDepositExemption(
     {
-      params: { id: 'u1' },
+      params: { id: USER_A_ID },
       body: { enabled: true },
       user: { role: 'admin', companyId: COMPANY_A },
     },
@@ -388,7 +406,7 @@ test('an admin can disable the exemption (idempotent toggle)', async () => {
 
   await setDepositExemption(
     {
-      params: { id: 'u1' },
+      params: { id: USER_A_ID },
       body: { enabled: false },
       user: { role: 'admin', companyId: COMPANY_A },
     },
@@ -408,7 +426,7 @@ test('enabling twice returns 200 both times without diverging', async () => {
   resetWrites();
   const deps = makeDeps([makeUser()]);
   const req = {
-    params: { id: 'u1' },
+    params: { id: USER_A_ID },
     body: { enabled: true },
     user: { role: 'admin', companyId: COMPANY_A },
   };
@@ -430,7 +448,7 @@ test('a missing or non-boolean enabled is rejected with 400 and no write', async
 
     await setDepositExemption(
       {
-        params: { id: 'u1' },
+        params: { id: USER_A_ID },
         body,
         user: { role: 'admin', companyId: COMPANY_A },
       },
@@ -450,7 +468,7 @@ test('a user without a canonical phone cannot be exempted (400)', async () => {
 
   await setDepositExemption(
     {
-      params: { id: 'u1' },
+      params: { id: USER_A_ID },
       body: { enabled: true },
       user: { role: 'admin', companyId: COMPANY_A },
     },
@@ -468,12 +486,12 @@ test('an admin cannot exempt a user from another company (404)', async () => {
 
   await setDepositExemption(
     {
-      params: { id: 'u2' },
+      params: { id: USER_B_ID },
       body: { enabled: true },
       user: { role: 'admin', companyId: COMPANY_A },
     },
     res,
-    makeDeps([makeUser({ _id: 'u2', companyId: COMPANY_B })]),
+    makeDeps([makeUser({ _id: USER_B_ID, companyId: COMPANY_B })]),
   );
 
   assert.equal(res.captured.statusCode, 404);
@@ -486,7 +504,7 @@ test('an unknown user returns 404 without writing', async () => {
 
   await setDepositExemption(
     {
-      params: { id: 'missing' },
+      params: { id: MISSING_USER_ID },
       body: { enabled: true },
       user: { role: 'admin', companyId: COMPANY_A },
     },
@@ -498,19 +516,63 @@ test('an unknown user returns 404 without writing', async () => {
   assert.equal(writeState.addCalls.length, 0);
 });
 
+test('a malformed user id is rejected with 400 before any query', async () => {
+  resetWrites();
+  const res = createResponse();
+
+  await setDepositExemption(
+    {
+      params: { id: 'not-an-id' },
+      body: { enabled: true },
+      user: { role: 'admin', companyId: COMPANY_A },
+    },
+    res,
+    makeDeps([makeUser()]),
+  );
+
+  assert.equal(res.captured.statusCode, 400);
+  assert.equal(writeState.userFindCalls.length, 0, 'must not query with an invalid id');
+  assert.equal(writeState.addCalls.length, 0);
+});
+
+test('a too-short phone is rejected with 400 and nothing is persisted', async () => {
+  resetWrites();
+  const model = makeFakeConfigModel();
+  const res = createResponse();
+
+  await setDepositExemption(
+    {
+      params: { id: USER_A_ID },
+      body: { enabled: true },
+      user: { role: 'admin', companyId: COMPANY_A },
+    },
+    res,
+    {
+      UserModel: makeUserModel([makeUser({ phoneNumber: '123456' })]),
+      addExemptPhone: (companyId, phone) =>
+        addDepositExemptPhone(companyId, phone, { model }),
+      removeExemptPhone: (companyId, phone) =>
+        removeDepositExemptPhone(companyId, phone, { model }),
+    },
+  );
+
+  assert.equal(res.captured.statusCode, 400);
+  assert.equal(model.getDoc(COMPANY_A), null, 'no AppConfig may be created');
+});
+
 test('a super_admin writes the exemption to the target user company', async () => {
   resetWrites();
   const res = createResponse();
 
   await setDepositExemption(
     {
-      params: { id: 'u2' },
+      params: { id: USER_B_ID },
       body: { enabled: true },
       query: {},
       user: { role: 'super_admin' },
     },
     res,
-    makeDeps([makeUser({ _id: 'u2', companyId: COMPANY_B })]),
+    makeDeps([makeUser({ _id: USER_B_ID, companyId: COMPANY_B })]),
   );
 
   assert.equal(res.captured.statusCode, 200);
@@ -525,7 +587,7 @@ test('GET /api/users/:id exposes depositExempt from the AppConfig', async () => 
   const res = createResponse();
 
   await getUserById(
-    { params: { id: 'u1' }, user: { role: 'admin', companyId: COMPANY_A } },
+    { params: { id: USER_A_ID }, user: { role: 'admin', companyId: COMPANY_A } },
     res,
     {
       UserModel: makeUserModel([makeUser()]),
@@ -544,7 +606,7 @@ test('GET /api/users/:id reports depositExempt false for a non-exempt phone', as
   const res = createResponse();
 
   await getUserById(
-    { params: { id: 'u1' }, user: { role: 'admin', companyId: COMPANY_A } },
+    { params: { id: USER_A_ID }, user: { role: 'admin', companyId: COMPANY_A } },
     res,
     {
       UserModel: makeUserModel([makeUser()]),

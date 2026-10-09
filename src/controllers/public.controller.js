@@ -1246,6 +1246,16 @@ const createPaymentLink = async (req, res) => {
         code: "DEPOSIT_NOT_CONFIGURED",
       });
     }
+    // An exempt client never owes a seña: refuse to mint a link even if the
+    // booking slipped into a payable state. Guards against charging an exempt
+    // booking.
+    if (isPhoneExempt(settings.depositExemptPhones, clientPhone)) {
+      return res.status(409).json({
+        success: false,
+        error: "Esta reserva no requiere seña",
+        code: "DEPOSIT_NOT_REQUIRED",
+      });
+    }
 
     // Optional club/portal return URL. Without it MercadoPago uses the
     // dashboard-configured back URLs; notification_url is what delivers the

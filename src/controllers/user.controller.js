@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const User = require("../models/user.model");
 const ClientAccount = require("../models/clientAccount.model");
 const Booking = require("../models/booking.model");
@@ -444,6 +445,12 @@ const setDepositExemption = async (req, res, deps = {}) => {
       return res
         .status(400)
         .json({ success: false, error: "enabled must be a boolean." });
+    }
+
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Usuario inválido" });
     }
 
     const user = await UserModel.findOne({

@@ -202,7 +202,9 @@ const isPhoneExempt = (normalizedPhones, phone) => {
 
 const assertExemptPhone = (phone) => {
   const canonical = canonicalPhoneKey(phone);
-  if (!canonical) {
+  // Same floor as the phone-edit guard: keys shorter than 7 digits cannot be a
+  // real number and must never become an exemption.
+  if (!canonical || canonical.length < 7) {
     const validationError = new Error(
       "A valid phone number is required for the exemption.",
     );
