@@ -4,6 +4,7 @@ const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
 const User = require("../models/user.model");
 const Admin = require("../models/admin.model");
+const FixedBooking = require("../models/fixedBooking.model");
 const { sendAdminNotification } = require("./notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const {
@@ -26,6 +27,10 @@ const {
 const {
   materializeFixedBookingsForDate,
 } = require("./fixedTurnsMaterialization.service");
+const {
+  findConflictingFixedForBooking,
+  getWeekdayFromDate,
+} = require("./fixedBooking.service");
 const {
   normalizeCanonicalClientPhone,
   toE164,
@@ -272,7 +277,19 @@ const createNewBooking = async ({
       timeSlot: slot._id,
       status: { $ne: "cancelado" },
     });
-    const busyCourtIds = busyBookings.map((b) => b.court.toString());
+    // Active fixed weekly turns own the court for this slot that weekday: they
+    // MUST join the busy pool so neither INDIFERENTE nor a type filter can pick
+    // a court that is blocked by a turno fijo.
+    const fixedCourtsForSlot = await FixedBooking.find({
+      ...scope,
+      weekday: getWeekdayFromDate(bookingDate),
+      timeSlot: slot._id,
+      status: "active",
+    }).select("court");
+    const busyCourtIds = [
+      ...busyBookings.map((b) => b.court.toString()),
+      ...fixedCourtsForSlot.map((f) => f.court.toString()),
+    ];
 
     // CASO A: AL USUARIO LE DA IGUAL ("INDIFERENTE")
     if (courtName === "INDIFERENTE") {
@@ -315,7 +332,12 @@ const createNewBooking = async ({
         status: { $ne: "cancelado" },
       });
 
-      if (existingBooking) return { success: false, error: "BUSY" };
+      if (
+        existingBooking ||
+        busyCourtIds.includes(selectedCourt._id.toString())
+      ) {
+        return { success: false, error: "BUSY" };
+      }
     }
 
     // =================================================================
@@ -349,6 +371,17 @@ const createNewBooking = async ({
     if (depositEnabled) {
       Object.assign(bookingFields, buildDepositFields({ settings: depositSettings }));
       bookingFields.paymentStatus = "pendiente";
+    }
+
+    // A fixed weekly turn owns this court+slot on the booking date: refuse.
+    const conflictingFixed = await findConflictingFixedForBooking({
+      companyId,
+      date: bookingDate,
+      courtId: selectedCourt._id,
+      timeSlotId: slot._id,
+    });
+    if (conflictingFixed) {
+      return { success: false, error: "FIXED_TURN" };
     }
 
     const newBooking = await Booking.create(bookingFields);
@@ -600,13 +633,33 @@ const getAvailableSlots = async (dateStr, options = {}) => {
       status: { $ne: "cancelado" },
     });
 
+    // Active fixed weekly turns block their court + timeSlot for this weekday.
+    // Dates are UTC midnight, so the weekday is derived in UTC.
+    const fixedBookings = await FixedBooking.find({
+      ...scope,
+      weekday: getWeekdayFromDate(queryDate),
+      status: "active",
+    }).select("court timeSlot");
+
+    const fixedSet = new Set(
+      fixedBookings.map((f) => `${String(f.court)}_${String(f.timeSlot)}`),
+    );
+
     // 5. Filtrar
     const availableSlots = allSlots.filter((slot) => {
-      // A. Filtro de Capacidad Total
+      // A. Filtro de Capacidad Total (reservas + turnos fijos)
       const bookingsForThisSlot = bookings.filter(
         (b) => b.timeSlot.toString() === slot._id.toString(),
       );
-      if (bookingsForThisSlot.length >= totalCourtsCount) return false;
+      const occupiedCourtsForThisSlot = new Set(
+        bookingsForThisSlot.map((b) => b.court?.toString()).filter(Boolean),
+      );
+      for (const court of allCourts) {
+        if (fixedSet.has(`${String(court._id)}_${String(slot._id)}`)) {
+          occupiedCourtsForThisSlot.add(court._id.toString());
+        }
+      }
+      if (occupiedCourtsForThisSlot.size >= totalCourtsCount) return false;
 
       // B. Filtro de Tiempo Pasado (Solo si es hoy)
       if (isToday) {
@@ -641,6 +694,11 @@ const getAvailableSlots = async (dateStr, options = {}) => {
         const bookedCourtIds = new Set(
           bookingsForThisSlot.map((b) => b.court?.toString()).filter(Boolean),
         );
+        for (const court of allCourts) {
+          if (fixedSet.has(`${String(court._id)}_${String(s._id)}`)) {
+            bookedCourtIds.add(court._id.toString());
+          }
+        }
         const availableCourtsList = allCourts.filter(
           (c) => !bookedCourtIds.has(c._id.toString()),
         );

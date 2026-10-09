@@ -10,6 +10,7 @@ const Announcement = require("../models/announcement.model");
 const ClientAccount = require("../models/clientAccount.model");
 const OtpVerification = require("../models/otpVerification.model");
 const User = require("../models/user.model");
+const FixedBooking = require("../models/fixedBooking.model");
 const {
   SLOT_LOCK_TTL_MS,
   acquireSlotLock,
@@ -20,6 +21,10 @@ const {
 const {
   materializeFixedBookingsForDate,
 } = require("../services/fixedTurnsMaterialization.service");
+const {
+  findConflictingFixedForBooking,
+  getWeekdayFromDate,
+} = require("../services/fixedBooking.service");
 const { getCancellationContactPhone } = require("../services/bookingService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const {
@@ -237,6 +242,17 @@ const getAvailability = async (req, res) => {
     const occupiedSet = new Set(
       bookings.map((b) => `${String(b.court)}_${String(b.timeSlot)}`),
     );
+
+    // Active fixed weekly turns block their court + timeSlot on the matching
+    // weekday. Dates are UTC midnight, so the weekday is derived in UTC.
+    const fixedBookings = await FixedBooking.find({
+      companyId: company._id,
+      weekday: getWeekdayFromDate(searchDate),
+      status: "active",
+    }).select("court timeSlot");
+    for (const fixed of fixedBookings) {
+      occupiedSet.add(`${String(fixed.court)}_${String(fixed.timeSlot)}`);
+    }
 
     const baseAvailability = courts.flatMap((court) =>
       slots.map((slot) => ({
@@ -884,6 +900,20 @@ const createClientBooking = async (req, res) => {
     });
     if (existing) {
       return res.status(409).json({ success: false, error: "Ese turno ya está reservado" });
+    }
+
+    // A fixed weekly turn holds this court+slot: do not create a booking on it.
+    const conflictingFixed = await findConflictingFixedForBooking({
+      companyId: company._id,
+      date: searchDate,
+      courtId: court._id,
+      timeSlotId: slot._id,
+    });
+    if (conflictingFixed) {
+      return res.status(409).json({
+        success: false,
+        error: "Ese horario es un turno fijo y no está disponible.",
+      });
     }
 
     const depositSettings = await getDepositSettings(company._id);
