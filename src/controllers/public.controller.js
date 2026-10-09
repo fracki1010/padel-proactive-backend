@@ -23,6 +23,7 @@ const {
 } = require("../services/fixedTurnsMaterialization.service");
 const {
   findConflictingFixedForBooking,
+  getWeekdayFromDate,
 } = require("../services/fixedBooking.service");
 const { getCancellationContactPhone } = require("../services/bookingService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
@@ -246,7 +247,7 @@ const getAvailability = async (req, res) => {
     // weekday. Dates are UTC midnight, so the weekday is derived in UTC.
     const fixedBookings = await FixedBooking.find({
       companyId: company._id,
-      weekday: searchDate.getUTCDay(),
+      weekday: getWeekdayFromDate(searchDate),
       status: "active",
     }).select("court timeSlot");
     for (const fixed of fixedBookings) {

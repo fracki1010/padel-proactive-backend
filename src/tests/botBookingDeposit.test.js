@@ -89,6 +89,19 @@ stubModule('../models/timeSlot.model', {
   }),
 });
 stubModule('../models/user.model', { findOne: async () => null });
+// `FixedBooking.find` is chained with `.select("court")` in the busy pool;
+// the array itself answers the chain like the Booking fake above.
+stubModule('../models/fixedBooking.model', {
+  find: () => makeFindResult([]),
+  findOne: async () => null,
+  getWeekdayFromDate: (value) =>
+    (value instanceof Date ? value : new Date(value)).getUTCDay(),
+});
+stubModule('../services/fixedBooking.service', {
+  findConflictingFixedForBooking: async () => null,
+  getWeekdayFromDate: (value) =>
+    (value instanceof Date ? value : new Date(value)).getUTCDay(),
+});
 stubModule('../models/admin.model', {
   find: () => ({ select: () => ({ lean: async () => [] }) }),
 });

@@ -28,6 +28,10 @@ const {
   materializeFixedBookingsForDate,
 } = require("./fixedTurnsMaterialization.service");
 const {
+  findConflictingFixedForBooking,
+  getWeekdayFromDate,
+} = require("./fixedBooking.service");
+const {
   normalizeCanonicalClientPhone,
   toE164,
   stripPhoneForClientDisplay,
@@ -273,7 +277,19 @@ const createNewBooking = async ({
       timeSlot: slot._id,
       status: { $ne: "cancelado" },
     });
-    const busyCourtIds = busyBookings.map((b) => b.court.toString());
+    // Active fixed weekly turns own the court for this slot that weekday: they
+    // MUST join the busy pool so neither INDIFERENTE nor a type filter can pick
+    // a court that is blocked by a turno fijo.
+    const fixedCourtsForSlot = await FixedBooking.find({
+      ...scope,
+      weekday: getWeekdayFromDate(bookingDate),
+      timeSlot: slot._id,
+      status: "active",
+    }).select("court");
+    const busyCourtIds = [
+      ...busyBookings.map((b) => b.court.toString()),
+      ...fixedCourtsForSlot.map((f) => f.court.toString()),
+    ];
 
     // CASO A: AL USUARIO LE DA IGUAL ("INDIFERENTE")
     if (courtName === "INDIFERENTE") {
@@ -316,7 +332,12 @@ const createNewBooking = async ({
         status: { $ne: "cancelado" },
       });
 
-      if (existingBooking) return { success: false, error: "BUSY" };
+      if (
+        existingBooking ||
+        busyCourtIds.includes(selectedCourt._id.toString())
+      ) {
+        return { success: false, error: "BUSY" };
+      }
     }
 
     // =================================================================
@@ -350,6 +371,17 @@ const createNewBooking = async ({
     if (depositEnabled) {
       Object.assign(bookingFields, buildDepositFields({ settings: depositSettings }));
       bookingFields.paymentStatus = "pendiente";
+    }
+
+    // A fixed weekly turn owns this court+slot on the booking date: refuse.
+    const conflictingFixed = await findConflictingFixedForBooking({
+      companyId,
+      date: bookingDate,
+      courtId: selectedCourt._id,
+      timeSlotId: slot._id,
+    });
+    if (conflictingFixed) {
+      return { success: false, error: "FIXED_TURN" };
     }
 
     const newBooking = await Booking.create(bookingFields);
@@ -605,7 +637,7 @@ const getAvailableSlots = async (dateStr, options = {}) => {
     // Dates are UTC midnight, so the weekday is derived in UTC.
     const fixedBookings = await FixedBooking.find({
       ...scope,
-      weekday: queryDate.getUTCDay(),
+      weekday: getWeekdayFromDate(queryDate),
       status: "active",
     }).select("court timeSlot");
 

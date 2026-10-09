@@ -49,13 +49,15 @@ fixedBookingSchema.index(
 // Booking dates are stored as UTC midnight (see booking.model.js), so the
 // weekday MUST be derived in UTC. Using `getDay()` would shift the weekday by
 // one in non-UTC timezones west of UTC (e.g. America/Argentina/Buenos_Aires).
-const currentWeekday = (date = new Date()) => {
+// Single source of truth: fixedBooking.service re-exports this helper and every
+// fixed-turn weekday computation (availability, conflict guards) uses it.
+const getWeekdayFromDate = (date = new Date()) => {
   const value = date instanceof Date ? date : new Date(date);
   return value.getUTCDay();
 };
 
 const FixedBooking = mongoose.model("FixedBooking", fixedBookingSchema);
-FixedBooking.currentWeekday = currentWeekday;
+FixedBooking.getWeekdayFromDate = getWeekdayFromDate;
 
 module.exports = FixedBooking;
-module.exports.currentWeekday = currentWeekday;
+module.exports.getWeekdayFromDate = getWeekdayFromDate;

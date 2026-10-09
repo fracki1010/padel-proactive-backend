@@ -1,13 +1,10 @@
 const FixedBooking = require("../models/fixedBooking.model");
 
-const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
-
 // Weekday of a booking date. Booking dates are stored as UTC midnight, so the
 // UTC weekday is the canonical one (see fixedBooking.model.js).
-const getWeekdayFromDate = (date) => {
-  const value = date instanceof Date ? date : new Date(date);
-  return value.getUTCDay();
-};
+const { getWeekdayFromDate } = FixedBooking;
+
+const buildCompanyFilter = (companyId = null) => ({ companyId: companyId || null });
 
 /**
  * List fixed turns for a company, optionally filtered by weekday and status.

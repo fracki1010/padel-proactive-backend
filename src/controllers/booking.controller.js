@@ -354,6 +354,43 @@ const updateBooking = async (req, res) => {
     delete updateData.__v;
     delete updateData.applyPenalty;
 
+    // A booking cannot be moved onto a slot held by an active fixed turn. Only
+    // the fields actually being changed participate; unchanged fields keep the
+    // booking's current values, so an edit that only touches status/name is not
+    // blocked.
+    const isMovingSlot =
+      req.body.court !== undefined ||
+      req.body.timeSlot !== undefined ||
+      req.body.date !== undefined;
+
+    if (isMovingSlot) {
+      const nextCourt =
+        req.body.court !== undefined
+          ? req.body.court
+          : previousBooking.court?._id || previousBooking.court;
+      const nextTimeSlot =
+        req.body.timeSlot !== undefined
+          ? req.body.timeSlot
+          : previousBooking.timeSlot?._id || previousBooking.timeSlot;
+      const nextDate =
+        req.body.date !== undefined
+          ? parseDateToUtcMidnight(req.body.date)
+          : previousBooking.date;
+
+      const conflictingFixed = await findConflictingFixedForBooking({
+        companyId,
+        date: nextDate,
+        courtId: nextCourt,
+        timeSlotId: nextTimeSlot,
+      });
+      if (conflictingFixed) {
+        return res.status(409).json({
+          success: false,
+          error: "Ese horario es un turno fijo. Gestionalo desde Turnos fijos.",
+        });
+      }
+    }
+
     const updatedBooking = await Booking.findOneAndUpdate(
       { _id: id, ...scope },
       { $set: updateData },

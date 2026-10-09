@@ -8,6 +8,7 @@ const {
 } = require("../services/fixedBooking.service");
 
 const CONFLICT_MESSAGE = "Ya existe un turno fijo en ese horario";
+const VALID_STATUSES = ["active", "paused"];
 
 // Fixed turns are always scoped to the caller's club. The body's companyId is
 // never trusted; super admins (no companyId) cannot manage club fixed turns.
@@ -65,6 +66,12 @@ const createFixedBooking = async (req, res) => {
         .status(400)
         .json({ success: false, error: "Cancha o turno inválidos" });
     }
+    const normalizedStatus = status ?? "active";
+    if (!VALID_STATUSES.includes(normalizedStatus)) {
+      return res
+        .status(400)
+        .json({ success: false, error: "status inválido (active o paused)" });
+    }
 
     const [courtExists, slotExists] = await Promise.all([
       Court.exists({ _id: court, companyId }),
@@ -89,7 +96,7 @@ const createFixedBooking = async (req, res) => {
       weekday,
       clientName: (clientName || "").trim(),
       notes: (notes || "").trim(),
-      status: status || "active",
+      status: normalizedStatus,
     });
 
     const populated = await FixedBooking.findById(fixedBooking._id)
@@ -146,7 +153,14 @@ const updateFixedBooking = async (req, res) => {
     }
     if (clientName !== undefined) updates.clientName = (clientName || "").trim();
     if (notes !== undefined) updates.notes = (notes || "").trim();
-    if (status !== undefined) updates.status = status;
+    if (status !== undefined) {
+      if (!VALID_STATUSES.includes(status)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "status inválido (active o paused)" });
+      }
+      updates.status = status;
+    }
 
     const conflicts = await getConflicts({
       companyId,

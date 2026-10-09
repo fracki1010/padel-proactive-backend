@@ -15,13 +15,13 @@ const {
 } = require('../services/fixedBooking.service');
 
 // UTC dates: 2026-10-04 domingo, 2026-10-06 martes, 2026-10-10 sábado.
-test('currentWeekday maps a UTC date to the JS weekday (0=DOM .. 6=SÁB)', () => {
-  assert.equal(FixedBooking.currentWeekday(new Date('2026-10-04T00:00:00.000Z')), 0);
-  assert.equal(FixedBooking.currentWeekday(new Date('2026-10-06T00:00:00.000Z')), 2);
-  assert.equal(FixedBooking.currentWeekday(new Date('2026-10-10T00:00:00.000Z')), 6);
+test('getWeekdayFromDate (model) maps a UTC date to the JS weekday (0=DOM .. 6=SÁB)', () => {
+  assert.equal(FixedBooking.getWeekdayFromDate(new Date('2026-10-04T00:00:00.000Z')), 0);
+  assert.equal(FixedBooking.getWeekdayFromDate(new Date('2026-10-06T00:00:00.000Z')), 2);
+  assert.equal(FixedBooking.getWeekdayFromDate(new Date('2026-10-10T00:00:00.000Z')), 6);
 });
 
-test('getWeekdayFromDate is UTC-based and rejects invalid dates with NaN', () => {
+test('getWeekdayFromDate (service) is UTC-based and rejects invalid dates with NaN', () => {
   assert.equal(getWeekdayFromDate(new Date('2026-10-06T00:00:00.000Z')), 2);
   // A booking date normalized to UTC midnight must not shift the weekday.
   const normalized = new Date('2026-10-06');

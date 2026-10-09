@@ -268,6 +268,9 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
   }
 
   if (bookingResult.error === "BUSY") return "🚫 Ese turno ya está ocupado. ¿Te busco otro?";
+  if (bookingResult.error === "FIXED_TURN") {
+    return "⚠️ Ese horario es un turno fijo y no está disponible. ¿Te busco otro?";
+  }
   if (bookingResult.error === "INVALID_TIME") return "⚠️ Ese horario no existe en la grilla.";
   if (bookingResult.error === "PAST_TIME") {
     return "⏰ Ese horario ya pasó o ya comenzó. Decime otro turno y te ayudo a reservarlo.";
