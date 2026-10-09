@@ -4,6 +4,7 @@ const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
 const User = require("../models/user.model");
 const Admin = require("../models/admin.model");
+const FixedBooking = require("../models/fixedBooking.model");
 const { sendAdminNotification } = require("./notificationService");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const {
@@ -600,13 +601,33 @@ const getAvailableSlots = async (dateStr, options = {}) => {
       status: { $ne: "cancelado" },
     });
 
+    // Active fixed weekly turns block their court + timeSlot for this weekday.
+    // Dates are UTC midnight, so the weekday is derived in UTC.
+    const fixedBookings = await FixedBooking.find({
+      ...scope,
+      weekday: queryDate.getUTCDay(),
+      status: "active",
+    }).select("court timeSlot");
+
+    const fixedSet = new Set(
+      fixedBookings.map((f) => `${String(f.court)}_${String(f.timeSlot)}`),
+    );
+
     // 5. Filtrar
     const availableSlots = allSlots.filter((slot) => {
-      // A. Filtro de Capacidad Total
+      // A. Filtro de Capacidad Total (reservas + turnos fijos)
       const bookingsForThisSlot = bookings.filter(
         (b) => b.timeSlot.toString() === slot._id.toString(),
       );
-      if (bookingsForThisSlot.length >= totalCourtsCount) return false;
+      const occupiedCourtsForThisSlot = new Set(
+        bookingsForThisSlot.map((b) => b.court?.toString()).filter(Boolean),
+      );
+      for (const court of allCourts) {
+        if (fixedSet.has(`${String(court._id)}_${String(slot._id)}`)) {
+          occupiedCourtsForThisSlot.add(court._id.toString());
+        }
+      }
+      if (occupiedCourtsForThisSlot.size >= totalCourtsCount) return false;
 
       // B. Filtro de Tiempo Pasado (Solo si es hoy)
       if (isToday) {
@@ -641,6 +662,11 @@ const getAvailableSlots = async (dateStr, options = {}) => {
         const bookedCourtIds = new Set(
           bookingsForThisSlot.map((b) => b.court?.toString()).filter(Boolean),
         );
+        for (const court of allCourts) {
+          if (fixedSet.has(`${String(court._id)}_${String(s._id)}`)) {
+            bookedCourtIds.add(court._id.toString());
+          }
+        }
         const availableCourtsList = allCourts.filter(
           (c) => !bookedCourtIds.has(c._id.toString()),
         );

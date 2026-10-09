@@ -16,6 +16,9 @@ const {
   materializeFixedBookingsInRange,
 } = require("../services/fixedTurnsMaterialization.service");
 const {
+  findConflictingFixedForBooking,
+} = require("../services/fixedBooking.service");
+const {
   normalizeCanonicalClientPhone,
   normalizeClientIdentity,
 } = require("../utils/identityNormalization");
@@ -213,6 +216,20 @@ const createBooking = async (req, res) => {
       return res.status(409).json({
         success: false,
         error: "Este turno ya tiene una actividad (reserva o suspensión).",
+      });
+    }
+
+    // A fixed weekly turn owns this court+slot: direct bookings are refused.
+    const conflictingFixed = await findConflictingFixedForBooking({
+      companyId,
+      date: bookingDate,
+      courtId: courtId,
+      timeSlotId: slot._id,
+    });
+    if (conflictingFixed) {
+      return res.status(409).json({
+        success: false,
+        error: "Ese horario es un turno fijo. Gestionalo desde Turnos fijos.",
       });
     }
 

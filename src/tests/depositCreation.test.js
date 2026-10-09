@@ -37,6 +37,7 @@ const slotLockService = require('../services/slotLock.service');
 const fixedTurnsService = require('../services/fixedTurnsMaterialization.service');
 const bookingWhatsapp = require('../services/bookingWhatsappConfirmation.service');
 const bookingService = require('../services/bookingService');
+const fixedBookingService = require('../services/fixedBooking.service');
 const whatsappQueue = require('../services/whatsappCommandQueue.service');
 const depositService = require('../services/deposit.service');
 const depositNotificationService = require('../services/depositNotification.service');
@@ -52,6 +53,7 @@ bookingWhatsapp.sendBookingWhatsappConfirmation = async () => {
   return { ok: true };
 };
 bookingService.getCancellationContactPhone = async () => '';
+fixedBookingService.findConflictingFixedForBooking = async () => null;
 whatsappQueue.enqueueWhatsappCommand = async () => ({ command: { _id: 'cmd-x' } });
 depositService.buildDepositPaymentLink = async () => ({
   initPoint: 'https://mp/checkout/pref-x',

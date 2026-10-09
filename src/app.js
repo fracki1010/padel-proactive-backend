@@ -83,6 +83,11 @@ app.use(express.json());
 app.use("/api/auth", authRoutes);
 app.use("/api/chat", chatRateLimit, chatRoutes);
 app.use("/api/bookings", protect, bookingRoutes);
+app.use(
+  "/api/fixed-bookings",
+  protect,
+  require("./routes/fixedBooking.routes"),
+);
 app.use("/api/config", protect, require("./routes/config.routes"));
 app.use("/api/whatsapp", protect, require("./routes/whatsapp.routes"));
 app.use("/api/users", protect, require("./routes/user.routes"));
