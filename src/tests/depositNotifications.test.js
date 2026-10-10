@@ -195,7 +195,7 @@ test('notifyDepositPaid falls back to the generic message when the resolver fail
   };
 
   // The webhook passes the RAW booking (ObjectIds) — the resolver is the only
-  // source of populated fields, so a failure must degrate to the fallback.
+  // source of populated fields, so a failure must degrade to the fallback.
   const rawBooking = sampleBooking({
     court: '64b0000000000000000000c4',
     timeSlot: '64b0000000000000000000c5',
