@@ -69,7 +69,20 @@ const normalizeCancellationLockHours = (value) => {
 const DEFAULT_DEPOSIT_ENABLED = false;
 const DEFAULT_DEPOSIT_AMOUNT = 0;
 const DEFAULT_HOLD_MINUTES = 15;
-const DEPOSIT_FIELDS = ["depositEnabled", "depositAmount", "holdMinutes"];
+const DEFAULT_DEPOSIT_METHOD = "transfer";
+const DEPOSIT_METHODS = AppConfig.DEPOSIT_METHODS;
+const MAX_DEPOSIT_ALIAS = AppConfig.MAX_DEPOSIT_ALIAS;
+const MAX_DEPOSIT_CBU = AppConfig.MAX_DEPOSIT_CBU;
+const MAX_DEPOSIT_HOLDER = AppConfig.MAX_DEPOSIT_HOLDER;
+const DEPOSIT_FIELDS = [
+  "depositEnabled",
+  "depositAmount",
+  "holdMinutes",
+  "depositMethod",
+  "depositAlias",
+  "depositCbu",
+  "depositHolder",
+];
 
 const normalizeString = (value) =>
   typeof value === "string" ? value.trim() : String(value || "").trim();
@@ -93,6 +106,14 @@ const normalizeHoldMinutes = (value) => {
   return parsed;
 };
 
+const normalizeDepositMethod = (value) =>
+  DEPOSIT_METHODS.includes(value) ? value : DEFAULT_DEPOSIT_METHOD;
+
+const normalizeDepositText = (value, maxLength) => {
+  const normalized = normalizeString(value);
+  return normalized.length > maxLength ? normalized.slice(0, maxLength) : normalized;
+};
+
 // Pure: merges the provided deposit fields over the current settings and
 // validates the result. Returns { valid, error, provided, value } so callers
 // can map invalid input to HTTP 400 and persist only the provided fields.
@@ -108,6 +129,13 @@ const resolveDepositUpdate = (input = {}, current = {}) => {
         : DEFAULT_DEPOSIT_ENABLED,
     depositAmount: normalizeDepositAmount(current?.depositAmount),
     holdMinutes: normalizeHoldMinutes(current?.holdMinutes),
+    depositMethod: normalizeDepositMethod(current?.depositMethod),
+    depositAlias: normalizeDepositText(current?.depositAlias, MAX_DEPOSIT_ALIAS),
+    depositCbu: normalizeDepositText(current?.depositCbu, MAX_DEPOSIT_CBU),
+    depositHolder: normalizeDepositText(
+      current?.depositHolder,
+      MAX_DEPOSIT_HOLDER,
+    ),
   };
 
   if (provided.includes("depositEnabled")) {
@@ -156,6 +184,57 @@ const resolveDepositUpdate = (input = {}, current = {}) => {
       };
     }
     value.holdMinutes = holdMinutes;
+  }
+
+  if (provided.includes("depositMethod")) {
+    if (!DEPOSIT_METHODS.includes(source.depositMethod)) {
+      return {
+        valid: false,
+        error: `depositMethod must be one of: ${DEPOSIT_METHODS.join(", ")}.`,
+        provided,
+        value,
+      };
+    }
+    value.depositMethod = source.depositMethod;
+  }
+
+  if (provided.includes("depositAlias")) {
+    const alias = normalizeString(source.depositAlias);
+    if (alias.length > MAX_DEPOSIT_ALIAS) {
+      return {
+        valid: false,
+        error: `depositAlias must be at most ${MAX_DEPOSIT_ALIAS} characters.`,
+        provided,
+        value,
+      };
+    }
+    value.depositAlias = alias;
+  }
+
+  if (provided.includes("depositCbu")) {
+    const cbu = normalizeString(source.depositCbu);
+    if (cbu.length > MAX_DEPOSIT_CBU) {
+      return {
+        valid: false,
+        error: `depositCbu must be at most ${MAX_DEPOSIT_CBU} characters.`,
+        provided,
+        value,
+      };
+    }
+    value.depositCbu = cbu;
+  }
+
+  if (provided.includes("depositHolder")) {
+    const holder = normalizeString(source.depositHolder);
+    if (holder.length > MAX_DEPOSIT_HOLDER) {
+      return {
+        valid: false,
+        error: `depositHolder must be at most ${MAX_DEPOSIT_HOLDER} characters.`,
+        provided,
+        value,
+      };
+    }
+    value.depositHolder = holder;
   }
 
   if (value.depositEnabled && value.depositAmount <= 0) {
@@ -258,6 +337,13 @@ const getDepositSettings = async (companyId = null, options = {}) => {
     depositEnabled: Boolean(config?.depositEnabled),
     depositAmount: normalizeDepositAmount(config?.depositAmount),
     holdMinutes: normalizeHoldMinutes(config?.holdMinutes),
+    depositMethod: normalizeDepositMethod(config?.depositMethod),
+    depositAlias: normalizeDepositText(config?.depositAlias, MAX_DEPOSIT_ALIAS),
+    depositCbu: normalizeDepositText(config?.depositCbu, MAX_DEPOSIT_CBU),
+    depositHolder: normalizeDepositText(
+      config?.depositHolder,
+      MAX_DEPOSIT_HOLDER,
+    ),
     depositExemptPhones: canonicalizeExemptPhones(
       config?.depositExemptPhones,
     ),
@@ -621,7 +707,12 @@ module.exports = {
   DEFAULT_DAILY_AVAILABILITY_DIGEST_HOUR,
   DEFAULT_DEPOSIT_AMOUNT,
   DEFAULT_DEPOSIT_ENABLED,
+  DEFAULT_DEPOSIT_METHOD,
   DEFAULT_HOLD_MINUTES,
+  DEPOSIT_METHODS,
+  MAX_DEPOSIT_ALIAS,
+  MAX_DEPOSIT_CBU,
+  MAX_DEPOSIT_HOLDER,
   MAX_DEPOSIT_AMOUNT,
   MAX_HOLD_MINUTES,
   DEFAULT_PENALTY_LIMIT,

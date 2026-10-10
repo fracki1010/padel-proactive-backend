@@ -60,6 +60,10 @@ test('validateDepositSettings accepts a valid enabled config', () => {
     depositEnabled: true,
     depositAmount: 5000,
     holdMinutes: 15,
+    depositMethod: 'transfer',
+    depositAlias: '',
+    depositCbu: '',
+    depositHolder: '',
   });
 });
 
@@ -254,13 +258,25 @@ test('getDepositSettings returns defaults for an empty config', async () => {
     depositEnabled: false,
     depositAmount: 0,
     holdMinutes: 15,
+    depositMethod: 'transfer',
+    depositAlias: '',
+    depositCbu: '',
+    depositHolder: '',
     depositExemptPhones: [],
   });
 });
 
 test('getDepositSettings echoes stored values', async () => {
   const model = createFakeConfigModel();
-  model.setDoc({ depositEnabled: true, depositAmount: 8000, holdMinutes: 30 });
+  model.setDoc({
+    depositEnabled: true,
+    depositAmount: 8000,
+    holdMinutes: 30,
+    depositMethod: 'mercadopago',
+    depositAlias: 'club.padel',
+    depositCbu: '0000003100000000000001',
+    depositHolder: 'Club Padel',
+  });
 
   const settings = await getDepositSettings(COMPANY_A, { model });
 
@@ -268,6 +284,10 @@ test('getDepositSettings echoes stored values', async () => {
     depositEnabled: true,
     depositAmount: 8000,
     holdMinutes: 30,
+    depositMethod: 'mercadopago',
+    depositAlias: 'club.padel',
+    depositCbu: '0000003100000000000001',
+    depositHolder: 'Club Padel',
     depositExemptPhones: [],
   });
 });
@@ -279,6 +299,86 @@ test('getDepositSettings scopes the query by companyId', async () => {
 
   assert.equal(String(model.calls.findOne[0].companyId), COMPANY_B);
   assert.equal(model.calls.findOne[0].key, 'main');
+});
+
+// ── Deposit method (transfer vs mercadopago) ────────────────────────────────
+
+test('validateDepositSettings defaults depositMethod to transfer', () => {
+  const result = validateDepositSettings({
+    depositEnabled: true,
+    depositAmount: 5000,
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.value.depositMethod, 'transfer');
+});
+
+test('validateDepositSettings accepts mercadopago as a valid method', () => {
+  const result = validateDepositSettings({
+    depositEnabled: true,
+    depositAmount: 5000,
+    depositMethod: 'mercadopago',
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.value.depositMethod, 'mercadopago');
+});
+
+test('validateDepositSettings rejects an unknown depositMethod (400)', () => {
+  const result = validateDepositSettings({
+    depositEnabled: true,
+    depositAmount: 5000,
+    depositMethod: 'cash',
+  });
+
+  assert.equal(result.valid, false);
+  assert.match(result.error, /depositMethod/);
+});
+
+test('validateDepositSettings trims transfer fields and bounds their length', () => {
+  const ok = validateDepositSettings({
+    depositEnabled: true,
+    depositAmount: 5000,
+    depositMethod: 'transfer',
+    depositAlias: '  club.padel  ',
+  });
+  assert.equal(ok.valid, true);
+  assert.equal(ok.value.depositAlias, 'club.padel');
+
+  const longAlias = validateDepositSettings({
+    depositEnabled: true,
+    depositAmount: 5000,
+    depositAlias: 'a'.repeat(121),
+  });
+  assert.equal(longAlias.valid, false);
+  assert.match(longAlias.error, /depositAlias/);
+
+  const longCbu = validateDepositSettings({
+    depositEnabled: true,
+    depositAmount: 5000,
+    depositCbu: '9'.repeat(65),
+  });
+  assert.equal(longCbu.valid, false);
+  assert.match(longCbu.error, /depositCbu/);
+});
+
+test('setDepositSettings persists the transfer fields additively', async () => {
+  const model = createFakeConfigModel();
+
+  await setDepositSettings(
+    { depositMethod: 'transfer', depositAlias: 'club.padel', depositCbu: '0000', depositHolder: 'Club' },
+    COMPANY_A,
+    { model },
+  );
+
+  assert.equal(model.calls.findOneAndUpdate.length, 1);
+  const { update } = model.calls.findOneAndUpdate[0];
+  assert.deepEqual(update.$set, {
+    depositMethod: 'transfer',
+    depositAlias: 'club.padel',
+    depositCbu: '0000',
+    depositHolder: 'Club',
+  });
 });
 
 // ── Model schema ─────────────────────────────────────────────────────────────
@@ -304,4 +404,17 @@ test('AppConfig enforces the deposit upper bounds in the schema', () => {
     AppConfig.schema.path('holdMinutes').options.max,
     MAX_HOLD_MINUTES,
   );
+});
+
+test('AppConfig exposes the transfer deposit fields with safe defaults', () => {
+  assert.equal(AppConfig.schema.path('depositMethod').defaultValue, 'transfer');
+  assert.deepEqual(AppConfig.schema.path('depositMethod').enumValues, [
+    'transfer',
+    'mercadopago',
+  ]);
+  assert.equal(AppConfig.schema.path('depositAlias').defaultValue, '');
+  assert.equal(AppConfig.schema.path('depositAlias').options.trim, true);
+  assert.equal(AppConfig.schema.path('depositAlias').options.maxlength, 120);
+  assert.equal(AppConfig.schema.path('depositCbu').options.maxlength, 64);
+  assert.equal(AppConfig.schema.path('depositHolder').options.maxlength, 120);
 });

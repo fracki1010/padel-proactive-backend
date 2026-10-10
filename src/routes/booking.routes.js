@@ -5,6 +5,7 @@ const {
   createBooking,
   deleteBooking,
   updateBooking,
+  confirmDepositReceived,
   rematerializeFixedTurns,
 } = require("../controllers/booking.controller");
 const { requireRole } = require("../middleware/auth.middleware");
@@ -20,6 +21,14 @@ router.post(
   "/fixed-turns/rematerialize",
   requireRole("admin", "super_admin"),
   rematerializeFixedTurns,
+);
+
+// POST http://localhost:3000/api/bookings/:id/deposit-received
+// Confirma manualmente una seña recibida por transferencia (admin).
+router.post(
+  "/:id/deposit-received",
+  requireRole("admin", "super_admin"),
+  confirmDepositReceived,
 );
 
 // PUT http://localhost:3000/api/bookings/:id -> Actualizar una reserva (ej: pago)
