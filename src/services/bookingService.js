@@ -32,6 +32,10 @@ const {
   getWeekdayFromDate,
 } = require("./fixedBooking.service");
 const {
+  buildForeignLockedKeys,
+  createMongooseSlotLockStore,
+} = require("./slotLock.service");
+const {
   normalizeCanonicalClientPhone,
   toE164,
   stripPhoneForClientDisplay,
@@ -286,9 +290,26 @@ const createNewBooking = async ({
       timeSlot: slot._id,
       status: "active",
     }).select("court");
+    // Short-lived slot locks held by portal visitors own the court+slot until
+    // they expire. The bot never owns a portal lock, so every active lock is
+    // foreign and must join the busy pool: INDIFERENTE, court-type and
+    // specific-court selections all consult `busyCourtIds`, so a locked slot
+    // can neither be offered nor booked. Reuses the portal lock store.
+    const now = new Date();
+    const activeLocks = await createMongooseSlotLockStore().findActiveLocksForDate({
+      companyId,
+      date: bookingDate,
+      now,
+    });
+    const lockedKeys = buildForeignLockedKeys(activeLocks, null, now);
+    const slotIdStr = String(slot._id);
+    const lockedCourtIdsForSlot = [...lockedKeys]
+      .filter((key) => key.endsWith(`_${slotIdStr}`))
+      .map((key) => key.slice(0, key.length - slotIdStr.length - 1));
     const busyCourtIds = [
       ...busyBookings.map((b) => b.court.toString()),
       ...fixedCourtsForSlot.map((f) => f.court.toString()),
+      ...lockedCourtIdsForSlot,
     ];
 
     // CASO A: AL USUARIO LE DA IGUAL ("INDIFERENTE")
@@ -645,9 +666,21 @@ const getAvailableSlots = async (dateStr, options = {}) => {
       fixedBookings.map((f) => `${String(f.court)}_${String(f.timeSlot)}`),
     );
 
+    // Active slot locks (short-lived holds taken by portal visitors) block the
+    // same court+slot for the bot. The bot never owns a portal lock, so every
+    // active lock is foreign and counts as occupied exactly like a fixed turn.
+    // Reuses the portal lock store instead of a raw query.
+    const now = new Date();
+    const activeLocks = await createMongooseSlotLockStore().findActiveLocksForDate({
+      companyId,
+      date: queryDate,
+      now,
+    });
+    const lockedSet = buildForeignLockedKeys(activeLocks, null, now);
+
     // 5. Filtrar
     const availableSlots = allSlots.filter((slot) => {
-      // A. Filtro de Capacidad Total (reservas + turnos fijos)
+      // A. Filtro de Capacidad Total (reservas + turnos fijos + locks activos)
       const bookingsForThisSlot = bookings.filter(
         (b) => b.timeSlot.toString() === slot._id.toString(),
       );
@@ -655,7 +688,8 @@ const getAvailableSlots = async (dateStr, options = {}) => {
         bookingsForThisSlot.map((b) => b.court?.toString()).filter(Boolean),
       );
       for (const court of allCourts) {
-        if (fixedSet.has(`${String(court._id)}_${String(slot._id)}`)) {
+        const key = `${String(court._id)}_${String(slot._id)}`;
+        if (fixedSet.has(key) || lockedSet.has(key)) {
           occupiedCourtsForThisSlot.add(court._id.toString());
         }
       }
@@ -695,7 +729,8 @@ const getAvailableSlots = async (dateStr, options = {}) => {
           bookingsForThisSlot.map((b) => b.court?.toString()).filter(Boolean),
         );
         for (const court of allCourts) {
-          if (fixedSet.has(`${String(court._id)}_${String(s._id)}`)) {
+          const key = `${String(court._id)}_${String(s._id)}`;
+          if (fixedSet.has(key) || lockedSet.has(key)) {
             bookedCourtIds.add(court._id.toString());
           }
         }
