@@ -1,6 +1,7 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const { handleIncomingMessage } = require("../handlers/messageHandler");
+const { handleIncomingReceipt } = require("../services/receiptVerification.service");
 const { getGroqKeyPoolStats } = require("../services/groqService");
 const { sanitizeOutgoingReply } = require("../utils/conversationGuardrails");
 const {
@@ -58,11 +59,64 @@ router.post("/whatsapp/incoming", async (req, res) => {
     const from = String(req.body?.from || "").trim();
     const body = String(req.body?.body || "");
     const companyId = normalizeCompanyId(req.body?.companyId);
+    const mediaRaw = req.body?.media;
+    const hasMedia =
+      Boolean(mediaRaw) &&
+      typeof mediaRaw === "object" &&
+      typeof mediaRaw.data === "string" &&
+      mediaRaw.data.length > 0;
 
-    if (!from || !body.trim()) {
+    if (!from || (!body.trim() && !hasMedia)) {
       return res.status(400).json({
         success: false,
         error: "Campos 'from' y 'body' son obligatorios.",
+      });
+    }
+
+    // Media branch: a payment receipt (image/PDF) is verified by the bot and
+    // auto-confirms a pending transfer seña. Best-effort by design — the
+    // handler never throws into the webhook path.
+    if (hasMedia) {
+      const result = await handleIncomingReceipt({
+        companyId,
+        from,
+        media: {
+          mimetype: mediaRaw?.mimetype,
+          filename: mediaRaw?.filename,
+          buffer: Buffer.from(String(mediaRaw.data), "base64"),
+        },
+      });
+
+      const mediaReply = sanitizeOutgoingReply(String(result?.reply || "").trim());
+      if (!mediaReply) {
+        return res.status(200).json({
+          success: true,
+          data: {
+            handled: true,
+            enqueued: false,
+            confirmed: Boolean(result?.confirmed),
+          },
+        });
+      }
+
+      const { command } = await enqueueWhatsappCommand({
+        companyId,
+        type: COMMAND_TYPES.SEND_MESSAGE,
+        payload: {
+          to: from,
+          message: mediaReply,
+        },
+        requestedBy: null,
+      });
+
+      return res.status(202).json({
+        success: true,
+        data: {
+          handled: true,
+          enqueued: true,
+          confirmed: Boolean(result?.confirmed),
+          commandId: command?._id ? String(command._id) : null,
+        },
       });
     }
 

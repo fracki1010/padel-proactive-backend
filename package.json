@@ -37,6 +37,7 @@
     "test:api": "node --test src/tests/api-sections-16-17-18.test.js"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.10",
     "axios": "^1.13.6",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.58.0",
@@ -50,7 +51,9 @@
     "ioredis": "^5.7.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.1.1",
-    "multer": "^2.1.1"
+    "multer": "^2.1.1",
+    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^3.11.174"
   },
   "devDependencies": {
     "eslint": "^10.12.0",

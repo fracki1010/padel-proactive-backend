@@ -187,15 +187,18 @@ const approveDeposit = async (
 // runs the SAME atomic transition as the webhook approval so both collection
 // paths can never diverge. The synthetic paymentId is unique per
 // (actor, booking) so the `deposit.paymentId` unique index never collides
-// across manual confirmations by the same admin.
+// across manual confirmations by the same admin. An optional `paymentId` lets
+// the bot receipt path record its own `receipt:<bookingId>:<ts>` reference.
 const approveDepositManually = async (
-  { companyId, bookingId, actorId = null },
+  { companyId, bookingId, actorId = null, paymentId = null },
   options = {},
 ) => {
   if (!isValidIdentifier(companyId) || !isValidIdentifier(bookingId)) {
     return { applied: false, reason: 'invalid_input' };
   }
-  const reference = `manual:${isValidIdentifier(actorId) ? actorId : 'admin'}:${bookingId}`;
+  const reference = isValidIdentifier(paymentId)
+    ? String(paymentId)
+    : `manual:${isValidIdentifier(actorId) ? actorId : 'admin'}:${bookingId}`;
   return approveDeposit(
     { companyId, bookingId, paymentId: reference, eventType: 'deposit.transfer.confirmed' },
     options,
