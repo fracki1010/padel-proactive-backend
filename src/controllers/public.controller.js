@@ -940,6 +940,13 @@ const createClientBooking = async (req, res) => {
       Number(depositSettings?.depositAmount) > 0 &&
       !isPhoneExempt(depositSettings?.depositExemptPhones, clientPhone);
 
+    // How the seña is collected. `transfer` (the default) needs no
+    // MercadoPago: the client pays the club directly and the admin confirms.
+    const depositMethod =
+      depositSettings?.depositMethod === "mercadopago"
+        ? "mercadopago"
+        : "transfer";
+
     const bookingFields = {
       clientName: client.name,
       clientPhone,
@@ -951,7 +958,10 @@ const createClientBooking = async (req, res) => {
 
     // Deposits enabled: hold the court as `pendiente_seña` and store the seña.
     if (depositEnabled) {
-      Object.assign(bookingFields, buildDepositFields({ settings: depositSettings }));
+      Object.assign(
+        bookingFields,
+        buildDepositFields({ settings: depositSettings, method: depositMethod }),
+      );
     }
 
     let booking;
@@ -1001,43 +1011,74 @@ const createClientBooking = async (req, res) => {
     // falla, la reserva ya está persistida y se responde 201 igual.
     let depositInfo = null;
     let paymentInfo = null;
+    let transferInfo = null;
 
     if (depositEnabled) {
-      // Best-effort link: the booking is already pending, so a transient MP
-      // failure must not roll it back; the payment-link endpoint can regenerate.
       const depositExpiresAt = populated.deposit?.expiresAt || null;
       depositInfo = {
         required: populated.deposit?.required ?? true,
         status: populated.deposit?.status || "pendiente",
         amount: depositSettings.depositAmount,
         expiresAt: depositExpiresAt,
+        method: depositMethod,
       };
-      paymentInfo = { initPoint: "" };
-      try {
-        const link = await buildDepositPaymentLink({
-          companyId: company._id,
-          booking: populated,
-          settings: depositSettings,
-          notificationUrl: process.env.MERCADOPAGO_NOTIFICATION_URL || undefined,
-        });
-        paymentInfo = { initPoint: link.initPoint };
-      } catch (depositErr) {
-        console.error(
-          "[createClientBooking] No se pudo generar el link de seña:",
-          depositErr?.message || depositErr,
-        );
-      }
 
-      await notifyDepositPending({
-        booking: populated,
-        companyId: company._id,
-        initPoint: paymentInfo.initPoint,
-      }).catch((notifyErr) => {
-        console.error(
-          "[createClientBooking] No se pudo notificar la seña pendiente:",
-          notifyErr?.message || notifyErr,
-        );
-      });
+      if (depositMethod === "mercadopago") {
+        // Best-effort link: the booking is already pending, so a transient MP
+        // failure must not roll it back; the payment-link endpoint can
+        // regenerate.
+        paymentInfo = { initPoint: "" };
+        try {
+          const link = await buildDepositPaymentLink({
+            companyId: company._id,
+            booking: populated,
+            settings: depositSettings,
+            notificationUrl: process.env.MERCADOPAGO_NOTIFICATION_URL || undefined,
+          });
+          paymentInfo = { initPoint: link.initPoint };
+        } catch (depositErr) {
+          console.error(
+            "[createClientBooking] No se pudo generar el link de seña:",
+            depositErr?.message || depositErr,
+          );
+        }
+
+        await notifyDepositPending({
+          booking: populated,
+          companyId: company._id,
+          initPoint: paymentInfo.initPoint,
+        }).catch((notifyErr) => {
+          console.error(
+            "[createClientBooking] No se pudo notificar la seña pendiente:",
+            notifyErr?.message || notifyErr,
+          );
+        });
+      } else {
+        // Transfer mode: NO MercadoPago preference/link is minted. The client
+        // transfers the seña to the club alias/CBU and sends the proof by
+        // WhatsApp; the admin marks "Seña recibida" to confirm the booking.
+        paymentInfo = null;
+        transferInfo = {
+          amount: depositSettings.depositAmount,
+          alias: depositSettings.depositAlias || "",
+          cbu: depositSettings.depositCbu || "",
+          holder: depositSettings.depositHolder || "",
+        };
+
+        // Admin-only alert: the client gets the transfer instructions in the
+        // portal, never a WhatsApp message with an empty payment link.
+        await notifyDepositPending({
+          booking: populated,
+          companyId: company._id,
+          initPoint: "",
+          notifyClient: false,
+        }).catch((notifyErr) => {
+          console.error(
+            "[createClientBooking] No se pudo notificar la seña pendiente (transfer):",
+            notifyErr?.message || notifyErr,
+          );
+        });
+      }
     } else {
       await sendBookingWhatsappConfirmation({
         companyId: company._id,
@@ -1053,6 +1094,9 @@ const createClientBooking = async (req, res) => {
     if (depositEnabled) {
       responseData.deposit = depositInfo;
       responseData.payment = paymentInfo;
+      if (transferInfo) {
+        responseData.transfer = transferInfo;
+      }
     }
 
     return res.status(201).json({

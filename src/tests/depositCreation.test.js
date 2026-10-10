@@ -16,19 +16,39 @@ const SLOT_ID = '64b0000000000000000000s1';
 const BOOKING_ID = '64b0000000000000000000c3';
 
 const state = {
-  settings: { depositEnabled: true, depositAmount: 5000, holdMinutes: 15, depositExemptPhones: [] },
+  settings: {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: [],
+    depositMethod: 'mercadopago',
+    depositAlias: '',
+    depositCbu: '',
+    depositHolder: '',
+  },
   createdBooking: null,
   bookingCalls: [],
   pendingNotifications: [],
   confirmations: 0,
+  linkCalls: 0,
 };
 
 const resetState = () => {
-  state.settings = { depositEnabled: true, depositAmount: 5000, holdMinutes: 15, depositExemptPhones: [] };
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: [],
+    depositMethod: 'mercadopago',
+    depositAlias: '',
+    depositCbu: '',
+    depositHolder: '',
+  };
   state.createdBooking = null;
   state.bookingCalls = [];
   state.pendingNotifications = [];
   state.confirmations = 0;
+  state.linkCalls = 0;
 };
 
 // Patch service seams BEFORE requiring the controller so its destructured
@@ -58,11 +78,14 @@ bookingService.getCancellationContactPhone = async () => '';
 whatsappRuntimeStateService.getWhatsappRuntimeState = async () => ({ phone: '5492622345473' });
 fixedBookingService.findConflictingFixedForBooking = async () => null;
 whatsappQueue.enqueueWhatsappCommand = async () => ({ command: { _id: 'cmd-x' } });
-depositService.buildDepositPaymentLink = async () => ({
-  initPoint: 'https://mp/checkout/pref-x',
-  preferenceId: 'pref-x',
-  amount: 5000,
-});
+depositService.buildDepositPaymentLink = async () => {
+  state.linkCalls += 1;
+  return {
+    initPoint: 'https://mp/checkout/pref-x',
+    preferenceId: 'pref-x',
+    amount: 5000,
+  };
+};
 depositNotificationService.notifyDepositPending = async (payload) => {
   state.pendingNotifications.push(payload);
 };
@@ -158,6 +181,46 @@ test('a booking created with deposits enabled is pendiente_seña with deposit fi
   assert.ok(res.payload.data.deposit.expiresAt instanceof Date, 'expiresAt must be present');
   assert.equal(res.payload.data.payment.initPoint, 'https://mp/checkout/pref-x');
   assert.equal(state.pendingNotifications.length, 1, 'the pending deposit must be notified');
+  assert.equal(state.linkCalls, 1, 'mercadopago mode mints exactly one payment link');
+});
+
+// ── transfer mode (default) ─────────────────────────────────────────────────
+
+test('a transfer-mode booking returns transfer instructions and NO payment link', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: [],
+    depositMethod: 'transfer',
+    depositAlias: 'club.padel',
+    depositCbu: '0000003100000000000001',
+    depositHolder: 'Club Padel',
+  };
+  const res = createResponse();
+
+  await createClientBooking(createReq(), res);
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(state.createdBooking.status, 'pendiente_seña');
+  assert.equal(state.createdBooking.deposit.status, 'pendiente');
+  assert.equal(state.createdBooking.deposit.amount, 5000);
+  assert.equal(state.createdBooking.deposit.method, 'transfer');
+  assert.equal(res.payload.data.deposit.amount, 5000);
+  assert.equal(res.payload.data.deposit.status, 'pendiente');
+  assert.equal(res.payload.data.deposit.method, 'transfer');
+  assert.equal(res.payload.data.payment, null, 'transfer mode must not expose a payment payload');
+  assert.equal(res.payload.data.transfer.amount, 5000);
+  assert.equal(res.payload.data.transfer.alias, 'club.padel');
+  assert.equal(res.payload.data.transfer.cbu, '0000003100000000000001');
+  assert.equal(res.payload.data.transfer.holder, 'Club Padel');
+  assert.equal(state.linkCalls, 0, 'no MercadoPago link may be minted in transfer mode');
+  assert.equal(
+    state.pendingNotifications.length,
+    1,
+    'the admin is still notified about the pending hold',
+  );
 });
 
 test('a booking created with deposits disabled keeps the reservado flow', async () => {

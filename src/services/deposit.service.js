@@ -39,7 +39,7 @@ const isValidIdentifier = (value) =>
   value !== undefined && value !== null && String(value).trim() !== '';
 
 // Pure: builds the booking fields for a newly created pending-deposit booking.
-const buildDepositFields = ({ settings, now = new Date() } = {}) => {
+const buildDepositFields = ({ settings, method = 'mercadopago', now = new Date() } = {}) => {
   const amount = Number(settings?.depositAmount) || 0;
   const holdMinutes = Number(settings?.holdMinutes) || 0;
   return {
@@ -48,6 +48,8 @@ const buildDepositFields = ({ settings, now = new Date() } = {}) => {
       required: true,
       amount,
       status: DEPOSIT_STATUS.PENDING,
+      method:
+        method === 'transfer' || method === 'mercadopago' ? method : 'mercadopago',
       preferenceId: null,
       paymentId: null,
       expiresAt: new Date(now.getTime() + holdMinutes * 60 * 1000),
@@ -179,6 +181,25 @@ const approveDeposit = async (
     return { applied: false, reason: 'not_pending', eventType };
   }
   return { applied: true, booking: updated, paymentId: String(paymentId) };
+};
+
+// Manual (transfer) confirmation: the admin asserts the seña was received. It
+// runs the SAME atomic transition as the webhook approval so both collection
+// paths can never diverge. The synthetic paymentId is unique per
+// (actor, booking) so the `deposit.paymentId` unique index never collides
+// across manual confirmations by the same admin.
+const approveDepositManually = async (
+  { companyId, bookingId, actorId = null },
+  options = {},
+) => {
+  if (!isValidIdentifier(companyId) || !isValidIdentifier(bookingId)) {
+    return { applied: false, reason: 'invalid_input' };
+  }
+  const reference = `manual:${isValidIdentifier(actorId) ? actorId : 'admin'}:${bookingId}`;
+  return approveDeposit(
+    { companyId, bookingId, paymentId: reference, eventType: 'deposit.transfer.confirmed' },
+    options,
+  );
 };
 
 // Atomic expiry: only a still-pending booking whose deadline has passed is
@@ -328,6 +349,7 @@ module.exports = {
   BOOKING_STATUS,
   DEPOSIT_STATUS,
   approveDeposit,
+  approveDepositManually,
   buildDepositFields,
   buildDepositPaymentLink,
   expireDeposit,

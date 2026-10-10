@@ -124,6 +124,32 @@ test('buildDepositFields marks the booking pending and sets amount + deadline', 
   assert.equal(other.deposit.expiresAt.getTime(), now.getTime() + 30 * 60 * 1000);
 });
 
+test('buildDepositFields records the collection method on the hold', () => {
+  const { buildDepositFields } = require('../services/deposit.service');
+
+  const transfer = buildDepositFields({
+    settings: { depositEnabled: true, depositAmount: 5000, holdMinutes: 15 },
+    method: 'transfer',
+  });
+  assert.equal(transfer.deposit.method, 'transfer');
+
+  const mp = buildDepositFields({
+    settings: { depositEnabled: true, depositAmount: 5000, holdMinutes: 15 },
+    method: 'mercadopago',
+  });
+  assert.equal(mp.deposit.method, 'mercadopago');
+
+  // Unknown/absent method degrades to the legacy mercadopago default.
+  assert.equal(
+    buildDepositFields({ settings: {} }).deposit.method,
+    'mercadopago',
+  );
+  assert.equal(
+    buildDepositFields({ settings: {}, method: 'cash' }).deposit.method,
+    'mercadopago',
+  );
+});
+
 // ── approveDeposit ───────────────────────────────────────────────────────────
 
 test('approveDeposit deducts the seña and moves the booking to reservado/pagado', async () => {
@@ -197,6 +223,44 @@ test('approveDeposit clamps finalPrice at zero when the seña exceeds the price'
 
   assert.equal(result.applied, true);
   assert.equal(model.bookings[0].finalPrice, 0);
+});
+
+// ── approveDepositManually (transfer seña) ──────────────────────────────────
+
+test('approveDepositManually reuses the atomic transition with a unique manual id', async () => {
+  const { approveDepositManually } = require('../services/deposit.service');
+  const model = createInMemoryBookingModel([pendingBooking()]);
+  const actorId = '64b0000000000000000000d4';
+
+  const result = await approveDepositManually(
+    { companyId: COMPANY, bookingId: BOOKING_ID, actorId },
+    { model },
+  );
+
+  assert.equal(result.applied, true);
+  const booking = model.bookings[0];
+  assert.equal(booking.status, 'reservado');
+  assert.equal(booking.deposit.status, 'pagado');
+  assert.equal(booking.finalPrice, 20000);
+  assert.equal(
+    String(booking.deposit.paymentId),
+    `manual:${actorId}:${BOOKING_ID}`,
+    'the manual id must be unique per (actor, booking)',
+  );
+});
+
+test('approveDepositManually never touches another company hold', async () => {
+  const { approveDepositManually } = require('../services/deposit.service');
+  const model = createInMemoryBookingModel([pendingBooking()]);
+
+  const result = await approveDepositManually(
+    { companyId: OTHER_COMPANY, bookingId: BOOKING_ID, actorId: 'admin-1' },
+    { model },
+  );
+
+  assert.equal(result.applied, false);
+  assert.equal(result.reason, 'not_pending');
+  assert.equal(model.bookings[0].status, 'pendiente_seña');
 });
 
 // ── expireDeposit ────────────────────────────────────────────────────────────

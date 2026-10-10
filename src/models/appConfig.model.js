@@ -112,6 +112,30 @@ const appConfigSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    depositMethod: {
+      type: String,
+      enum: ["transfer", "mercadopago"],
+      default: "transfer",
+      trim: true,
+    },
+    depositAlias: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 120,
+    },
+    depositCbu: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 64,
+    },
+    depositHolder: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 120,
+    },
   },
   {
     timestamps: true,
@@ -123,3 +147,7 @@ appConfigSchema.index({ companyId: 1, key: 1 }, { unique: true });
 module.exports = mongoose.model("AppConfig", appConfigSchema);
 module.exports.MAX_DEPOSIT_AMOUNT = 10000000;
 module.exports.MAX_HOLD_MINUTES = 1440;
+module.exports.DEPOSIT_METHODS = ["transfer", "mercadopago"];
+module.exports.MAX_DEPOSIT_ALIAS = 120;
+module.exports.MAX_DEPOSIT_CBU = 64;
+module.exports.MAX_DEPOSIT_HOLDER = 120;

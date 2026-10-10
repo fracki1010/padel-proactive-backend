@@ -10,7 +10,11 @@ const {
   enqueueWhatsappCommand,
 } = require("../services/whatsappCommandQueue.service");
 const { getPenaltyLimit } = require("../services/appConfig.service");
-const { markRefundableOnCancel } = require("../services/deposit.service");
+const {
+  approveDepositManually,
+  handleDepositPaid,
+  markRefundableOnCancel,
+} = require("../services/deposit.service");
 const {
   materializeFixedBookingsForDate,
   materializeFixedBookingsInRange,
@@ -512,6 +516,72 @@ const updateBooking = async (req, res) => {
   }
 };
 
+// Confirma manualmente una seña recibida por transferencia (método
+// "transfer"): el admin marca "Seña recibida" y la reserva pasa a `reservado`.
+// Reutiliza la transición atómica de `approveDeposit` (misma pipeline que el
+// webhook) y el mismo efecto post-aprobación: el cliente recibe la confirmación
+// completa por WhatsApp.
+const confirmDepositReceived = async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const scope = companyScope(req, companyId);
+    const booking = await Booking.findOne({
+      _id: req.params.id,
+      ...scope,
+    });
+
+    if (!booking) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Reserva no encontrada" });
+    }
+
+    if (
+      booking.status !== "pendiente_seña" ||
+      booking.deposit?.status !== "pendiente"
+    ) {
+      return res.status(409).json({
+        success: false,
+        error: "La seña de esta reserva ya fue procesada o no está pendiente.",
+      });
+    }
+
+    const result = await approveDepositManually({
+      companyId,
+      bookingId: req.params.id,
+      actorId: req.user?._id || null,
+    });
+
+    if (!result.applied) {
+      return res.status(409).json({
+        success: false,
+        error: "La seña de esta reserva ya fue procesada.",
+      });
+    }
+
+    // Same post-approval side effect as the MercadoPago webhook: the client
+    // gets the full turn confirmation. Best-effort — the transition is already
+    // durable, so a notification failure must not roll it back.
+    try {
+      await handleDepositPaid({
+        companyId,
+        booking: result.booking,
+        paymentId: result.paymentId,
+      });
+    } catch (confirmErr) {
+      console.error(
+        `[BookingController][${companyId || "global"}] Error notificando seña transfer recibida:`,
+        confirmErr?.message || confirmErr,
+      );
+    }
+
+    return res.status(200).json({ success: true, data: result.booking });
+  } catch (error) {
+    console.error("Error en confirmDepositReceived:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 const rematerializeFixedTurns = async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
@@ -583,5 +653,6 @@ module.exports = {
   createBooking,
   deleteBooking,
   updateBooking,
+  confirmDepositReceived,
   rematerializeFixedTurns,
 };

@@ -12,6 +12,14 @@ const depositSchema = new mongoose.Schema(
       enum: ["pendiente", "pagado", "expirado", "refund_pending", "reembolsado"],
       default: null,
     },
+    // How the seña is collected: a Checkout Pro link ("mercadopago") or a
+    // manual bank transfer ("transfer") confirmed by the admin. Defaults to
+    // "mercadopago" so pre-existing pending holds keep their flow.
+    method: {
+      type: String,
+      enum: ["transfer", "mercadopago"],
+      default: "mercadopago",
+    },
     preferenceId: { type: String, default: null },
     paymentId: { type: String, default: null },
     expiresAt: { type: Date, default: null },
