@@ -39,6 +39,9 @@ const makeDeps = () => {
         enqueued.push(command);
         return { command: { _id: 'cmd-1' } };
       },
+      // By default the resolver passes the booking through unchanged so tests
+      // never touch the database; specific tests inject their own resolver.
+      resolvePopulatedBooking: async (booking) => booking ?? null,
     },
   };
 };
@@ -156,6 +159,91 @@ test('a client without a phone still notifies the admin but skips WhatsApp', asy
 
   assert.equal(adminCalls.length, 1);
   assert.equal(enqueued.length, 0);
+});
+
+// ── Paid confirmation: the client gets the FULL turn details ────────────────
+
+test('notifyDepositPaid enqueues the FULL confirmation (cancha, fecha, hora) when court/timeSlot are resolved', async () => {
+  const { notifyDepositPaid } = require('../services/depositNotification.service');
+  const { deps, enqueued } = makeDeps();
+
+  const booking = sampleBooking({
+    court: { name: 'Cancha 1' },
+    timeSlot: { startTime: '20:00', endTime: '21:00', price: 8000 },
+  });
+
+  await notifyDepositPaid({ booking, companyId: COMPANY }, deps);
+
+  assert.equal(enqueued.length, 1);
+  const message = enqueued[0].payload.message;
+  assert.match(message, /Cancha 1/);
+  assert.match(message, /20:00 a 21:00/);
+  assert.match(message, /sábado 10 de octubre/, 'fecha must render the booking date');
+  assert.match(message, /\$8000/, 'the price must be part of the full confirmation');
+  assert.doesNotMatch(message, /Seña acreditada/, 'the generic one-liner must be replaced');
+  assert.equal(enqueued[0].payload.to, '5491100000000@c.us');
+});
+
+test('notifyDepositPaid falls back to the generic message when the resolver fails', async () => {
+  const { notifyDepositPaid } = require('../services/depositNotification.service');
+  const { adminCalls, enqueued, deps } = makeDeps();
+  const throwingDeps = {
+    ...deps,
+    resolvePopulatedBooking: async () => {
+      throw new Error('db down');
+    },
+  };
+
+  // The webhook passes the RAW booking (ObjectIds) — the resolver is the only
+  // source of populated fields, so a failure must degrate to the fallback.
+  const rawBooking = sampleBooking({
+    court: '64b0000000000000000000c4',
+    timeSlot: '64b0000000000000000000c5',
+  });
+
+  const result = await notifyDepositPaid(
+    { booking: rawBooking, companyId: COMPANY },
+    throwingDeps,
+  );
+
+  assert.equal(result.notified, true, 'a resolver failure must never reject the notifier');
+  assert.equal(adminCalls.length, 1);
+  assert.equal(enqueued.length, 1, 'the client must still receive a confirmation');
+  assert.match(enqueued[0].payload.message, /Seña acreditada/);
+});
+
+test('notifyDepositPaid keeps rendering the full confirmation when the original booking already carries resolved fields (portal path)', async () => {
+  const { notifyDepositPaid } = require('../services/depositNotification.service');
+  const { adminCalls, enqueued, deps } = makeDeps();
+  const throwingDeps = {
+    ...deps,
+    resolvePopulatedBooking: async () => {
+      throw new Error('db down');
+    },
+  };
+
+  await notifyDepositPaid({ booking: sampleBooking(), companyId: COMPANY }, throwingDeps);
+
+  assert.equal(adminCalls.length, 1);
+  assert.equal(enqueued.length, 1);
+  assert.match(enqueued[0].payload.message, /Cancha 1/);
+  assert.doesNotMatch(enqueued[0].payload.message, /Seña acreditada/);
+});
+
+test('notifyDepositPaid falls back to the generic message when court/timeSlot stay unresolved', async () => {
+  const { notifyDepositPaid } = require('../services/depositNotification.service');
+  const { deps, enqueued } = makeDeps();
+
+  // Raw ObjectIds: no name/startTime to render, even after resolve.
+  const rawBooking = sampleBooking({
+    court: '64b0000000000000000000c4',
+    timeSlot: '64b0000000000000000000c5',
+  });
+
+  await notifyDepositPaid({ booking: rawBooking, companyId: COMPANY }, deps);
+
+  assert.equal(enqueued.length, 1, 'an unresolved booking still gets a confirmation');
+  assert.match(enqueued[0].payload.message, /Seña acreditada/);
 });
 
 // ── WARNING 7: side effects independent ──────────────────────────────────────

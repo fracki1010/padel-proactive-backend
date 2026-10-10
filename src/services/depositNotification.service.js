@@ -8,9 +8,11 @@
 // and INDEPENDENT: a failing admin alert must never suppress the client message
 // (and vice versa), and a failure never throws back into the booking flow.
 
+const Booking = require('../models/booking.model');
 const notificationService = require('./notificationService');
 const whatsappCommandQueue = require('./whatsappCommandQueue.service');
 const {
+  buildBookingWhatsappConfirmation,
   buildDepositPaymentMessage,
 } = require('./bookingWhatsappConfirmation.service');
 const { formatBookingDateShort } = require('../utils/formatBookingDateShort');
@@ -26,11 +28,59 @@ const NOTIFICATION_TYPES = {
   AMOUNT_MISMATCH: 'deposit_amount_mismatch',
 };
 
+// Short confirmation kept as the fallback: the client must never be left
+// without a paid-ticket message, even when the full details cannot be resolved.
+const PAID_FALLBACK_MESSAGE = `✅ *¡Seña acreditada!* Tu turno quedó confirmado. 🎾`;
+
+const toIsoDateOnly = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || '');
+  return date.toISOString().slice(0, 10);
+};
+
+// The approval webhook passes the raw updated booking (court/timeSlot are
+// ObjectIds). The confirmation builder needs the populated court (`.name`) and
+// timeSlot (`.startTime`/`.endTime`/`.price`), so resolve them before rendering.
+// Persistence is injectable: tests can substitute a resolver that never touches
+// the database. Never throws — returns `null` so the caller falls back.
+const defaultResolvePopulatedBooking = async (booking) => {
+  if (!booking) return null;
+  // Already resolved (portal path): skip the round-trip entirely.
+  if (
+    booking.court &&
+    typeof booking.court === 'object' &&
+    booking.court.name &&
+    booking.timeSlot &&
+    typeof booking.timeSlot === 'object' &&
+    booking.timeSlot.startTime
+  ) {
+    return booking;
+  }
+  if (!booking._id) return null;
+  // Guard: never buffer against a disconnected Mongoose (would stall ~10s and
+  // then throw). When Mongo is not connected, fall back instead of hanging.
+  if (Booking?.db?.readyState !== 1) return null;
+  try {
+    const populated = await Booking.findById(booking._id)
+      .populate('court timeSlot')
+      .lean();
+    return populated || null;
+  } catch (error) {
+    console.error(
+      '[DepositNotification] no se pudieron resolver court/timeSlot del turno pagado:',
+      error?.message || error,
+    );
+    return null;
+  }
+};
+
 const resolveDeps = (deps = {}) => ({
   sendAdminNotification:
     deps.sendAdminNotification || notificationService.sendAdminNotification,
   enqueueWhatsappCommand:
     deps.enqueueWhatsappCommand || whatsappCommandQueue.enqueueWhatsappCommand,
+  resolvePopulatedBooking:
+    deps.resolvePopulatedBooking || defaultResolvePopulatedBooking,
 });
 
 // Runs a best-effort side effect, never throwing. Each side effect in a notifier
@@ -111,7 +161,11 @@ const notifyDepositPending = async (
 };
 
 const notifyDepositPaid = async ({ booking, companyId = null }, deps = {}) => {
-  const { sendAdminNotification, enqueueWhatsappCommand: enqueue } = resolveDeps(deps);
+  const {
+    sendAdminNotification,
+    enqueueWhatsappCommand: enqueue,
+    resolvePopulatedBooking,
+  } = resolveDeps(deps);
 
   const adminResult = await runSafe('deposit_paid admin', () =>
     sendAdminNotification(
@@ -125,10 +179,34 @@ const notifyDepositPaid = async ({ booking, companyId = null }, deps = {}) => {
     ),
   );
 
+  // The webhook passes the raw booking (court/timeSlot are ObjectIds); resolve
+  // them so the client confirmation carries the full turn details. Robustness:
+  // if the resolve fails or leaves the fields unresolved, fall back to the
+  // short generic message — the client is never left without a confirmation.
+  const resolved = await runSafe('deposit_paid client details', () =>
+    resolvePopulatedBooking(booking),
+  );
+  const target = (resolved.ok && resolved.value) || booking || {};
+
+  const court = target.court && typeof target.court === 'object' ? target.court : null;
+  const slot = target.timeSlot && typeof target.timeSlot === 'object' ? target.timeSlot : null;
+  const canRenderFull = Boolean(
+    court?.name && slot?.startTime && slot?.endTime,
+  );
+
+  const message = canRenderFull
+    ? buildBookingWhatsappConfirmation({
+        client: { name: target.clientName },
+        court,
+        slot,
+        date: toIsoDateOnly(target.date),
+      })
+    : PAID_FALLBACK_MESSAGE;
+
   const chatId = await enqueueClientMessage({
     companyId,
     phone: booking?.clientPhone,
-    message: `✅ *¡Seña acreditada!* Tu turno quedó confirmado. 🎾`,
+    message,
     enqueue,
   });
 
