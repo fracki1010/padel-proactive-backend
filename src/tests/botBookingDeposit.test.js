@@ -102,6 +102,15 @@ stubModule('../services/fixedBooking.service', {
   getWeekdayFromDate: (value) =>
     (value instanceof Date ? value : new Date(value)).getUTCDay(),
 });
+// `createNewBooking` consults portal slot locks before picking a court; the
+// real lock helpers run against an injected no-lock store (kept deterministic).
+const realSlotLockService = require('../services/slotLock.service');
+stubModule('../services/slotLock.service', {
+  buildForeignLockedKeys: realSlotLockService.buildForeignLockedKeys,
+  createMongooseSlotLockStore: () => ({
+    findActiveLocksForDate: async () => [],
+  }),
+});
 stubModule('../models/admin.model', {
   find: () => ({ select: () => ({ lean: async () => [] }) }),
 });
