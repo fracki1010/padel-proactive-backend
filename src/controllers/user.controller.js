@@ -20,6 +20,11 @@ const {
   shouldBlockVerifiedPhoneEdit,
   canonicalPhoneKey,
 } = require("../services/clientVerification.service");
+const {
+  parseUserListParams,
+  buildSearchCondition,
+  paginateUserList,
+} = require("../utils/userListQuery");
 const toIsoDateOnly = (value) => {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value || "");
@@ -74,11 +79,20 @@ const getUsers = async (req, res, deps = {}) => {
     const trustedClientConfirmationCount =
       await getTrustedConfirmationCount(companyId);
 
+    // No query params -> legacy behavior (full list). `search` and/or
+    // pagination params -> filtered + paginated response.
+    const { search, page, limit, isPaginated } = parseUserListParams(req.query);
+    const searchCondition = buildSearchCondition(search);
+
     const [users, unlinkedAccounts] = await Promise.all([
-      UserModel.find(companyScope(req, companyId)).sort({ name: 1 }),
+      UserModel.find({
+        ...companyScope(req, companyId),
+        ...(searchCondition || {}),
+      }).sort({ name: 1 }),
       ClientAccountModel.find({
         ...companyScope(req, companyId),
         linkedUserId: null,
+        ...(searchCondition || {}),
       }),
     ]);
 
@@ -99,24 +113,47 @@ const getUsers = async (req, res, deps = {}) => {
       a.name.localeCompare(b.name),
     );
 
-    // Single batched query: which of these Users have a linked ClientAccount.
-    const userIds = users.map((user) => user._id);
-    const linkedAccounts = userIds.length
+    const { items, total } = paginateUserList(
+      combined,
+      isPaginated ? page : 1,
+      isPaginated ? limit : Math.max(combined.length, 1),
+    );
+
+    // Single batched query: which of the returned Users have a linked
+    // ClientAccount. Ran only over the returned slice so paginated reads
+    // stay cheap.
+    const returnedUserIds = items
+      .filter((user) => !user.isClientAccount)
+      .map((user) => user._id);
+    const linkedAccounts = returnedUserIds.length
       ? await ClientAccountModel.find({
           ...companyScope(req, companyId),
-          linkedUserId: { $in: userIds },
+          linkedUserId: { $in: returnedUserIds },
         }).select("linkedUserId")
       : [];
     const verifiedUserIds = buildVerifiedUserIdSet(linkedAccounts);
 
+    if (!isPaginated) {
+      res.status(200).json({
+        success: true,
+        count: combined.length,
+        data: combined.map((u) =>
+          enrichUserWithReliability(u, trustedClientConfirmationCount, {
+            isVerified: isUserVerified(u, verifiedUserIds),
+          }),
+        ),
+      });
+      return;
+    }
+
     res.status(200).json({
       success: true,
-      count: combined.length,
-      data: combined.map((u) =>
+      data: items.map((u) =>
         enrichUserWithReliability(u, trustedClientConfirmationCount, {
           isVerified: isUserVerified(u, verifiedUserIds),
         }),
       ),
+      total,
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
