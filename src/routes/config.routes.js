@@ -43,6 +43,8 @@ const {
   setDailyAvailabilityDigestStatus,
   getDepositSettings,
   setDepositSettings,
+  getBookingsPaused,
+  setBookingsPaused,
 } = require("../services/appConfig.service");
 const {
   getWhatsappGroupsSnapshot,
@@ -1307,11 +1309,14 @@ router.get(
   async (req, res) => {
     try {
       const companyId = resolveCompanyId(req);
-      const settings = await getDepositSettings(companyId);
-      const credentials = await getMaskedCredential(companyId);
+      const [settings, credentials, bookingsPaused] = await Promise.all([
+        getDepositSettings(companyId),
+        getMaskedCredential(companyId),
+        getBookingsPaused(companyId),
+      ]);
       return res.status(200).json({
         success: true,
-        data: { ...settings, credentials },
+        data: { ...settings, bookingsPaused, credentials },
       });
     } catch (error) {
       return respondDepositError(res, error);
@@ -1319,19 +1324,48 @@ router.get(
   },
 );
 
-// PUT /api/config/deposits — merge deposit config (400 on invalid bounds)
+// PUT /api/config/deposits — merge deposit config (400 on invalid bounds).
+// Also accepts the per-company `bookingsPaused` switch (boolean), which rides
+// the same settings PUT so the admin panel has one persistence path.
 router.put(
   "/deposits",
   requireRole("admin", "super_admin"),
   async (req, res) => {
     try {
       const companyId = resolveCompanyId(req);
-      await setDepositSettings(req.body || {}, companyId);
-      const settings = await getDepositSettings(companyId);
-      const credentials = await getMaskedCredential(companyId);
+      const body = req.body || {};
+      const { bookingsPaused, ...depositBody } = body;
+
+      if (bookingsPaused !== undefined && typeof bookingsPaused !== "boolean") {
+        return res.status(400).json({
+          success: false,
+          error: "bookingsPaused debe ser un booleano.",
+        });
+      }
+
+      const hasDepositUpdate = Object.keys(depositBody).length > 0;
+      if (!hasDepositUpdate && typeof bookingsPaused !== "boolean") {
+        return res.status(400).json({
+          success: false,
+          error: "Debés enviar al menos una configuración válida.",
+        });
+      }
+
+      if (hasDepositUpdate) {
+        await setDepositSettings(depositBody, companyId);
+      }
+      if (typeof bookingsPaused === "boolean") {
+        await setBookingsPaused(bookingsPaused, companyId);
+      }
+
+      const [settings, credentials, savedPaused] = await Promise.all([
+        getDepositSettings(companyId),
+        getMaskedCredential(companyId),
+        getBookingsPaused(companyId),
+      ]);
       return res.status(200).json({
         success: true,
-        data: { ...settings, credentials },
+        data: { ...settings, bookingsPaused: savedPaused, credentials },
       });
     } catch (error) {
       return respondDepositError(res, error);

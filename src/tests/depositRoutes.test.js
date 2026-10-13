@@ -47,6 +47,7 @@ appConfigService.getDepositSettings = async (companyId) => {
   state.calls.getDepositSettings.push(companyId);
   return { ...state.current };
 };
+appConfigService.getBookingsPaused = async () => false;
 appConfigService.setDepositSettings = async (settings, companyId) => {
   const { valid, error } = resolveDepositUpdate(settings, state.current);
   if (!valid) {

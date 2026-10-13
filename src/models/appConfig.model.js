@@ -52,6 +52,10 @@ const appConfigSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    bookingsPaused: {
+      type: Boolean,
+      default: false,
+    },
     cancellationGroupEnabled: {
       type: Boolean,
       default: false,
