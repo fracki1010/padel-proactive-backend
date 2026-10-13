@@ -268,6 +268,8 @@ const uploadCoverImage = async (req, res) => {
       public_id: String(companyId),
       overwrite: true,
       resource_type: "image",
+      // Normaliza cualquier entrada (incl. HEIC de iPhone) a un JPG visible en el navegador.
+      format: "jpg",
     });
 
     company.coverImage = result.secure_url;
