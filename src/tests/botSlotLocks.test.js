@@ -123,6 +123,7 @@ stubModule('../services/fixedTurnsMaterialization.service', {
   materializeFixedBookingsForDate: async () => {},
 });
 stubModule('../services/appConfig.service', {
+  getBookingsPaused: async () => false,
   getDepositSettings: async () => ({
     depositEnabled: false,
     depositAmount: 0,

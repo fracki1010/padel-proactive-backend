@@ -65,6 +65,7 @@ const depositNotificationService = require('../services/depositNotification.serv
 const whatsappRuntimeStateService = require('../services/whatsappRuntimeState.service');
 
 appConfigService.getDepositSettings = async () => ({ ...state.settings });
+appConfigService.getBookingsPaused = async () => false;
 appConfigService.getCancellationLockHours = async () => 2;
 slotLockService.createMongooseSlotLockStore = () => ({
   deleteLocksForSlot: async () => {},

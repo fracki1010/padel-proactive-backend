@@ -130,6 +130,7 @@ stubModule('../services/mercadopago.service', {
 });
 
 stubModule('../services/appConfig.service', {
+  getBookingsPaused: async () => false,
   getDepositSettings: async () => ({ ...state.settings }),
   getCancellationLockHours: async () => 0,
   getPenaltyLimit: async () => 2,

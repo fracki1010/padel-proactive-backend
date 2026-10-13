@@ -35,7 +35,12 @@ const {
   sendBookingWhatsappConfirmation,
 } = require("../services/bookingWhatsappConfirmation.service");
 const { getWhatsappIdByPhone } = require("../utils/getWhatsappIdByPhone");
-const { getCancellationLockHours, getDepositSettings, isPhoneExempt } = require("../services/appConfig.service");
+const {
+  getCancellationLockHours,
+  getDepositSettings,
+  isPhoneExempt,
+  getBookingsPaused,
+} = require("../services/appConfig.service");
 const {
   buildActiveAnnouncementsQuery,
 } = require("../services/announcement.service");
@@ -184,17 +189,18 @@ const getClubInfo = async (req, res) => {
       return res.status(404).json({ success: false, error: "Club no encontrado" });
     }
 
-    const [courts, slots, cancellationLockHours, contactPhone] = await Promise.all([
+    const [courts, slots, cancellationLockHours, contactPhone, bookingsPaused] = await Promise.all([
       Court.find({ companyId: company._id, isActive: true }).sort({ name: 1 }),
       TimeSlot.find({ companyId: company._id, isActive: true }).sort({ order: 1, startTime: 1 }),
       getCancellationLockHours(company._id),
       resolveClubContactPhone(company._id),
+      getBookingsPaused(company._id),
     ]);
 
     return res.json({
       success: true,
       data: {
-        club: { name: company.name, address: company.address, coverImage: company.coverImage || "", companyId: company._id.toString(), contactPhone },
+        club: { name: company.name, address: company.address, coverImage: company.coverImage || "", companyId: company._id.toString(), contactPhone, bookingsPaused },
         courts,
         slots,
         cancellationLockHours,
@@ -302,6 +308,15 @@ const acquireSlotLockHandler = async (req, res) => {
     const company = await resolveCompany(req.params.slug);
     if (!company) {
       return res.status(404).json({ success: false, error: "Club no encontrado" });
+    }
+
+    // Bookings paused: clients may still consult availability (grid untouched)
+    // but must not lock a slot before trying to book.
+    if (await getBookingsPaused(company._id)) {
+      return res.status(409).json({
+        success: false,
+        error: "Las reservas están pausadas por el momento.",
+      });
     }
 
     const { courtId, slotId, date, holderId } = req.body;
@@ -860,6 +875,15 @@ const createClientBooking = async (req, res) => {
 
     if (String(req.clientUser.companyId) !== String(company._id)) {
       return res.status(403).json({ success: false, error: "No autorizado para este club" });
+    }
+
+    // Bookings paused: clients keep read access to the grid but cannot create
+    // bookings. The admin booking flow is a separate controller and stays open.
+    if (await getBookingsPaused(company._id)) {
+      return res.status(409).json({
+        success: false,
+        error: "Las reservas están pausadas por el momento.",
+      });
     }
 
     const { courtId, slotId, date, holderId } = req.body;

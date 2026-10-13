@@ -700,6 +700,25 @@ const setDailyAvailabilityDigestLastSentDate = async (
   );
 };
 
+// Per-company "pause bookings" switch: while true, clients can still SEE the
+// availability grid but cannot create bookings nor acquire slot locks (both the
+// public portal and the WhatsApp bot are gated). The admin booking flow is not.
+// Mirrors the other boolean config switches; a missing/legacy doc reads as false.
+const getBookingsPaused = async (companyId = null, options = {}) => {
+  const config = await resolveConfigModel(options).findOne(
+    buildConfigFilter(companyId),
+  );
+  return Boolean(config?.bookingsPaused);
+};
+
+const setBookingsPaused = async (enabled, companyId = null, options = {}) => {
+  return resolveConfigModel(options).findOneAndUpdate(
+    buildConfigFilter(companyId),
+    { $set: { bookingsPaused: Boolean(enabled) } },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+  );
+};
+
 module.exports = {
   DEFAULT_ATTENDANCE_RESPONSE_TIMEOUT_MINUTES,
   DEFAULT_ATTENDANCE_REMINDER_LEAD_MINUTES,
@@ -751,4 +770,6 @@ module.exports = {
   removeDepositExemptPhone,
   isDepositExempt,
   isPhoneExempt,
+  getBookingsPaused,
+  setBookingsPaused,
 };

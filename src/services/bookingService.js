@@ -13,6 +13,7 @@ const {
   getPenaltyLimit,
   getPenaltySystemEnabled,
   isPhoneExempt,
+  getBookingsPaused,
 } = require("./appConfig.service");
 const {
   buildDepositFields,
@@ -196,6 +197,12 @@ const createNewBooking = async ({
     const user = await User.findOne({ ...scope, phoneNumber: normalizedClientPhone });
     if (user && user.isSuspended) {
       return { success: false, error: "SUSPENDED" };
+    }
+    // Bookings paused: clients may still SEE the availability offered by the
+    // bot (offer flows call the availability service), but the bot cannot take
+    // a turn. The admin booking flow is a separate controller and stays open.
+    if (await getBookingsPaused(companyId)) {
+      return { success: false, error: "PAUSED" };
     }
     const bookingDate = dateStringToUtcMidnight(dateStr);
 
