@@ -70,6 +70,11 @@ const {
   getWhatsappRuntimeState,
 } = require("../services/whatsappRuntimeState.service");
 const { CryptoConfigError } = require("../lib/crypto");
+const {
+  groupSlotsByCourt,
+  collectEffectiveSlots,
+  buildAvailabilityPairs,
+} = require("../utils/slotSchedule");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 // Duración de la sesión del cliente del portal (default: 1 año).
@@ -276,13 +281,11 @@ const getAvailability = async (req, res) => {
       occupiedSet.add(`${String(fixed.court)}_${String(fixed.timeSlot)}`);
     }
 
-    const baseAvailability = courts.flatMap((court) =>
-      slots.map((slot) => ({
-        courtId: String(court._id),
-        slotId: String(slot._id),
-        available: !occupiedSet.has(`${String(court._id)}_${String(slot._id)}`),
-      })),
-    );
+    const baseAvailability = buildAvailabilityPairs({
+      courts,
+      slots,
+      occupiedSet,
+    });
 
     const availability = applyLocksToAvailability({
       availability: baseAvailability,
@@ -291,9 +294,16 @@ const getAvailability = async (req, res) => {
       now,
     });
 
+    // Only slots that apply to at least one court are exposed: this keeps the
+    // portal grid free of orphan per-court slots. The response shape is
+    // unchanged (courts, slots, availability).
+    const { general: generalSlots, byCourt: courtSlots } =
+      groupSlotsByCourt(slots);
+    const effectiveSlots = collectEffectiveSlots(courts, generalSlots, courtSlots);
+
     return res.json({
       success: true,
-      data: { closed: false, courts, slots, availability },
+      data: { closed: false, courts, slots: effectiveSlots, availability },
     });
   } catch (err) {
     console.error("[public.controller]", err);

@@ -53,6 +53,13 @@ const {
   DEFAULT_SERVICE_NAME,
   getWorkerHealth,
 } = require("../services/workerHeartbeat.service");
+const {
+  TIME_REGEX,
+  MIN_DURATION_MINUTES,
+  MAX_DURATION_MINUTES,
+  deriveEndTime,
+  isValidDuration,
+} = require("../utils/slotSchedule");
 const DAILY_HOUR_REGEX = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 const toObjectId = (value) => {
@@ -322,16 +329,31 @@ router.get("/slots", async (req, res) => {
 });
 
 // POST /api/config/slots
+// Body: { startTime: "HH:MM", durationMinutes: 15..480, price >= 0, label?, isActive?, court? }
+// `endTime` is DERIVED (startTime + durationMinutes); it is never an input.
+// `court` (when provided) must belong to the caller's company. Omitting it
+// creates a GENERAL slot that applies to every court without own slots.
 router.post("/slots", async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
-    const { startTime, endTime, label, price, isActive } = req.body || {};
+    const { startTime, durationMinutes, label, price, isActive, court } =
+      req.body || {};
     const scope = companyScope(req, companyId);
 
-    if (!startTime || !endTime) {
+    const normalizedStart =
+      typeof startTime === "string" ? startTime.trim() : "";
+    if (!TIME_REGEX.test(normalizedStart)) {
       return res.status(400).json({
         success: false,
-        error: "startTime y endTime son obligatorios.",
+        error: "startTime debe tener formato HH:MM.",
+      });
+    }
+
+    const parsedDuration = Number(durationMinutes);
+    if (!isValidDuration(parsedDuration)) {
+      return res.status(400).json({
+        success: false,
+        error: `durationMinutes debe ser un entero entre ${MIN_DURATION_MINUTES} y ${MAX_DURATION_MINUTES}.`,
       });
     }
 
@@ -343,19 +365,37 @@ router.post("/slots", async (req, res) => {
       });
     }
 
-    const normalizedStart = String(startTime).trim();
-    const normalizedEnd = String(endTime).trim();
+    let courtId = null;
+    if (court !== undefined && court !== null && String(court).trim() !== "") {
+      courtId = toObjectId(court);
+      if (!courtId) {
+        return res.status(400).json({
+          success: false,
+          error: "La cancha indicada no es válida.",
+        });
+      }
+      const courtDoc = await Court.findOne({ _id: courtId, ...scope });
+      if (!courtDoc) {
+        return res.status(400).json({
+          success: false,
+          error: "La cancha no pertenece a tu club.",
+        });
+      }
+    }
+
+    const normalizedEnd = deriveEndTime(normalizedStart, parsedDuration);
 
     const duplicated = await TimeSlot.findOne({
       ...scope,
       startTime: normalizedStart,
       endTime: normalizedEnd,
+      court: courtId,
     });
 
     if (duplicated) {
       return res.status(400).json({
         success: false,
-        error: "Ya existe un turno con ese horario.",
+        error: "Ya existe un turno con ese horario para esa cancha.",
       });
     }
 
@@ -366,6 +406,8 @@ router.post("/slots", async (req, res) => {
       ...scope,
       startTime: normalizedStart,
       endTime: normalizedEnd,
+      durationMinutes: parsedDuration,
+      court: courtId,
       ...(typeof label === "string" && label.trim() ? { label: label.trim() } : {}),
       price: parsedPrice,
       ...(typeof isActive === "boolean" ? { isActive } : {}),
@@ -379,9 +421,11 @@ router.post("/slots", async (req, res) => {
 });
 
 // PUT /api/config/slots/base-price
+// Bulk price update. Without `court` it behaves exactly as before (every slot
+// of the company). With `court` it only touches that court's slots.
 router.put("/slots/base-price", async (req, res) => {
   try {
-    const { price } = req.body;
+    const { price, court } = req.body;
     const companyId = resolveCompanyId(req);
     const parsedPrice = Number(price);
 
@@ -392,7 +436,25 @@ router.put("/slots/base-price", async (req, res) => {
       });
     }
 
-    const baseFilter = companyScope(req, companyId);
+    const baseFilter = { ...companyScope(req, companyId) };
+    if (court !== undefined && court !== null && String(court).trim() !== "") {
+      const courtId = toObjectId(court);
+      if (!courtId) {
+        return res.status(400).json({
+          success: false,
+          error: "La cancha indicada no es válida.",
+        });
+      }
+      const courtDoc = await Court.findOne({ _id: courtId, ...baseFilter });
+      if (!courtDoc) {
+        return res.status(400).json({
+          success: false,
+          error: "La cancha no pertenece a tu club.",
+        });
+      }
+      baseFilter.court = courtId;
+    }
+
     const result = await TimeSlot.updateMany(baseFilter, { $set: { price: parsedPrice } });
     const slots = await TimeSlot.find(baseFilter).sort({ order: 1 });
 
@@ -410,17 +472,140 @@ router.put("/slots/base-price", async (req, res) => {
 });
 
 // PUT /api/config/slots/:id
+// Partial update. When startTime and/or durationMinutes change, `endTime` is
+// recomputed from the resulting duration.
 router.put("/slots/:id", async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
+    const scope = companyScope(req, companyId);
+    const body = req.body || {};
+    const update = {};
+
+    if (body.startTime !== undefined) {
+      const normalizedStart =
+        typeof body.startTime === "string" ? body.startTime.trim() : "";
+      if (!TIME_REGEX.test(normalizedStart)) {
+        return res.status(400).json({
+          success: false,
+          error: "startTime debe tener formato HH:MM.",
+        });
+      }
+      update.startTime = normalizedStart;
+    }
+
+    if (body.durationMinutes !== undefined) {
+      const parsedDuration = Number(body.durationMinutes);
+      if (!isValidDuration(parsedDuration)) {
+        return res.status(400).json({
+          success: false,
+          error: `durationMinutes debe ser un entero entre ${MIN_DURATION_MINUTES} y ${MAX_DURATION_MINUTES}.`,
+        });
+      }
+      update.durationMinutes = parsedDuration;
+    }
+
+    if (body.price !== undefined) {
+      const parsedPrice = Number(body.price);
+      if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+        return res.status(400).json({
+          success: false,
+          error: "El precio debe ser un número válido mayor o igual a 0.",
+        });
+      }
+      update.price = parsedPrice;
+    }
+
+    if (body.isActive !== undefined) {
+      update.isActive = Boolean(body.isActive);
+    }
+
+    if (body.label !== undefined) {
+      update.label = typeof body.label === "string" ? body.label.trim() : "";
+    }
+
+    if (body.court !== undefined) {
+      if (body.court === null || String(body.court).trim() === "") {
+        update.court = null;
+      } else {
+        const courtId = toObjectId(body.court);
+        if (!courtId) {
+          return res.status(400).json({
+            success: false,
+            error: "La cancha indicada no es válida.",
+          });
+        }
+        const courtDoc = await Court.findOne({ _id: courtId, ...scope });
+        if (!courtDoc) {
+          return res.status(400).json({
+            success: false,
+            error: "La cancha no pertenece a tu club.",
+          });
+        }
+        update.court = courtId;
+      }
+    }
+
+    // endTime is derived whenever the start or the duration changes.
+    if (update.startTime !== undefined || update.durationMinutes !== undefined) {
+      const existing = await TimeSlot.findOne({
+        _id: req.params.id,
+        ...scope,
+      });
+      if (!existing) {
+        return res.status(404).json({
+          success: false,
+          error: "Turno no encontrado.",
+        });
+      }
+      const effectiveStart =
+        update.startTime !== undefined ? update.startTime : existing.startTime;
+      const effectiveDuration =
+        update.durationMinutes !== undefined
+          ? update.durationMinutes
+          : existing.durationMinutes;
+      if (isValidDuration(effectiveDuration)) {
+        update.endTime = deriveEndTime(effectiveStart, effectiveDuration);
+      }
+    }
+
     const updatedSlot = await TimeSlot.findOneAndUpdate(
-      { _id: req.params.id, ...companyScope(req, companyId) },
-      req.body,
+      { _id: req.params.id, ...scope },
+      update,
       { returnDocument: "after" },
     );
+
+    if (!updatedSlot) {
+      return res.status(404).json({
+        success: false,
+        error: "Turno no encontrado.",
+      });
+    }
+
     res.status(200).json({ success: true, data: updatedSlot });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /api/config/slots/:id
+router.delete("/slots/:id", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const deletedSlot = await TimeSlot.findOneAndDelete({
+      _id: req.params.id,
+      ...companyScope(req, companyId),
+    });
+
+    if (!deletedSlot) {
+      return res.status(404).json({
+        success: false,
+        error: "Turno no encontrado.",
+      });
+    }
+
+    return res.status(200).json({ success: true, data: { _id: req.params.id } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
