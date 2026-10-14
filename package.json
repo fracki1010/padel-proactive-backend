@@ -33,6 +33,7 @@
     "test:wa:audit": "node src/scripts/replayWhatsappDefensiveTests.js --file docs/whatsapp-defensive-test-messages.txt --report-file docs/whatsapp-replay-audit-latest.md --strict-assertions",
     "test:wa:audit:safe": "node src/scripts/replayWhatsappDefensiveTests.js --file docs/whatsapp-defensive-test-messages.txt --report-file docs/whatsapp-replay-audit-latest.md --strict-assertions --max-ai-calls 30",
     "migrate:multi-tenant": "node scripts/migrateToMultiTenant.js",
+    "migrate:slot-duration": "node scripts/backfillSlotDuration.js",
     "requeue:wa-queued": "node scripts/requeueQueuedWhatsappCommands.js",
     "test:api": "node --test src/tests/api-sections-16-17-18.test.js"
   },
