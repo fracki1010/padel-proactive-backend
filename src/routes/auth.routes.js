@@ -13,7 +13,7 @@ const { protect } = require("../middleware/auth.middleware");
 const { createRateLimiter } = require("../middleware/rateLimit.middleware");
 
 // 5 intentos de login por IP cada 15 minutos
-const loginRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 20 });
+const loginRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 10 });
 
 const coverUpload = multer({
   storage: multer.memoryStorage(),
