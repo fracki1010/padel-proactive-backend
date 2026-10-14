@@ -85,6 +85,27 @@ const companyScope = (req, companyId) => {
   return { companyId: req.user?.companyId || null };
 };
 
+// Resolves a CONCRETE company for WRITE endpoints. Unlike `companyScope`, a
+// write must never fall back to an empty scope: that makes duplicate checks
+// leak across companies and persists orphan docs with `companyId: null`.
+// Returns `{ companyId, error }` where `error` is a user-facing message when
+// the target company cannot be determined.
+const resolveWritableCompanyId = (req) => {
+  if (req.user?.role === "super_admin") {
+    const companyId = toObjectId(req.query.companyId || req.body.companyId || null);
+    if (!companyId) {
+      return { companyId: null, error: "Especificá la empresa (companyId)." };
+    }
+    return { companyId, error: null };
+  }
+
+  const companyId = req.user?.companyId || null;
+  if (!companyId) {
+    return { companyId: null, error: "No tenés una empresa asignada." };
+  }
+  return { companyId, error: null };
+};
+
 const firstBoolean = (values = []) => values.find((value) => typeof value === "boolean");
 const firstString = (values = []) =>
   values.find((value) => typeof value === "string" && value.trim().length >= 0);
@@ -174,7 +195,11 @@ router.get("/courts", async (req, res) => {
 // POST /api/config/courts
 router.post("/courts", async (req, res) => {
   try {
-    const companyId = resolveCompanyId(req);
+    const { companyId, error: scopeError } = resolveWritableCompanyId(req);
+    if (scopeError) {
+      return res.status(400).json({ success: false, error: scopeError });
+    }
+
     const { name, courtType, surface, isIndoor, isActive } = req.body || {};
 
     if (!name || !String(name).trim()) {
@@ -186,7 +211,8 @@ router.post("/courts", async (req, res) => {
 
     const normalizedName = String(name).trim();
     const escapedCourtName = escapeRegex(normalizedName);
-    const scope = companyScope(req, companyId);
+    // The name is unique PER COMPANY — never across companies.
+    const scope = { companyId };
     const existingCourt = await Court.findOne({
       ...scope,
       name: { $regex: new RegExp(`^${escapedCourtName}$`, "i") },
@@ -222,8 +248,31 @@ router.post("/courts", async (req, res) => {
 // PUT /api/config/courts/:id
 router.put("/courts/:id", async (req, res) => {
   try {
-    const companyId = resolveCompanyId(req);
-    const scope = companyScope(req, companyId);
+    const courtId = req.params.id;
+
+    // Load the court FIRST so its own company drives the scope. This lets a
+    // super_admin edit a club's court without passing companyId while never
+    // matching another club's courts.
+    const targetCourt = await Court.findOne({ _id: courtId });
+    if (!targetCourt) {
+      return res.status(404).json({
+        success: false,
+        error: "Cancha no encontrada.",
+      });
+    }
+
+    // Non-super admins may only touch courts of their own company.
+    if (
+      req.user?.role !== "super_admin" &&
+      String(targetCourt.companyId || "") !== String(req.user?.companyId || "")
+    ) {
+      return res.status(404).json({
+        success: false,
+        error: "Cancha no encontrada.",
+      });
+    }
+
+    const scope = { companyId: targetCourt.companyId ?? null };
     const payload = { ...req.body };
 
     if (Object.prototype.hasOwnProperty.call(payload, "name")) {
@@ -238,7 +287,7 @@ router.put("/courts/:id", async (req, res) => {
       const escapedCourtName = escapeRegex(normalizedName);
       const duplicatedCourt = await Court.findOne({
         ...scope,
-        _id: { $ne: req.params.id },
+        _id: { $ne: courtId },
         name: { $regex: new RegExp(`^${escapedCourtName}$`, "i") },
       });
 
@@ -253,7 +302,7 @@ router.put("/courts/:id", async (req, res) => {
     }
 
     const updatedCourt = await Court.findOneAndUpdate(
-      { _id: req.params.id, ...scope },
+      { _id: courtId, ...scope },
       payload,
       { returnDocument: "after" },
     );
@@ -335,10 +384,14 @@ router.get("/slots", async (req, res) => {
 // creates a GENERAL slot that applies to every court without own slots.
 router.post("/slots", async (req, res) => {
   try {
-    const companyId = resolveCompanyId(req);
+    const { companyId, error: scopeError } = resolveWritableCompanyId(req);
+    if (scopeError) {
+      return res.status(400).json({ success: false, error: scopeError });
+    }
+
     const { startTime, durationMinutes, label, price, isActive, court } =
       req.body || {};
-    const scope = companyScope(req, companyId);
+    const scope = { companyId };
 
     const normalizedStart =
       typeof startTime === "string" ? startTime.trim() : "";
@@ -1220,8 +1273,12 @@ router.get("/club-closures", async (req, res) => {
 // POST /api/config/club-closures
 router.post("/club-closures", async (req, res) => {
   try {
-    const companyId = resolveCompanyId(req);
-    const scope = companyScope(req, companyId);
+    const { companyId, error: scopeError } = resolveWritableCompanyId(req);
+    if (scopeError) {
+      return res.status(400).json({ success: false, error: scopeError });
+    }
+
+    const scope = { companyId };
     const { startDate, endDate, reason } = req.body || {};
 
     if (!startDate || !ISO_DATE_REGEX.test(String(startDate))) {
