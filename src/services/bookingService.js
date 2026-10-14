@@ -40,6 +40,8 @@ const {
   groupSlotsByCourt,
   slotsForCourt,
   collectEffectiveSlots,
+  findEffectiveSlotForCourt,
+  courtsOfferingStartTime,
 } = require("../utils/slotSchedule");
 const {
   normalizeCanonicalClientPhone,
@@ -170,6 +172,29 @@ const getCancellationContactPhone = async (companyId = null) => {
   return String(admins[0].phone || "").trim();
 };
 
+// Looks for an active booking of the same client (by phone/whatsapp identity)
+// among a set of candidate slots for the date. Used to short-circuit a repeated
+// CREATE_BOOKING before any court/busy resolution.
+const findClientBookingInSlots = async ({
+  scope,
+  bookingDate,
+  slotIds = [],
+  identity,
+}) => {
+  if (!slotIds.length) return null;
+  const slotBookings = await Booking.find({
+    ...scope,
+    date: bookingDate,
+    timeSlot: { $in: slotIds },
+    status: { $ne: "cancelado" },
+  })
+    .select("_id clientPhone clientWhatsappId canonicalClientId")
+    .lean();
+
+  const matched = matchBookingsByClient(identity, slotBookings);
+  return matched.matchedBookings.length > 0 ? matched.matchedBookings[0] : null;
+};
+
 /**
  * Crea una nueva reserva.
  * Soporta selección automática ("INDIFERENTE") o específica de cancha.
@@ -220,12 +245,6 @@ const createNewBooking = async ({
       searchDate: bookingDate,
     });
 
-    // 2. Buscar el TimeSlot correspondiente (Ej: "20:00")
-    const slot = await TimeSlot.findOne({ ...scope, startTime: timeStr });
-    if (!slot) {
-      return { success: false, error: "INVALID_TIME" }; // "Ese horario no existe"
-    }
-
     // 2.0 Límite diario por cliente: máximo N reservas activas por día
     // Los turnos fijos no cuentan — son recurrentes acordados, no reservas nuevas del día
     const dailyLimitIdentityFilter = canonicalClientId
@@ -249,64 +268,13 @@ const createNewBooking = async ({
       };
     }
 
-    // 2.1 Evitar duplicados del mismo cliente en la misma fecha/hora
-    if (!allowSameClientSameSlot) {
-      const slotBookings = await Booking.find({
-        ...scope,
-        date: bookingDate,
-        timeSlot: slot._id,
-        status: { $ne: "cancelado" },
-      })
-        .select("_id clientPhone clientWhatsappId canonicalClientId")
-        .lean();
-
-      const matchedClientInSlot = matchBookingsByClient(
-        requestIdentityPayload,
-        slotBookings,
-      );
-
-      if (matchedClientInSlot.matchedBookings.length > 0) {
-        const existingClientBooking = matchedClientInSlot.matchedBookings[0];
-        return {
-          success: false,
-          error: "ALREADY_BOOKED",
-          data: {
-            bookingId: existingClientBooking._id,
-            startTime: slot.startTime,
-            endTime: slot.endTime,
-          },
-        };
-      }
-    }
-
-    let selectedCourt = null;
-
-    // =================================================================
-    // ESTRATEGIA DE SELECCIÓN DE CANCHA
-    // =================================================================
-
     const { COURT_TYPES } = require('../models/court.model');
 
-    const busyBookings = await Booking.find({
-      ...scope,
-      date: bookingDate,
-      timeSlot: slot._id,
-      status: { $ne: "cancelado" },
-    });
-    // Active fixed weekly turns own the court for this slot that weekday: they
-    // MUST join the busy pool so neither INDIFERENTE nor a type filter can pick
-    // a court that is blocked by a turno fijo.
-    const fixedCourtsForSlot = await FixedBooking.find({
-      ...scope,
-      weekday: getWeekdayFromDate(bookingDate),
-      timeSlot: slot._id,
-      status: "active",
-    }).select("court");
     // Short-lived slot locks held by portal visitors own the court+slot until
     // they expire. The bot never owns a portal lock, so every active lock is
     // foreign and must join the busy pool: INDIFERENTE, court-type and
-    // specific-court selections all consult `busyCourtIds`, so a locked slot
-    // can neither be offered nor booked. Reuses the portal lock store.
+    // specific-court selections all consult the busy set, so a locked slot can
+    // neither be offered nor booked. Reuses the portal lock store.
     const now = new Date();
     const activeLocks = await createMongooseSlotLockStore().findActiveLocksForDate({
       companyId,
@@ -314,31 +282,104 @@ const createNewBooking = async ({
       now,
     });
     const lockedKeys = buildForeignLockedKeys(activeLocks, null, now);
-    const slotIdStr = String(slot._id);
-    const lockedCourtIdsForSlot = [...lockedKeys]
-      .filter((key) => key.endsWith(`_${slotIdStr}`))
-      .map((key) => key.slice(0, key.length - slotIdStr.length - 1));
-    const busyCourtIds = [
-      ...busyBookings.map((b) => b.court.toString()),
-      ...fixedCourtsForSlot.map((f) => f.court.toString()),
-      ...lockedCourtIdsForSlot,
-    ];
 
-    // CASO A: AL USUARIO LE DA IGUAL ("INDIFERENTE")
-    if (courtName === "INDIFERENTE") {
+    const busyCourtIdsForSlot = async (slotId) => {
+      const slotIdStr = String(slotId);
+      const busyBookings = await Booking.find({
+        ...scope,
+        date: bookingDate,
+        timeSlot: slotId,
+        status: { $ne: "cancelado" },
+      });
+      // Active fixed weekly turns own the court for this slot that weekday: they
+      // MUST join the busy pool so no selection can pick a blocked court.
+      const fixedCourtsForSlot = await FixedBooking.find({
+        ...scope,
+        weekday: getWeekdayFromDate(bookingDate),
+        timeSlot: slotId,
+        status: "active",
+      }).select("court");
+      const lockedCourtIdsForSlot = [...lockedKeys]
+        .filter((key) => key.endsWith(`_${slotIdStr}`))
+        .map((key) => key.slice(0, key.length - slotIdStr.length - 1));
+      return new Set([
+        ...busyBookings.map((b) => String(b.court)),
+        ...fixedCourtsForSlot.map((f) => String(f.court)),
+        ...lockedCourtIdsForSlot,
+      ]);
+    };
+
+    let selectedCourt = null;
+    let slot = null;
+
+    // =================================================================
+    // RESOLUCIÓN DEL SLOT + ESTRATEGIA DE SELECCIÓN DE CANCHA
+    // (regla per-court: una cancha con horarios propios ignora los generales)
+    // =================================================================
+
+    if (courtName === "INDIFERENTE" || COURT_TYPES.includes(courtName)) {
       const allCourts = await Court.find({ ...scope, isActive: true });
-      selectedCourt = allCourts.find(
-        (c) => !busyCourtIds.includes(c._id.toString()),
+      const allSlots = await TimeSlot.find({ ...scope, isActive: true });
+
+      // Only courts whose effective schedule actually offers the requested time.
+      const offeringCourts = courtsOfferingStartTime({
+        courts: allCourts,
+        slots: allSlots,
+        startTime: timeStr,
+      });
+      if (offeringCourts.length === 0) {
+        return { success: false, error: "INVALID_TIME" };
+      }
+
+      const slotByCourt = new Map(
+        offeringCourts.map((court) => [
+          String(court._id),
+          findEffectiveSlotForCourt({
+            courtId: court._id,
+            slots: allSlots,
+            startTime: timeStr,
+          }),
+        ]),
       );
+      const candidateSlotIds = [
+        ...new Set([...slotByCourt.values()].map((s) => String(s._id))),
+      ];
+
+      // 2.1 Evitar duplicados del mismo cliente en la misma fecha/hora
+      if (!allowSameClientSameSlot) {
+        const matched = await findClientBookingInSlots({
+          scope,
+          bookingDate,
+          slotIds: candidateSlotIds,
+          identity: requestIdentityPayload,
+        });
+        if (matched) {
+          return {
+            success: false,
+            error: "ALREADY_BOOKED",
+            data: { bookingId: matched._id, startTime: timeStr },
+          };
+        }
+      }
+
+      const busyBySlotId = new Map();
+      for (const slotId of candidateSlotIds) {
+        busyBySlotId.set(slotId, await busyCourtIdsForSlot(slotId));
+      }
+      const isCourtFree = (court) => {
+        const courtSlot = slotByCourt.get(String(court._id));
+        if (!courtSlot) return false;
+        const busy = busyBySlotId.get(String(courtSlot._id)) || new Set();
+        return !busy.has(String(court._id));
+      };
+
+      const courtsPool =
+        courtName === "INDIFERENTE"
+          ? offeringCourts
+          : offeringCourts.filter((court) => court.courtType === courtName);
+      selectedCourt = courtsPool.find(isCourtFree);
       if (!selectedCourt) return { success: false, error: "BUSY" };
-    }
-    // CASO B: EL USUARIO ELIGIÓ UN TIPO (Ej: "Techada", "VIP")
-    else if (COURT_TYPES.includes(courtName)) {
-      const courtsOfType = await Court.find({ ...scope, isActive: true, courtType: courtName });
-      selectedCourt = courtsOfType.find(
-        (c) => !busyCourtIds.includes(c._id.toString()),
-      );
-      if (!selectedCourt) return { success: false, error: "BUSY" };
+      slot = slotByCourt.get(String(selectedCourt._id));
     }
     // CASO C: EL USUARIO ELIGIÓ UNA CANCHA ESPECÍFICA POR NOMBRE
     else {
@@ -357,6 +398,48 @@ const createNewBooking = async ({
           return { success: false, error: "CANCHA_NOT_FOUND" };
       }
 
+      // The slot must belong to the court's effective schedule: its OWN slot
+      // when the court has own slots, otherwise the GENERAL slot. A court with
+      // own slots never falls back to a general time it does not own.
+      const courtHasOwnSlot = await TimeSlot.findOne({
+        ...scope,
+        court: selectedCourt._id,
+        isActive: true,
+      });
+      slot = courtHasOwnSlot
+        ? await TimeSlot.findOne({
+            ...scope,
+            startTime: timeStr,
+            court: selectedCourt._id,
+          })
+        : await TimeSlot.findOne({ ...scope, startTime: timeStr, court: null });
+
+      if (!slot) {
+        return { success: false, error: "INVALID_TIME" }; // "Ese horario no existe"
+      }
+
+      // 2.1 Evitar duplicados del mismo cliente en la misma fecha/hora
+      if (!allowSameClientSameSlot) {
+        const matched = await findClientBookingInSlots({
+          scope,
+          bookingDate,
+          slotIds: [String(slot._id)],
+          identity: requestIdentityPayload,
+        });
+        if (matched) {
+          return {
+            success: false,
+            error: "ALREADY_BOOKED",
+            data: {
+              bookingId: matched._id,
+              startTime: slot.startTime,
+              endTime: slot.endTime,
+            },
+          };
+        }
+      }
+
+      const busyCourtIds = await busyCourtIdsForSlot(slot._id);
       const existingBooking = await Booking.findOne({
         ...scope,
         court: selectedCourt._id,
@@ -365,10 +448,7 @@ const createNewBooking = async ({
         status: { $ne: "cancelado" },
       });
 
-      if (
-        existingBooking ||
-        busyCourtIds.includes(selectedCourt._id.toString())
-      ) {
+      if (existingBooking || busyCourtIds.has(String(selectedCourt._id))) {
         return { success: false, error: "BUSY" };
       }
     }

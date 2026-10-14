@@ -26,6 +26,7 @@ const {
   normalizeCanonicalClientPhone,
   normalizeClientIdentity,
 } = require("../utils/identityNormalization");
+const { findEffectiveSlotForCourt } = require("../utils/slotSchedule");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
@@ -150,13 +151,25 @@ const createBooking = async (req, res) => {
         .json({ success: false, error: "Cancha no encontrada" });
     }
 
-    // B. Buscar el TimeSlot
+    // B. Buscar el TimeSlot.
+    // With an explicit slotId the slot is taken as-is. When only a start time
+    // is given, the slot is resolved WITHIN the court's effective schedule
+    // (per-court override): a court with own slots must own that time; only a
+    // court without own slots falls back to the general slot.
     let slot;
     const tenantSlotFilter = companyScope(req, companyId);
     if (slotId) {
       slot = await TimeSlot.findOne({ _id: slotId, ...tenantSlotFilter });
     } else {
-      slot = await TimeSlot.findOne({ startTime: time, ...tenantSlotFilter });
+      const allSlots = await TimeSlot.find({
+        ...tenantSlotFilter,
+        isActive: true,
+      });
+      slot = findEffectiveSlotForCourt({
+        courtId,
+        slots: allSlots,
+        startTime: time,
+      });
     }
 
     if (!slot) {

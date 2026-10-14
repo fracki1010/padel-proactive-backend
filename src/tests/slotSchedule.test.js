@@ -21,6 +21,8 @@ const {
   slotsForCourt,
   collectEffectiveSlots,
   buildAvailabilityPairs,
+  findEffectiveSlotForCourt,
+  courtsOfferingStartTime,
 } = require('../utils/slotSchedule');
 
 // ── deriveEndTime ────────────────────────────────────────────────────────────
@@ -160,4 +162,57 @@ test('buildAvailabilityPairs marks occupied court+slot pairs unavailable', () =>
   const b = pairs.find((p) => p.courtId === 'court-B');
   assert.equal(a.available, false);
   assert.equal(b.available, true);
+});
+
+// ── court-scoped slot resolution (booking creation) ──────────────────────────
+
+test('findEffectiveSlotForCourt returns the court own slot at that time', () => {
+  const slots = [GENERAL_20, OWN_A_10];
+
+  const own = findEffectiveSlotForCourt({
+    courtId: 'court-A',
+    slots,
+    startTime: '10:00',
+  });
+  assert.equal(own._id, 's-10a');
+});
+
+test('findEffectiveSlotForCourt does NOT fall back for a court that owns slots', () => {
+  const slots = [GENERAL_20, OWN_A_10];
+
+  const missing = findEffectiveSlotForCourt({
+    courtId: 'court-A',
+    slots,
+    startTime: '20:00',
+  });
+  assert.equal(missing, null, 'court A owns slots, so 20:00 is not offered');
+});
+
+test('findEffectiveSlotForCourt falls back to the general slot without own slots', () => {
+  const slots = [GENERAL_20, OWN_A_10];
+
+  const general = findEffectiveSlotForCourt({
+    courtId: 'court-B',
+    slots,
+    startTime: '20:00',
+  });
+  assert.equal(general._id, 's-20');
+});
+
+test('courtsOfferingStartTime only lists courts whose effective set has the time', () => {
+  const slots = [GENERAL_20, OWN_A_10];
+
+  const at10 = courtsOfferingStartTime({
+    courts: [COURT_A, COURT_B],
+    slots,
+    startTime: '10:00',
+  });
+  assert.deepEqual(at10.map((c) => c._id), ['court-A']);
+
+  const at20 = courtsOfferingStartTime({
+    courts: [COURT_A, COURT_B],
+    slots,
+    startTime: '20:00',
+  });
+  assert.deepEqual(at20.map((c) => c._id), ['court-B']);
 });

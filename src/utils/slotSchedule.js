@@ -117,6 +117,29 @@ const buildAvailabilityPairs = ({
   );
 };
 
+// Booking-creation counterpart of the override rule: the slot a court may book
+// for a given start time. A court with own slots must own that time; only a
+// court without own slots falls back to the general slot. Returns null when the
+// court does not offer that time.
+const findEffectiveSlotForCourt = ({ courtId, slots = [], startTime } = {}) => {
+  const { general, byCourt } = groupSlotsByCourt(slots);
+  const effective = slotsForCourt(courtId, general, byCourt);
+  return (
+    effective.find((slot) => String(slot.startTime) === String(startTime)) ||
+    null
+  );
+};
+
+// The active courts whose effective schedule actually offers `startTime`.
+const courtsOfferingStartTime = ({ courts = [], slots = [], startTime } = {}) => {
+  const { general, byCourt } = groupSlotsByCourt(slots);
+  return courts.filter((court) =>
+    slotsForCourt(court?._id, general, byCourt).some(
+      (slot) => String(slot.startTime) === String(startTime),
+    ),
+  );
+};
+
 module.exports = {
   TIME_REGEX,
   MIN_DURATION_MINUTES,
@@ -129,4 +152,6 @@ module.exports = {
   slotsForCourt,
   collectEffectiveSlots,
   buildAvailabilityPairs,
+  findEffectiveSlotForCourt,
+  courtsOfferingStartTime,
 };
