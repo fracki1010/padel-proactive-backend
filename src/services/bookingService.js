@@ -37,6 +37,11 @@ const {
   createMongooseSlotLockStore,
 } = require("./slotLock.service");
 const {
+  groupSlotsByCourt,
+  slotsForCourt,
+  collectEffectiveSlots,
+} = require("../utils/slotSchedule");
+const {
   normalizeCanonicalClientPhone,
   toE164,
   stripPhoneForClientDisplay,
@@ -650,9 +655,35 @@ const getAvailableSlots = async (dateStr, options = {}) => {
     // 3. Traer datos maestros
     const allSlots = await TimeSlot.find({ ...scope, isActive: true }).sort({ order: 1 });
     const allCourts = await Court.find({ ...scope, isActive: true }).select("_id courtType").lean();
-    const totalCourtsCount = allCourts.length;
     const distinctTypes = [...new Set(allCourts.map((c) => c.courtType || "Estándar"))];
     const hasMultipleTypes = distinctTypes.length > 1;
+
+    // Override rule: each court uses its OWN active slots when it has any,
+    // otherwise it falls back to the GENERAL active slots. A slot's applicable
+    // courts drive both the capacity filter and the reported `totalCourts`.
+    const { general: generalSlots, byCourt: courtSlots } =
+      groupSlotsByCourt(allSlots);
+    const effectiveSlotsByCourt = new Map(
+      allCourts.map((court) => [
+        String(court._id),
+        slotsForCourt(court._id, generalSlots, courtSlots),
+      ]),
+    );
+    const effectiveSlots = collectEffectiveSlots(
+      allCourts,
+      generalSlots,
+      courtSlots,
+    );
+    const applicableCourtsBySlot = new Map(
+      effectiveSlots.map((slot) => [
+        String(slot._id),
+        allCourts.filter((court) =>
+          (effectiveSlotsByCourt.get(String(court._id)) || []).some(
+            (candidate) => String(candidate._id) === String(slot._id),
+          ),
+        ),
+      ]),
+    );
 
     // 4. Traer reservas
     const bookings = await Booking.find({
@@ -685,22 +716,32 @@ const getAvailableSlots = async (dateStr, options = {}) => {
     });
     const lockedSet = buildForeignLockedKeys(activeLocks, null, now);
 
-    // 5. Filtrar
-    const availableSlots = allSlots.filter((slot) => {
-      // A. Filtro de Capacidad Total (reservas + turnos fijos + locks activos)
-      const bookingsForThisSlot = bookings.filter(
-        (b) => b.timeSlot.toString() === slot._id.toString(),
+    // Occupied courts for a slot = booked + fixed + locked, limited to the
+    // courts this slot actually applies to.
+    const occupiedCourtsForSlot = (slot) => {
+      const occupied = new Set(
+        bookings
+          .filter((b) => String(b.timeSlot) === String(slot._id))
+          .map((b) => String(b.court))
+          .filter(Boolean),
       );
-      const occupiedCourtsForThisSlot = new Set(
-        bookingsForThisSlot.map((b) => b.court?.toString()).filter(Boolean),
-      );
-      for (const court of allCourts) {
+      for (const court of applicableCourtsBySlot.get(String(slot._id)) || []) {
         const key = `${String(court._id)}_${String(slot._id)}`;
         if (fixedSet.has(key) || lockedSet.has(key)) {
-          occupiedCourtsForThisSlot.add(court._id.toString());
+          occupied.add(String(court._id));
         }
       }
-      if (occupiedCourtsForThisSlot.size >= totalCourtsCount) return false;
+      return occupied;
+    };
+
+    // 5. Filtrar
+    const availableSlots = effectiveSlots.filter((slot) => {
+      const applicable = applicableCourtsBySlot.get(String(slot._id)) || [];
+      if (applicable.length === 0) return false;
+
+      // A. Filtro de Capacidad Total (reservas + turnos fijos + locks activos)
+      const occupied = occupiedCourtsForSlot(slot);
+      if (occupied.size >= applicable.length) return false;
 
       // B. Filtro de Tiempo Pasado (Solo si es hoy)
       if (isToday) {
@@ -714,11 +755,13 @@ const getAvailableSlots = async (dateStr, options = {}) => {
     });
 
     const blockedSlots = {};
-    for (const slot of allSlots) {
+    for (const slot of effectiveSlots) {
+      const applicable = applicableCourtsBySlot.get(String(slot._id)) || [];
+      if (applicable.length === 0) continue;
       const bookingsForThisSlot = bookings.filter(
-        (b) => b.timeSlot.toString() === slot._id.toString(),
+        (b) => String(b.timeSlot) === String(slot._id),
       );
-      if (bookingsForThisSlot.length >= totalCourtsCount && totalCourtsCount > 0) {
+      if (bookingsForThisSlot.length >= applicable.length) {
         blockedSlots[slot.startTime] = {
           isFixed: bookingsForThisSlot.every((b) => b.isFixed === true),
         };
@@ -729,20 +772,10 @@ const getAvailableSlots = async (dateStr, options = {}) => {
       success: true,
       date: dateStr,
       slots: availableSlots.map((s) => {
-        const bookingsForThisSlot = bookings.filter(
-          (b) => b.timeSlot.toString() === s._id.toString(),
-        );
-        const bookedCourtIds = new Set(
-          bookingsForThisSlot.map((b) => b.court?.toString()).filter(Boolean),
-        );
-        for (const court of allCourts) {
-          const key = `${String(court._id)}_${String(s._id)}`;
-          if (fixedSet.has(key) || lockedSet.has(key)) {
-            bookedCourtIds.add(court._id.toString());
-          }
-        }
-        const availableCourtsList = allCourts.filter(
-          (c) => !bookedCourtIds.has(c._id.toString()),
+        const applicable = applicableCourtsBySlot.get(String(s._id)) || [];
+        const occupied = occupiedCourtsForSlot(s);
+        const availableCourtsList = applicable.filter(
+          (c) => !occupied.has(String(c._id)),
         );
         const availableCourts = availableCourtsList.length;
 
@@ -760,7 +793,7 @@ const getAvailableSlots = async (dateStr, options = {}) => {
           time: s.startTime,
           price: s.price,
           availableCourts,
-          totalCourts: totalCourtsCount,
+          totalCourts: applicable.length,
           ...(courtTypes && { courtTypes }),
         };
       }),
