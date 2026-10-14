@@ -323,11 +323,11 @@ router.put("/courts/:id", async (req, res) => {
 // DELETE /api/config/courts/:id
 router.delete("/courts/:id", async (req, res) => {
   try {
-    const companyId = resolveCompanyId(req);
-    const scope = companyScope(req, companyId);
     const courtId = req.params.id;
+    const isSuperAdmin = req.user?.role === "super_admin";
 
-    const court = await Court.findOne({ _id: courtId, ...scope });
+    // Resolve the court by id FIRST; ownership is enforced below.
+    const court = await Court.findOne({ _id: courtId });
     if (!court) {
       return res.status(404).json({
         success: false,
@@ -335,13 +335,25 @@ router.delete("/courts/:id", async (req, res) => {
       });
     }
 
+    // Non-super admins may only touch courts of their own company.
+    if (
+      !isSuperAdmin &&
+      String(court.companyId || "") !== String(req.user?.companyId || "")
+    ) {
+      return res.status(404).json({
+        success: false,
+        error: "Cancha no encontrada.",
+      });
+    }
+
+    const ownerScope = isSuperAdmin ? {} : { companyId: req.user.companyId };
     const [bookingsCount, fixedTurnsCount] = await Promise.all([
       Booking.countDocuments({
-        ...scope,
+        ...ownerScope,
         court: courtId,
       }),
       User.countDocuments({
-        ...scope,
+        ...ownerScope,
         "fixedTurns.court": courtId,
       }),
     ]);
@@ -354,7 +366,18 @@ router.delete("/courts/:id", async (req, res) => {
       });
     }
 
-    await court.deleteOne();
+    // Never delete with an empty scope: derive the filter from the court.
+    const deleteFilter = isSuperAdmin
+      ? { _id: courtId }
+      : { _id: courtId, companyId: req.user.companyId };
+    const deletedCourt = await Court.findOneAndDelete(deleteFilter);
+    if (!deletedCourt) {
+      return res.status(404).json({
+        success: false,
+        error: "Cancha no encontrada.",
+      });
+    }
+
     return res.status(200).json({ success: true, data: { _id: courtId } });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
@@ -479,7 +502,10 @@ router.post("/slots", async (req, res) => {
 router.put("/slots/base-price", async (req, res) => {
   try {
     const { price, court } = req.body;
-    const companyId = resolveCompanyId(req);
+    const { companyId, error: scopeError } = resolveWritableCompanyId(req);
+    if (scopeError) {
+      return res.status(400).json({ success: false, error: scopeError });
+    }
     const parsedPrice = Number(price);
 
     if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
@@ -489,7 +515,8 @@ router.put("/slots/base-price", async (req, res) => {
       });
     }
 
-    const baseFilter = { ...companyScope(req, companyId) };
+    // Bulk writes must never default to an empty scope.
+    const baseFilter = { companyId };
     if (court !== undefined && court !== null && String(court).trim() !== "") {
       const courtId = toObjectId(court);
       if (!courtId) {
@@ -529,8 +556,23 @@ router.put("/slots/base-price", async (req, res) => {
 // recomputed from the resulting duration.
 router.put("/slots/:id", async (req, res) => {
   try {
-    const companyId = resolveCompanyId(req);
-    const scope = companyScope(req, companyId);
+    const slotId = req.params.id;
+    const isSuperAdmin = req.user?.role === "super_admin";
+
+    // Resolve the slot by id FIRST; ownership is enforced below.
+    const existingSlot = await TimeSlot.findOne({ _id: slotId });
+    if (!existingSlot) {
+      return res.status(404).json({ success: false, error: "Turno no encontrado." });
+    }
+    if (
+      !isSuperAdmin &&
+      String(existingSlot.companyId || "") !== String(req.user?.companyId || "")
+    ) {
+      return res.status(404).json({ success: false, error: "Turno no encontrado." });
+    }
+
+    // Never write with an empty scope: derive the filter from the slot.
+    const scope = { companyId: existingSlot.companyId ?? null };
     const body = req.body || {};
     const update = {};
 
@@ -600,29 +642,19 @@ router.put("/slots/:id", async (req, res) => {
 
     // endTime is derived whenever the start or the duration changes.
     if (update.startTime !== undefined || update.durationMinutes !== undefined) {
-      const existing = await TimeSlot.findOne({
-        _id: req.params.id,
-        ...scope,
-      });
-      if (!existing) {
-        return res.status(404).json({
-          success: false,
-          error: "Turno no encontrado.",
-        });
-      }
       const effectiveStart =
-        update.startTime !== undefined ? update.startTime : existing.startTime;
+        update.startTime !== undefined ? update.startTime : existingSlot.startTime;
       const effectiveDuration =
         update.durationMinutes !== undefined
           ? update.durationMinutes
-          : existing.durationMinutes;
+          : existingSlot.durationMinutes;
       if (isValidDuration(effectiveDuration)) {
         update.endTime = deriveEndTime(effectiveStart, effectiveDuration);
       }
     }
 
     const updatedSlot = await TimeSlot.findOneAndUpdate(
-      { _id: req.params.id, ...scope },
+      { _id: slotId, ...scope },
       update,
       { returnDocument: "after" },
     );
@@ -643,11 +675,25 @@ router.put("/slots/:id", async (req, res) => {
 // DELETE /api/config/slots/:id
 router.delete("/slots/:id", async (req, res) => {
   try {
-    const companyId = resolveCompanyId(req);
-    const deletedSlot = await TimeSlot.findOneAndDelete({
-      _id: req.params.id,
-      ...companyScope(req, companyId),
-    });
+    const slotId = req.params.id;
+    const isSuperAdmin = req.user?.role === "super_admin";
+
+    // Resolve the slot by id FIRST; ownership is enforced below.
+    const existingSlot = await TimeSlot.findOne({ _id: slotId });
+    if (!existingSlot) {
+      return res.status(404).json({ success: false, error: "Turno no encontrado." });
+    }
+    if (
+      !isSuperAdmin &&
+      String(existingSlot.companyId || "") !== String(req.user?.companyId || "")
+    ) {
+      return res.status(404).json({ success: false, error: "Turno no encontrado." });
+    }
+
+    const deleteFilter = isSuperAdmin
+      ? { _id: slotId }
+      : { _id: slotId, companyId: req.user.companyId };
+    const deletedSlot = await TimeSlot.findOneAndDelete(deleteFilter);
 
     if (!deletedSlot) {
       return res.status(404).json({
@@ -656,7 +702,7 @@ router.delete("/slots/:id", async (req, res) => {
       });
     }
 
-    return res.status(200).json({ success: true, data: { _id: req.params.id } });
+    return res.status(200).json({ success: true, data: { _id: slotId } });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -1307,8 +1353,24 @@ router.post("/club-closures", async (req, res) => {
 // PUT /api/config/club-closures/:id
 router.put("/club-closures/:id", async (req, res) => {
   try {
-    const companyId = resolveCompanyId(req);
-    const scope = companyScope(req, companyId);
+    const closureId = req.params.id;
+    const isSuperAdmin = req.user?.role === "super_admin";
+
+    // Resolve the closure by id FIRST; ownership is enforced below.
+    const targetClosure = await ClubClosure.findOne({ _id: closureId });
+    if (!targetClosure) {
+      return res.status(404).json({ success: false, error: "Cierre no encontrado." });
+    }
+
+    if (
+      !isSuperAdmin &&
+      String(targetClosure.companyId || "") !== String(req.user?.companyId || "")
+    ) {
+      return res.status(404).json({ success: false, error: "Cierre no encontrado." });
+    }
+
+    // Never write with an empty scope: derive the filter from the closure.
+    const scope = { companyId: targetClosure.companyId ?? null };
     const { startDate, endDate, reason } = req.body || {};
     const update = {};
 
@@ -1329,7 +1391,7 @@ router.put("/club-closures/:id", async (req, res) => {
     }
 
     const closure = await ClubClosure.findOneAndUpdate(
-      { _id: req.params.id, ...scope },
+      { _id: closureId, ...scope },
       update,
       { returnDocument: "after" },
     );
@@ -1351,15 +1413,32 @@ router.put("/club-closures/:id", async (req, res) => {
 // DELETE /api/config/club-closures/:id
 router.delete("/club-closures/:id", async (req, res) => {
   try {
-    const companyId = resolveCompanyId(req);
-    const scope = companyScope(req, companyId);
-    const closure = await ClubClosure.findOneAndDelete({ _id: req.params.id, ...scope });
+    const closureId = req.params.id;
+    const isSuperAdmin = req.user?.role === "super_admin";
+
+    // Resolve the closure by id FIRST; ownership is enforced below.
+    const targetClosure = await ClubClosure.findOne({ _id: closureId });
+    if (!targetClosure) {
+      return res.status(404).json({ success: false, error: "Cierre no encontrado." });
+    }
+
+    if (
+      !isSuperAdmin &&
+      String(targetClosure.companyId || "") !== String(req.user?.companyId || "")
+    ) {
+      return res.status(404).json({ success: false, error: "Cierre no encontrado." });
+    }
+
+    const deleteFilter = isSuperAdmin
+      ? { _id: closureId }
+      : { _id: closureId, companyId: req.user.companyId };
+    const closure = await ClubClosure.findOneAndDelete(deleteFilter);
 
     if (!closure) {
       return res.status(404).json({ success: false, error: "Cierre no encontrado." });
     }
 
-    return res.status(200).json({ success: true, data: { _id: req.params.id } });
+    return res.status(200).json({ success: true, data: { _id: closureId } });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }

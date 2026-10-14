@@ -1,14 +1,15 @@
 'use strict';
 
 // Route-layer tests for per-company scoping of WRITE endpoints in config.routes.
-// Court / TimeSlot / ClubClosure models are replaced with in-memory fakes so the
-// behavior (tenant scoping, duplicate-name checks and cross-company validation)
-// runs without a database. Handlers are pulled straight off the Express router,
-// mirroring slotRoutes.test.js.
+// Court / TimeSlot / ClubClosure / Booking / User models are replaced with
+// in-memory fakes so the behavior (tenant scoping, duplicate-name checks and
+// cross-company validation) runs without a database. Handlers are pulled
+// straight off the Express router, mirroring slotRoutes.test.js.
 //
 // Regression guarded here: a super_admin with no companyId used to resolve an
-// EMPTY scope, so the duplicate-name check scanned courts of EVERY company and
-// new docs were persisted with companyId: null (orphans).
+// EMPTY scope, so duplicate-name checks scanned courts of EVERY company, new
+// docs were persisted with companyId: null (orphans), and bulk/delete writes
+// could touch rows of other companies.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -23,11 +24,17 @@ const COURT_A1 = '64b0000000000000000000ca';
 const COURT_A2 = '64b0000000000000000000cc';
 const COURT_B1 = '64b0000000000000000000cb';
 const COURT_B2 = '64b0000000000000000000cd';
+const SLOT_A = '64b0000000000000000000fa';
+const SLOT_B = '64b0000000000000000000fb';
+const CLOSURE_A = '64b0000000000000000000ea';
+const CLOSURE_B = '64b0000000000000000000eb';
 
 const state = {
   courts: [],
   slots: [],
   closures: [],
+  bookings: [],
+  fixedTurns: [],
   nextId: 1,
 };
 
@@ -40,6 +47,8 @@ const resetState = () => {
   ];
   state.slots = [];
   state.closures = [];
+  state.bookings = [];
+  state.fixedTurns = [];
   state.nextId = 1;
 };
 
@@ -86,6 +95,21 @@ const stubModule = (requestPath, exportsObj) => {
   };
 };
 
+// Factories read `state[key]` on every call so resetState() swapping arrays
+// does not leave stale references behind.
+const findOneAndUpdate = (key) => async (filter, update) => {
+  const target = state[key].find((doc) => matches(doc, filter));
+  if (!target) return null;
+  Object.assign(target, update.$set || update);
+  return target;
+};
+
+const findOneAndDelete = (key) => async (filter) => {
+  const index = state[key].findIndex((doc) => matches(doc, filter));
+  if (index === -1) return null;
+  return state[key].splice(index, 1)[0];
+};
+
 stubModule('../models/court.model', {
   COURT_TYPES: ['Techada', 'Descubierta', 'VIP'],
   findOne: async (filter = {}) =>
@@ -98,12 +122,8 @@ stubModule('../models/court.model', {
     state.courts.push(created);
     return created;
   },
-  findOneAndUpdate: async (filter, update) => {
-    const target = state.courts.find((court) => matches(court, filter));
-    if (!target) return null;
-    Object.assign(target, update.$set || update);
-    return target;
-  },
+  findOneAndUpdate: findOneAndUpdate('courts'),
+  findOneAndDelete: findOneAndDelete('courts'),
 });
 
 stubModule('../models/timeSlot.model', {
@@ -116,9 +136,18 @@ stubModule('../models/timeSlot.model', {
     state.slots.push(created);
     return created;
   },
-  findOneAndUpdate: async () => null,
-  updateMany: async () => ({ modifiedCount: 0 }),
-  findOneAndDelete: async () => null,
+  findOneAndUpdate: findOneAndUpdate('slots'),
+  updateMany: async (filter, update) => {
+    let modifiedCount = 0;
+    for (const slot of state.slots) {
+      if (matches(slot, filter)) {
+        Object.assign(slot, update.$set || update);
+        modifiedCount += 1;
+      }
+    }
+    return { modifiedCount };
+  },
+  findOneAndDelete: findOneAndDelete('slots'),
 });
 
 stubModule('../models/clubClosure.model', {
@@ -126,13 +155,25 @@ stubModule('../models/clubClosure.model', {
     sort: () =>
       Promise.resolve(state.closures.filter((closure) => matches(closure, filter))),
   }),
+  findOne: async (filter = {}) =>
+    state.closures.find((closure) => matches(closure, filter)) || null,
   create: async (doc) => {
     const created = { _id: `closure-${state.nextId++}`, ...doc };
     state.closures.push(created);
     return created;
   },
-  findOneAndUpdate: async () => null,
-  findOneAndDelete: async () => null,
+  findOneAndUpdate: findOneAndUpdate('closures'),
+  findOneAndDelete: findOneAndDelete('closures'),
+});
+
+stubModule('../models/booking.model', {
+  countDocuments: async (filter = {}) =>
+    state.bookings.filter((booking) => matches(booking, filter)).length,
+});
+
+stubModule('../models/user.model', {
+  countDocuments: async (filter = {}) =>
+    state.fixedTurns.filter((entry) => matches(entry, filter)).length,
 });
 
 const configRouter = require('../routes/config.routes');
@@ -182,8 +223,14 @@ const superReq = (overrides = {}) => ({
 
 const postCourts = getHandler('/courts', 'post');
 const putCourt = getHandler('/courts/:id', 'put');
+const deleteCourt = getHandler('/courts/:id', 'delete');
 const postSlots = getHandler('/slots', 'post');
+const putBasePrice = getHandler('/slots/base-price', 'put');
+const putSlot = getHandler('/slots/:id', 'put');
+const deleteSlot = getHandler('/slots/:id', 'delete');
 const postClosures = getHandler('/club-closures', 'post');
+const putClosure = getHandler('/club-closures/:id', 'put');
+const deleteClosure = getHandler('/club-closures/:id', 'delete');
 
 // ── POST /courts ─────────────────────────────────────────────────────────────
 
@@ -318,6 +365,45 @@ test('PUT /courts/:id forbids an admin from editing another company court', asyn
   );
 });
 
+// ── DELETE /courts/:id ───────────────────────────────────────────────────────
+
+test('DELETE /courts/:id as super_admin without companyId deletes any club court', async () => {
+  resetState();
+  const res = createResponse();
+  await deleteCourt(superReq({ params: { id: COURT_B1 } }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(state.courts.find((court) => court._id === COURT_B1), undefined);
+});
+
+test('DELETE /courts/:id lets an admin delete a court of its own company', async () => {
+  resetState();
+  const res = createResponse();
+  await deleteCourt(adminReq(COMPANY_A, { params: { id: COURT_A1 } }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(state.courts.find((court) => court._id === COURT_A1), undefined);
+});
+
+test('DELETE /courts/:id returns 404 when an admin targets another company court', async () => {
+  resetState();
+  const res = createResponse();
+  await deleteCourt(adminReq(COMPANY_A, { params: { id: COURT_B1 } }), res);
+
+  assert.equal(res.statusCode, 404);
+  assert.equal(state.courts.length, 3);
+});
+
+test('DELETE /courts/:id refuses a court that still has bookings', async () => {
+  resetState();
+  state.bookings.push({ _id: 'booking-1', companyId: COMPANY_A, court: COURT_A1 });
+  const res = createResponse();
+  await deleteCourt(adminReq(COMPANY_A, { params: { id: COURT_A1 } }), res);
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(state.courts.find((court) => court._id === COURT_A1).name, 'Cancha A1');
+});
+
 // ── POST /slots ──────────────────────────────────────────────────────────────
 
 test('POST /slots as super_admin without companyId returns 400', async () => {
@@ -375,6 +461,103 @@ test('POST /slots as super_admin scopes the created slot to the resolved company
   assert.equal(norm(res.payload.data.court), COURT_A1);
 });
 
+// ── PUT /slots/base-price ────────────────────────────────────────────────────
+
+test('PUT /slots/base-price as super_admin without companyId returns 400', async () => {
+  resetState();
+  state.slots.push(
+    { _id: SLOT_A, companyId: COMPANY_A, price: 1, order: 1 },
+    { _id: SLOT_B, companyId: COMPANY_B, price: 1, order: 2 },
+  );
+  const res = createResponse();
+  await putBasePrice(superReq({ body: { price: 9000 } }), res);
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.payload.error, 'Especificá la empresa (companyId).');
+  assert.equal(state.slots[0].price, 1);
+  assert.equal(state.slots[1].price, 1);
+});
+
+test('PUT /slots/base-price as super_admin only touches the resolved company', async () => {
+  resetState();
+  state.slots.push(
+    { _id: SLOT_A, companyId: COMPANY_A, price: 1, order: 1 },
+    { _id: SLOT_B, companyId: COMPANY_B, price: 1, order: 2 },
+  );
+  const res = createResponse();
+  await putBasePrice(
+    superReq({ body: { price: 9000, companyId: COMPANY_A } }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(state.slots.find((slot) => slot._id === SLOT_A).price, 9000);
+  assert.equal(state.slots.find((slot) => slot._id === SLOT_B).price, 1);
+});
+
+// ── PUT /slots/:id ───────────────────────────────────────────────────────────
+
+test('PUT /slots/:id as super_admin derives the company from the slot', async () => {
+  resetState();
+  state.slots.push({
+    _id: SLOT_B,
+    companyId: COMPANY_B,
+    startTime: '10:00',
+    endTime: '11:00',
+    durationMinutes: 60,
+    price: 1,
+    court: null,
+  });
+  const res = createResponse();
+  await putSlot(superReq({ params: { id: SLOT_B }, body: { durationMinutes: 30 } }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.data.durationMinutes, 30);
+  assert.equal(res.payload.data.endTime, '10:30');
+});
+
+test('PUT /slots/:id returns 404 when an admin targets another company slot', async () => {
+  resetState();
+  state.slots.push({
+    _id: SLOT_B,
+    companyId: COMPANY_B,
+    startTime: '10:00',
+    endTime: '11:00',
+    durationMinutes: 60,
+    price: 1,
+  });
+  const res = createResponse();
+  await putSlot(
+    adminReq(COMPANY_A, { params: { id: SLOT_B }, body: { isActive: false } }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 404);
+  assert.equal(state.slots[0].isActive, undefined);
+});
+
+// ── DELETE /slots/:id ────────────────────────────────────────────────────────
+
+test('DELETE /slots/:id as super_admin without companyId deletes any club slot', async () => {
+  resetState();
+  state.slots.push({ _id: SLOT_B, companyId: COMPANY_B, price: 1 });
+  const res = createResponse();
+  await deleteSlot(superReq({ params: { id: SLOT_B } }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(state.slots.length, 0);
+});
+
+test('DELETE /slots/:id returns 404 when an admin targets another company slot', async () => {
+  resetState();
+  state.slots.push({ _id: SLOT_B, companyId: COMPANY_B, price: 1 });
+  const res = createResponse();
+  await deleteSlot(adminReq(COMPANY_A, { params: { id: SLOT_B } }), res);
+
+  assert.equal(res.statusCode, 404);
+  assert.equal(state.slots.length, 1);
+});
+
 // ── POST /club-closures ──────────────────────────────────────────────────────
 
 test('POST /club-closures as super_admin without companyId returns 400', async () => {
@@ -407,4 +590,101 @@ test('POST /club-closures as super_admin scopes the closure to the resolved comp
   assert.equal(res.statusCode, 201);
   assert.equal(norm(res.payload.data.companyId), COMPANY_B);
   assert.equal(state.closures.length, 1);
+});
+
+// ── PUT /club-closures/:id ───────────────────────────────────────────────────
+
+test('PUT /club-closures/:id as super_admin without companyId updates any club closure', async () => {
+  resetState();
+  state.closures.push({
+    _id: CLOSURE_B,
+    companyId: COMPANY_B,
+    startDate: '2026-02-01',
+    endDate: '2026-02-02',
+    reason: '',
+  });
+  const res = createResponse();
+  await putClosure(
+    superReq({ params: { id: CLOSURE_B }, body: { reason: 'Mantenimiento' } }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.data.reason, 'Mantenimiento');
+});
+
+test('PUT /club-closures/:id returns 404 when an admin targets another company closure', async () => {
+  resetState();
+  state.closures.push({
+    _id: CLOSURE_B,
+    companyId: COMPANY_B,
+    startDate: '2026-02-01',
+    endDate: '2026-02-02',
+    reason: '',
+  });
+  const res = createResponse();
+  await putClosure(
+    adminReq(COMPANY_A, { params: { id: CLOSURE_B }, body: { reason: 'Hijacked' } }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 404);
+  assert.equal(state.closures[0].reason, '');
+});
+
+// ── DELETE /club-closures/:id ────────────────────────────────────────────────
+
+test('DELETE /club-closures/:id as super_admin without companyId deletes any club closure', async () => {
+  resetState();
+  state.closures.push({
+    _id: CLOSURE_B,
+    companyId: COMPANY_B,
+    startDate: '2026-02-01',
+    endDate: '2026-02-02',
+    reason: '',
+  });
+  const res = createResponse();
+  await deleteClosure(superReq({ params: { id: CLOSURE_B } }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(state.closures.length, 0);
+});
+
+test('DELETE /club-closures/:id returns 404 when an admin targets another company closure', async () => {
+  resetState();
+  state.closures.push({
+    _id: CLOSURE_A,
+    companyId: COMPANY_A,
+    startDate: '2026-03-01',
+    endDate: '2026-03-02',
+    reason: '',
+  });
+  state.closures.push({
+    _id: CLOSURE_B,
+    companyId: COMPANY_B,
+    startDate: '2026-03-03',
+    endDate: '2026-03-04',
+    reason: '',
+  });
+  const res = createResponse();
+  await deleteClosure(adminReq(COMPANY_A, { params: { id: CLOSURE_B } }), res);
+
+  assert.equal(res.statusCode, 404);
+  assert.equal(state.closures.length, 2);
+});
+
+test('DELETE /club-closures/:id lets an admin delete a closure of its own company', async () => {
+  resetState();
+  state.closures.push({
+    _id: CLOSURE_A,
+    companyId: COMPANY_A,
+    startDate: '2026-03-01',
+    endDate: '2026-03-02',
+    reason: '',
+  });
+  const res = createResponse();
+  await deleteClosure(adminReq(COMPANY_A, { params: { id: CLOSURE_A } }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(state.closures.length, 0);
 });
