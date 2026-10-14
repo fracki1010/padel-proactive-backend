@@ -108,6 +108,12 @@ stubModule('../models/timeSlot.model', {
     }
     return { modifiedCount };
   },
+  findOneAndDelete: async (filter = {}) => {
+    const index = state.slots.findIndex((slot) => matches(slot, filter));
+    if (index === -1) return null;
+    const [removed] = state.slots.splice(index, 1);
+    return removed;
+  },
 });
 
 stubModule('../models/court.model', {
@@ -375,7 +381,6 @@ test('PUT /slots/base-price scopes the update to a single court when provided', 
 });
 
 // ── GET /slots ───────────────────────────────────────────────────────────────
-
 test('GET /slots returns general and per-court slots with their metadata', async () => {
   resetState();
   state.slots.push(
@@ -389,4 +394,37 @@ test('GET /slots returns general and per-court slots with their metadata', async
   assert.equal(res.payload.data.length, 2);
   assert.equal(res.payload.data.find((s) => s._id === 'c1').durationMinutes, 60);
   assert.equal(String(res.payload.data.find((s) => s._id === 'c1').court), COURT_A);
+});
+
+// ── DELETE /slots/:id ────────────────────────────────────────────────────────
+
+test('DELETE /slots/:id removes a company slot', async () => {
+  resetState();
+  state.slots.push({
+    _id: 'slot-del',
+    companyId: COMPANY_A,
+    startTime: '20:00',
+    endTime: '21:00',
+  });
+  const res = createResponse();
+  await getHandler(configRouter, '/slots/:id', 'delete')(
+    adminReq({ params: { id: 'slot-del' } }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(state.slots.length, 0);
+});
+
+test('DELETE /slots/:id refuses a slot that belongs to another company', async () => {
+  resetState();
+  state.slots.push({ _id: 'slot-other', companyId: COMPANY_B });
+  const res = createResponse();
+  await getHandler(configRouter, '/slots/:id', 'delete')(
+    adminReq({ params: { id: 'slot-other' } }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 404);
+  assert.equal(state.slots.length, 1);
 });

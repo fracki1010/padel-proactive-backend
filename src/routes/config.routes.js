@@ -587,6 +587,28 @@ router.put("/slots/:id", async (req, res) => {
   }
 });
 
+// DELETE /api/config/slots/:id
+router.delete("/slots/:id", async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const deletedSlot = await TimeSlot.findOneAndDelete({
+      _id: req.params.id,
+      ...companyScope(req, companyId),
+    });
+
+    if (!deletedSlot) {
+      return res.status(404).json({
+        success: false,
+        error: "Turno no encontrado.",
+      });
+    }
+
+    return res.status(200).json({ success: true, data: { _id: req.params.id } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET /api/config/whatsapp
 router.get("/whatsapp", async (_req, res) => {
   try {
