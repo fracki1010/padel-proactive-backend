@@ -36,7 +36,8 @@
     "migrate:slot-duration": "node scripts/backfillSlotDuration.js",
     "requeue:wa-queued": "node scripts/requeueQueuedWhatsappCommands.js",
     "test:api": "node --test src/tests/api-sections-16-17-18.test.js",
-    "migrate:slots-per-court": "node scripts/convertGeneralSlotsToPerCourt.js"
+    "migrate:slots-per-court": "node scripts/convertGeneralSlotsToPerCourt.js",
+    "cleanup:qa-users": "node scripts/cleanupQaUsers.js"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.10",
