@@ -171,7 +171,7 @@ test('POST /slots derives endTime from startTime + durationMinutes', async () =>
   resetState();
   const res = createResponse();
   await getHandler(configRouter, '/slots', 'post')(
-    adminReq({ body: { startTime: '20:00', durationMinutes: 90, price: 25000 } }),
+    adminReq({ body: { startTime: '20:00', durationMinutes: 90, price: 25000, court: COURT_A } }),
     res,
   );
 
@@ -185,7 +185,7 @@ test('POST /slots wraps past-midnight duration into the clock day', async () => 
   resetState();
   const res = createResponse();
   await getHandler(configRouter, '/slots', 'post')(
-    adminReq({ body: { startTime: '23:30', durationMinutes: 60, price: 25000 } }),
+    adminReq({ body: { startTime: '23:30', durationMinutes: 60, price: 25000, court: COURT_A } }),
     res,
   );
 
@@ -241,6 +241,19 @@ test('POST /slots rejects a duration above the maximum with 400', async () => {
   );
 
   assert.equal(res.statusCode, 400);
+});
+
+test('POST /slots rejects a general slot (no court): per-court only', async () => {
+  resetState();
+  const res = createResponse();
+  await getHandler(configRouter, '/slots', 'post')(
+    adminReq({ body: { startTime: '20:00', durationMinutes: 90, price: 25000 } }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 400);
+  assert.match(res.payload.error, /dentro de cada cancha/i);
+  assert.equal(state.slots.length, 0);
 });
 
 test('POST /slots rejects a court that belongs to another company', async () => {

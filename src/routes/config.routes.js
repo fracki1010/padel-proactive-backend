@@ -416,6 +416,14 @@ router.post("/slots", async (req, res) => {
       req.body || {};
     const scope = { companyId };
 
+    // El club usa SOLO horarios por cancha: no se permiten horarios generales.
+    if (court === null || court === undefined || String(court).trim() === "") {
+      return res.status(400).json({
+        success: false,
+        error: "Los horarios ahora se cargan dentro de cada cancha (elegí una cancha).",
+      });
+    }
+
     const normalizedStart =
       typeof startTime === "string" ? startTime.trim() : "";
     if (!TIME_REGEX.test(normalizedStart)) {
