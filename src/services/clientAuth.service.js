@@ -31,11 +31,15 @@ const buildNormalizedPhone = (countryCode = "", localNumber = "") => {
 
 // MongoDB query that matches a phone in both stored formats (with and without
 // the Argentine 9) for backwards compatibility with older records.
+// Digit-agnostic candidates so an existing client is recognised regardless of
+// the stored shape (with/without 54, with/without the mobile 9, local-only).
+const { phoneCandidates } = require("../utils/phoneMatch");
+
 const phoneMatchQuery = (phone = "") => {
-  if (phone.startsWith("549") && phone.length >= 13) {
-    return { $in: [phone, "54" + phone.slice(3)] };
-  }
-  return phone;
+  const candidates = phoneCandidates(phone);
+  if (candidates.length === 0) return phone;
+  if (candidates.length === 1) return candidates[0];
+  return { $in: candidates };
 };
 
 // Which branch a verified phone resolves to.
