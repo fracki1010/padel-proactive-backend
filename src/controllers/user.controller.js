@@ -290,7 +290,7 @@ const updateUser = async (req, res, deps = {}) => {
       ) {
         return res.status(400).json({
           success: false,
-          error: "El teléfono de un socio verificado no se puede modificar",
+          error: "El teléfono de un cliente verificado no se puede modificar",
         });
       }
     }
