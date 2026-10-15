@@ -194,6 +194,7 @@ const getClubInfo = async (req, res) => {
       return res.status(404).json({ success: false, error: "Club no encontrado" });
     }
 
+    const adminPhone = await getCancellationContactPhone(company._id);
     const [courts, slots, cancellationLockHours, contactPhone, bookingsPaused] = await Promise.all([
       Court.find({ companyId: company._id, isActive: true }).sort({ name: 1 }),
       TimeSlot.find({ companyId: company._id, isActive: true }).sort({ order: 1, startTime: 1 }),
@@ -205,7 +206,7 @@ const getClubInfo = async (req, res) => {
     return res.json({
       success: true,
       data: {
-        club: { name: company.name, address: company.address, coverImage: company.coverImage || "", companyId: company._id.toString(), contactPhone, bookingsPaused },
+        club: { name: company.name, address: company.address, coverImage: company.coverImage || "", companyId: company._id.toString(), contactPhone, adminPhone: String(adminPhone || "").replace(/\D/g, ""), bookingsPaused },
         courts,
         slots,
         cancellationLockHours,
