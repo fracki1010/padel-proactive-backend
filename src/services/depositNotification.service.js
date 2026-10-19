@@ -129,7 +129,7 @@ const buildDepositTransferMessage = ({ client, court, slot, date, deposit, trans
     ``,
     `👤 ${client?.name || ""}`,
     `📌 Cancha: ${court?.name || ""}`,
-    `📅 Fecha: ${getFormattedDate(date)}`,
+    `📅 Fecha: ${formatBookingDateShort(date)}`,
     `⏰ Hora: ${slot?.startTime || ""}${slot?.endTime ? ` a ${slot.endTime}` : ""}`,
     ``,
     `💰 *Seña: $${amount}*`,

@@ -17,10 +17,17 @@ const depositService = require('./deposit.service');
 const { getNumberByUser } = require('../utils/getNumberByUser');
 const { normalizeCanonicalClientPhone } = require('../utils/identityNormalization');
 const { sendAdminNotification } = require('./notificationService');
+const {
+  buildReceiptKeys,
+  claimReceipt,
+  releaseClaims,
+} = require('./receiptLedger.service');
 const { getDepositSettings } = require('./appConfig.service');
 const { isMongoConnected } = require('../config/database');
 
 const NO_PENDING_REPLY = 'No tenés un turno pendiente de seña.';
+const DUPLICATE_REPLY =
+  '⚠️ Este comprobante ya fue usado para confirmar otro turno. Si es un error, escribí al club.';
 const REVIEW_REPLY =
   '📥 Recibimos tu comprobante. El club lo va a revisar y te confirma en breve. ¡Gracias!';
 const CONFIRMED_REPLY = '✅ *Seña verificada.* ¡Tu turno quedó confirmado! 🎾';
@@ -151,6 +158,44 @@ const handleIncomingReceipt = async (
     return { handled: true, confirmed: false, reply: buildInvalidReply(reasons), reasons };
   }
 
+  // Anti-reuso: reclamar la huella del archivo / nº de operación ANTES de
+  // confirmar. El índice único impide que el mismo comprobante confirme dos turnos.
+  const claim = deps.claimReceipt || claimReceipt;
+  const buildKeys = deps.buildReceiptKeys || buildReceiptKeys;
+  const receiptKeys = buildKeys({
+    buffer: media?.buffer,
+    operationId: parsed?.operationId,
+  });
+  const claimResult = await runSafe('claim receipt', () =>
+    claim({ companyId, bookingId: booking._id, keys: receiptKeys }, deps),
+  );
+
+  if (claimResult.ok && claimResult.value && claimResult.value.ok === false) {
+    if (claimResult.value.duplicate) {
+      await notifyInvalidReceipt(deps, {
+        companyId,
+        booking,
+        phone,
+        reasons: ['el comprobante ya fue utilizado'],
+      });
+      return { handled: true, confirmed: false, duplicate: true, reply: DUPLICATE_REPLY, reasons: [] };
+    }
+    // Error técnico al reclamar: seguir como "en revisión" (no confirmar a ciegas).
+    await notifyInvalidReceipt(deps, {
+      companyId,
+      booking,
+      phone,
+      reasons: ['no se pudo verificar el comprobante'],
+    });
+    return { handled: true, confirmed: false, review: true, reply: REVIEW_REPLY, reasons: [] };
+  }
+
+  const claimedKeys =
+    claimResult.ok && claimResult.value && Array.isArray(claimResult.value.keys)
+      ? claimResult.value.keys
+      : receiptKeys;
+  const release = deps.releaseClaims || releaseClaims;
+
   const validate = deps.validateReceipt || receiptReader.validateReceipt;
 
   // La ventana para acreditar la seña es la configurada por el club (holdMinutes);
@@ -178,6 +223,9 @@ const handleIncomingReceipt = async (
       !reasons.some((r) => /monto|banco|leer/i.test(r));
 
     await notifyInvalidReceipt(deps, { companyId, booking, phone, reasons });
+    await runSafe('release receipt claim', () =>
+      release({ companyId, keys: claimedKeys }, deps),
+    );
 
     return {
       handled: true,
@@ -198,6 +246,9 @@ const handleIncomingReceipt = async (
   // Error técnico al confirmar: NO decirle al cliente que no tiene turno. Se le
   // avisa que quedó en revisión y se alerta al club.
   if (!approval.ok) {
+    await runSafe('release receipt claim', () =>
+      release({ companyId, keys: claimedKeys }, deps),
+    );
     await notifyInvalidReceipt(deps, {
       companyId,
       booking,
@@ -210,6 +261,9 @@ const handleIncomingReceipt = async (
   // Guard de concurrencia: la transición atómica solo aplica si sigue pendiente
   // (una carrera perdida significa que ya se procesó).
   if (!approval.value?.applied) {
+    await runSafe('release receipt claim', () =>
+      release({ companyId, keys: claimedKeys }, deps),
+    );
     return { handled: true, confirmed: false, reply: NO_PENDING_REPLY, reasons: [] };
   }
 
