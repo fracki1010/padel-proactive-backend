@@ -26,6 +26,7 @@ const {
   getWeekdayFromDate,
 } = require("../services/fixedBooking.service");
 const { getCancellationContactPhone } = require("../services/bookingService");
+const { isMongoConnected } = require("../config/database");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
 const {
   COMMAND_TYPES,
@@ -194,7 +195,11 @@ const getClubInfo = async (req, res) => {
       return res.status(404).json({ success: false, error: "Club no encontrado" });
     }
 
-    const adminPhone = await getCancellationContactPhone(company._id);
+    // Resilient: never block the portal on a DB hiccup (mongoose buffers
+    // queries while disconnected, which would hang the request).
+    const adminPhone = isMongoConnected()
+      ? await getCancellationContactPhone(company._id).catch(() => "")
+      : "";
     const [courts, slots, cancellationLockHours, contactPhone, bookingsPaused] = await Promise.all([
       Court.find({ companyId: company._id, isActive: true }).sort({ name: 1 }),
       TimeSlot.find({ companyId: company._id, isActive: true }).sort({ order: 1, startTime: 1 }),
