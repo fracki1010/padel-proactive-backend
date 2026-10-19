@@ -213,7 +213,7 @@ const defaultCallGroq = async (messages, { maxTokens = 512, vision = false } = {
   const Groq = require('groq-sdk');
   const client = new Groq({ apiKey });
   const model = vision
-    ? process.env.GROQ_VISION_MODEL || 'llama-3.2-90b-vision-preview'
+    ? process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b'
     : process.env.GROQ_RECEIPT_MODEL || process.env.GROQ_MODEL_PRIMARY || 'openai/gpt-oss-120b';
   const completion = await client.chat.completions.create({
     model,

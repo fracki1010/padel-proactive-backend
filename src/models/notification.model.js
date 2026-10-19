@@ -21,6 +21,7 @@ const notificationSchema = new mongoose.Schema(
         "deposit_expired",
         "deposit_late_payment",
         "deposit_amount_mismatch",
+        "deposit_receipt_invalid",
       ],
       required: true,
     },
