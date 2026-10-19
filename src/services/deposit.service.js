@@ -174,7 +174,10 @@ const approveDeposit = async (
         },
       },
     ],
-    { returnDocument: 'after' },
+    // Mongoose 9 requires this flag to treat an ARRAY as an aggregation
+    // pipeline update (otherwise it throws "Cannot pass an array to query
+    // updates unless the `updatePipeline` option is set").
+    { returnDocument: 'after', updatePipeline: true },
   );
 
   if (!updated) {

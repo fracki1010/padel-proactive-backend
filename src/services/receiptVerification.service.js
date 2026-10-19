@@ -195,9 +195,21 @@ const handleIncomingReceipt = async (
     approve({ companyId, bookingId: booking._id, paymentId }),
   );
 
-  // Concurrency guard: the atomic transition only applies while the booking is
-  // still a pending transfer seña. A lost race means it was already processed.
-  if (!approval.ok || !approval.value?.applied) {
+  // Error técnico al confirmar: NO decirle al cliente que no tiene turno. Se le
+  // avisa que quedó en revisión y se alerta al club.
+  if (!approval.ok) {
+    await notifyInvalidReceipt(deps, {
+      companyId,
+      booking,
+      phone,
+      reasons: ['no se pudo confirmar automáticamente'],
+    });
+    return { handled: true, confirmed: false, review: true, reply: REVIEW_REPLY, reasons: [] };
+  }
+
+  // Guard de concurrencia: la transición atómica solo aplica si sigue pendiente
+  // (una carrera perdida significa que ya se procesó).
+  if (!approval.value?.applied) {
     return { handled: true, confirmed: false, reply: NO_PENDING_REPLY, reasons: [] };
   }
 
