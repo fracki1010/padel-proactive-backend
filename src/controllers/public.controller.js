@@ -197,6 +197,7 @@ const getClubInfo = async (req, res) => {
 
     // Resilient: never block the portal on a DB hiccup (mongoose buffers
     // queries while disconnected, which would hang the request).
+    const depositSettingsForPortal = await getDepositSettings(company._id).catch(() => null);
     const adminPhone = isMongoConnected()
       ? await getCancellationContactPhone(company._id).catch(() => "")
       : "";
@@ -211,7 +212,16 @@ const getClubInfo = async (req, res) => {
     return res.json({
       success: true,
       data: {
-        club: { name: company.name, address: company.address, coverImage: company.coverImage || "", companyId: company._id.toString(), contactPhone, adminPhone: String(adminPhone || "").replace(/\D/g, ""), bookingsPaused },
+        club: { name: company.name, address: company.address, coverImage: company.coverImage || "", companyId: company._id.toString(), contactPhone, adminPhone: String(adminPhone || "").replace(/\D/g, ""), bookingsPaused,
+          deposit: {
+            enabled: Boolean(depositSettingsForPortal?.depositEnabled),
+            amount: Number(depositSettingsForPortal?.depositAmount) || 0,
+            method: depositSettingsForPortal?.depositMethod === "mercadopago" ? "mercadopago" : "transfer",
+            alias: depositSettingsForPortal?.depositAlias || "",
+            cbu: depositSettingsForPortal?.depositCbu || "",
+            holder: depositSettingsForPortal?.depositHolder || "",
+            holdMinutes: Number(depositSettingsForPortal?.holdMinutes) || 0,
+          } },
         courts,
         slots,
         cancellationLockHours,
@@ -1105,13 +1115,13 @@ const createClientBooking = async (req, res) => {
           holder: depositSettings.depositHolder || "",
         };
 
-        // Admin-only alert: the client gets the transfer instructions in the
-        // portal, never a WhatsApp message with an empty payment link.
+        // The client gets the transfer instructions by WhatsApp too (alias,
+        // amount, "send the receipt here"): fully automatic, no empty link.
         await notifyDepositPending({
           booking: populated,
           companyId: company._id,
           initPoint: "",
-          notifyClient: false,
+          transfer: transferInfo,
         }).catch((notifyErr) => {
           console.error(
             "[createClientBooking] No se pudo notificar la seña pendiente (transfer):",

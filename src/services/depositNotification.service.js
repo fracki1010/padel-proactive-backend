@@ -117,8 +117,32 @@ const enqueueClientMessage = async ({ companyId, phone, message, enqueue }) => {
   return result.ok ? chatId : null;
 };
 
+// Mensaje para el cliente cuando la seña se paga por TRANSFERENCIA: alias,
+// titular y el pedido de comprobante (el bot lo lee y confirma solo).
+const buildDepositTransferMessage = ({ client, court, slot, date, deposit, transfer }) => {
+  const amount = deposit?.amount ?? 0;
+  const alias = transfer?.alias || "";
+  const cbu = transfer?.cbu || "";
+  const holder = transfer?.holder || "";
+  const lines = [
+    `🧾 *Falta tu seña para confirmar el turno*`,
+    ``,
+    `👤 ${client?.name || ""}`,
+    `📌 Cancha: ${court?.name || ""}`,
+    `📅 Fecha: ${getFormattedDate(date)}`,
+    `⏰ Hora: ${slot?.startTime || ""}${slot?.endTime ? ` a ${slot.endTime}` : ""}`,
+    ``,
+    `💰 *Seña: $${amount}*`,
+    `Transferí a:${alias ? `\n▪️ Alias: *${alias}*` : ""}${cbu ? `\n▪️ CBU: ${cbu}` : ""}${holder ? `\n▪️ Titular: ${holder}` : ""}`,
+    ``,
+    `📸 Cuando la hagas, *mandá el comprobante por este chat* y confirmamos el turno al toque.`,
+    `⚠️ El turno todavía no es tuyo: queda reservado a tu nombre hasta acreditar la seña.`,
+  ];
+  return lines.join("\n");
+};
+
 const notifyDepositPending = async (
-  { booking, companyId = null, initPoint = '', notifyClient = true },
+  { booking, companyId = null, initPoint = '', notifyClient = true, transfer = null },
   deps = {},
 ) => {
   const { sendAdminNotification, enqueueWhatsappCommand: enqueue } = resolveDeps(deps);
@@ -143,13 +167,22 @@ const notifyDepositPending = async (
     return { notified: true, adminNotified: adminResult.ok, chatId: null };
   }
 
-  const message = buildDepositPaymentMessage({
-    client: { name: booking?.clientName },
-    court: booking?.court,
-    slot: booking?.timeSlot,
-    date: booking?.date,
-    deposit: { amount, initPoint },
-  });
+  const message = transfer
+    ? buildDepositTransferMessage({
+        client: { name: booking?.clientName },
+        court: booking?.court,
+        slot: booking?.timeSlot,
+        date: booking?.date,
+        deposit: { amount },
+        transfer,
+      })
+    : buildDepositPaymentMessage({
+        client: { name: booking?.clientName },
+        court: booking?.court,
+        slot: booking?.timeSlot,
+        date: booking?.date,
+        deposit: { amount, initPoint },
+      });
   const chatId = await enqueueClientMessage({
     companyId,
     phone: booking?.clientPhone,
