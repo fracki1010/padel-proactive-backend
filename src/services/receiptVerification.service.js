@@ -17,8 +17,11 @@ const depositService = require('./deposit.service');
 const { getNumberByUser } = require('../utils/getNumberByUser');
 const { normalizeCanonicalClientPhone } = require('../utils/identityNormalization');
 const { sendAdminNotification } = require('./notificationService');
+const { getDepositSettings } = require('./appConfig.service');
 
 const NO_PENDING_REPLY = 'No tenés un turno pendiente de seña.';
+const REVIEW_REPLY =
+  '📥 Recibimos tu comprobante. El club lo va a revisar y te confirma en breve. ¡Gracias!';
 const CONFIRMED_REPLY = '✅ *Seña verificada.* ¡Tu turno quedó confirmado! 🎾';
 const INVALID_NOTIFICATION_TYPE = 'deposit_receipt_invalid';
 
@@ -123,14 +126,38 @@ const handleIncomingReceipt = async (
   }
 
   const validate = deps.validateReceipt || receiptReader.validateReceipt;
+
+  // La ventana para acreditar la seña es la configurada por el club (holdMinutes);
+  // 15 min si no está seteada.
+  const settings = await runSafe('load deposit settings', () =>
+    (deps.getDepositSettings || getDepositSettings)(companyId),
+  );
+  const holdMinutes = Number(settings?.ok ? settings.value?.holdMinutes : 0);
+  const maxDeltaMinutes = holdMinutes > 0 ? holdMinutes : 15;
+
   const { valid, reasons } = validate(parsed, {
     expectedAmount: booking?.deposit?.amount,
     bookingCreatedAt: booking?.createdAt,
+    maxDeltaMinutes,
   });
 
   if (!valid) {
+    // "Fuera de la ventana de tiempo" con monto/banco correctos NO se rechaza:
+    // la plata pudo llegar. Queda EN REVISIÓN para que el club confirme.
+    const onlyTimeIssue =
+      reasons.length > 0 &&
+      reasons.some((r) => /fuera de los \d+ minutos/i.test(r)) &&
+      !reasons.some((r) => /monto|banco|leer/i.test(r));
+
     await notifyInvalidReceipt(deps, { companyId, booking, phone, reasons });
-    return { handled: true, confirmed: false, reply: buildInvalidReply(reasons), reasons };
+
+    return {
+      handled: true,
+      confirmed: false,
+      review: onlyTimeIssue,
+      reply: onlyTimeIssue ? REVIEW_REPLY : buildInvalidReply(reasons),
+      reasons,
+    };
   }
 
   const now = typeof deps.now === 'function' ? deps.now() : Date.now();
