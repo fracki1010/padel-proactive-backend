@@ -481,8 +481,15 @@ const createNewBooking = async ({
     // Deposits enabled: hold the court as `pendiente_seña` and store the seña,
     // mirroring the public portal booking path (which also flags the payment as
     // pending).
+    // Cómo se cobra la seña: `transfer` (default) NO usa MercadoPago.
+    const depositMethod =
+      depositSettings?.depositMethod === "mercadopago" ? "mercadopago" : "transfer";
+
     if (depositEnabled) {
-      Object.assign(bookingFields, buildDepositFields({ settings: depositSettings }));
+      Object.assign(
+        bookingFields,
+        buildDepositFields({ settings: depositSettings, method: depositMethod }),
+      );
       bookingFields.paymentStatus = "pendiente";
     }
 
@@ -525,23 +532,35 @@ const createNewBooking = async ({
 
       depositInfo = {
         amount: depositSettings.depositAmount,
+        method: depositMethod,
         initPoint: "",
         expiresAt: bookingForDeposit.deposit?.expiresAt || null,
+        ...(depositMethod === "transfer"
+          ? {
+              transfer: {
+                alias: depositSettings.depositAlias || "",
+                cbu: depositSettings.depositCbu || "",
+                holder: depositSettings.depositHolder || "",
+              },
+            }
+          : {}),
       };
 
-      try {
-        const link = await buildDepositPaymentLink({
-          companyId,
-          booking: bookingForDeposit,
-          settings: depositSettings,
-          notificationUrl: process.env.MERCADOPAGO_NOTIFICATION_URL || undefined,
-        });
-        depositInfo.initPoint = link.initPoint;
-      } catch (depositError) {
-        console.error(
-          "[bookingService] No se pudo generar el link de seña:",
-          depositError?.message || depositError,
-        );
+      if (depositMethod === "mercadopago") {
+        try {
+          const link = await buildDepositPaymentLink({
+            companyId,
+            booking: bookingForDeposit,
+            settings: depositSettings,
+            notificationUrl: process.env.MERCADOPAGO_NOTIFICATION_URL || undefined,
+          });
+          depositInfo.initPoint = link.initPoint;
+        } catch (depositError) {
+          console.error(
+            "[bookingService] No se pudo generar el link de seña:",
+            depositError?.message || depositError,
+          );
+        }
       }
 
       await notifyDepositPending({
