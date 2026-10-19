@@ -364,7 +364,7 @@ const validateReceipt = (
   if (!Number.isFinite(receiptEpoch) || !Number.isFinite(bookingEpoch)) {
     reasons.push('no se pudo leer la fecha y hora');
   } else if (Math.abs(receiptEpoch - bookingEpoch) > maxDeltaMinutes * 60 * 1000) {
-    reasons.push('la hora está fuera de los 15 minutos');
+    reasons.push(`la hora está fuera de los ${maxDeltaMinutes} minutos`);
   }
 
   const bank = normalizeBank(receipt.bank);
