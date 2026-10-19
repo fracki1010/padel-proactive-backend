@@ -259,7 +259,14 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
 
     if (deposit) {
       lines.push(`💳 *Seña:* $${deposit.amount}`);
-      if (deposit.initPoint) {
+      if (deposit.method === "transfer" || deposit.transfer) {
+        const t = deposit.transfer || {};
+        lines.push(
+          ``,
+          `Transferí la seña${t.alias ? ` al alias *${t.alias}*` : ""}${t.cbu ? ` (CBU ${t.cbu})` : ""}${t.holder ? ` — Titular: ${t.holder}` : ""} y *enviá el comprobante por este chat*.`,
+          `⚠️ El turno *todavía no es tuyo*: queda reservado a tu nombre hasta que acreditemos la seña.`,
+        );
+      } else if (deposit.initPoint) {
         lines.push(`Pagá tu seña acá: ${deposit.initPoint}`);
       }
     }

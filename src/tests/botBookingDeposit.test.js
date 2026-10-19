@@ -26,7 +26,7 @@ const BOOKING_ID = '64b0000000000000000000c3';
 const FUTURE_DATE = '2099-01-01';
 
 const state = {
-  settings: { depositEnabled: true, depositAmount: 5000, holdMinutes: 15, depositExemptPhones: [] },
+  settings: { depositEnabled: true, depositAmount: 5000, holdMinutes: 15, depositExemptPhones: [], depositMethod: 'mercadopago' },
   createdBooking: null,
   preferenceCalls: [],
   linkShouldThrow: false,
@@ -35,7 +35,7 @@ const state = {
 };
 
 const resetState = () => {
-  state.settings = { depositEnabled: true, depositAmount: 5000, holdMinutes: 15, depositExemptPhones: [] };
+  state.settings = { depositEnabled: true, depositAmount: 5000, holdMinutes: 15, depositExemptPhones: [], depositMethod: 'mercadopago' };
   state.createdBooking = null;
   state.preferenceCalls = [];
   state.linkShouldThrow = false;
@@ -252,6 +252,7 @@ test('bot booking for an exempt phone skips the deposit hold and payment link', 
     depositAmount: 5000,
     holdMinutes: 15,
     depositExemptPhones: ['5491100000000'],
+    depositMethod: 'mercadopago',
   };
 
   const result = await createBotBooking();
@@ -284,6 +285,31 @@ test('a 54-variant exemption matches the 549 bot phone at the gate', async () =>
   assert.equal(state.pendingNotifications.length, 0);
 });
 
+test('bot respects the transfer method: hold without a MercadoPago link', async () => {
+  resetState();
+  state.settings = {
+    depositEnabled: true,
+    depositAmount: 5000,
+    holdMinutes: 15,
+    depositExemptPhones: [],
+    depositMethod: 'transfer',
+    depositAlias: 'club.alias',
+    depositHolder: 'Juan Perez',
+  };
+
+  const result = await createBotBooking();
+
+  assert.equal(result.success, true);
+  assert.equal(state.createdBooking.status, 'pendiente_seña');
+  assert.equal(state.createdBooking.deposit.method, 'transfer');
+  // No MercadoPago preference is minted in transfer mode.
+  assert.equal(state.preferenceCalls.length, 0);
+  assert.equal(result.data.deposit.initPoint, '');
+  assert.equal(result.data.deposit.method, 'transfer');
+  assert.equal(result.data.deposit.transfer.alias, 'club.alias');
+  assert.equal(result.data.deposit.transfer.holder, 'Juan Perez');
+});
+
 test('an unknown bot phone keeps the normal deposit flow', async () => {
   resetState();
   state.settings = {
@@ -291,6 +317,7 @@ test('an unknown bot phone keeps the normal deposit flow', async () => {
     depositAmount: 5000,
     holdMinutes: 15,
     depositExemptPhones: ['5491100000000'],
+    depositMethod: 'mercadopago',
   };
 
   const result = await createBotBooking({
