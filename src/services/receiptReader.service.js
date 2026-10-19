@@ -67,7 +67,8 @@ const receiptPrompt = () =>
   [
     'Sos un extractor de datos de comprobantes de transferencia bancaria argentinos.',
     'Devolvé EXCLUSIVAMENTE un JSON válido, sin texto extra, con esta forma:',
-    '{"bank": string, "amount": number, "amountPaid": number, "date": "YYYY-MM-DD", "time": "HH:mm", "cuit": string, "text": string}',
+    '{"bank": string, "amount": number, "amountPaid": number, "date": "YYYY-MM-DD", "time": "HH:mm", "cuit": string, "operationId": string, "text": string}',
+    'operationId = número de operación / comprobante / referencia de la transferencia (vacío si no aparece).',
     'Reglas:',
     '- "bank" debe ser uno de: Naranja X, Mercado Pago, BNA, BBVA, Santander, Supervielle (tal cual).',
     '- "amountPaid" es el importe efectivamente transferido, numérico sin separadores.',
