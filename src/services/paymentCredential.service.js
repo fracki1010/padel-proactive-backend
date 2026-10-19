@@ -137,6 +137,9 @@ const buildMaskedCredential = (credential) => {
     provider: credential.provider || PAYMENT_PROVIDER,
     masked: MASKED_TOKEN,
     mpUserId: String(credential.mpUserId || ''),
+    // Sin este secreto el backend no puede verificar la firma de MercadoPago y
+    // los pagos NO se confirman automáticamente.
+    hasWebhookSecret: Boolean(credential.webhookSecretCiphertext),
   };
 };
 
