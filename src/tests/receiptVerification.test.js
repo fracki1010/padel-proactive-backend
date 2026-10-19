@@ -113,7 +113,7 @@ test('an amount mismatch is rejected, notified and never confirmed', async () =>
 
   assert.equal(result.confirmed, false);
   assert.ok(result.reasons.includes('el monto no coincide'));
-  assert.match(result.reply, /el monto no coincide/);
+  assert.match(result.reply, /monto no coincide/i);
   assert.equal(calls.approved.length, 0, 'a rejected receipt must not confirm');
   assert.equal(calls.paid.length, 0);
   assert.equal(calls.admin.length, 1, 'the admin must be alerted');
@@ -150,7 +150,7 @@ test('an unreadable receipt is rejected with the read-failure reason', async () 
   );
 
   assert.equal(result.confirmed, false);
-  assert.match(result.reply, /no se pudo leer el comprobante/);
+  assert.match(result.reply, /pudimos leer el comprobante/i);
   assert.equal(calls.approved.length, 0);
   assert.equal(calls.admin.length, 1);
 });
@@ -173,10 +173,22 @@ test('with no pending transfer booking the handler replies and does not parse me
 
 // ── Reply builder ───────────────────────────────────────────────────────────
 
-test('buildInvalidReply lists every failing reason', () => {
-  const reply = buildInvalidReply(['el monto no coincide', 'el banco no está en la lista']);
-  assert.match(reply, /el monto no coincide/);
-  assert.match(reply, /el banco no está en la lista/);
+test('buildInvalidReply explains the amount mismatch with both figures', () => {
+  const reply = buildInvalidReply(['el monto no coincide'], { amount: 4000 }, 5000);
+  assert.match(reply, /monto no coincide/i);
+  assert.match(reply, /\$5\.000/);
+  assert.match(reply, /\$4\.000/);
+});
+
+test('buildInvalidReply explains an unknown bank', () => {
+  const reply = buildInvalidReply(['el banco no está en la lista']);
+  assert.match(reply, /banco/i);
+  assert.match(reply, /Naranja X/);
+});
+
+test('buildInvalidReply asks for a clearer photo when unreadable', () => {
+  const reply = buildInvalidReply(['no se pudo leer el comprobante']);
+  assert.match(reply, /más nítido/i);
 });
 
 // ── Query shape ─────────────────────────────────────────────────────────────

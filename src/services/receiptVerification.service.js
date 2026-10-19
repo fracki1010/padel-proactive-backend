@@ -18,6 +18,7 @@ const { getNumberByUser } = require('../utils/getNumberByUser');
 const { normalizeCanonicalClientPhone } = require('../utils/identityNormalization');
 const { sendAdminNotification } = require('./notificationService');
 const { getDepositSettings } = require('./appConfig.service');
+const { isMongoConnected } = require('../config/database');
 
 const NO_PENDING_REPLY = 'No tenés un turno pendiente de seña.';
 const REVIEW_REPLY =
@@ -25,12 +26,37 @@ const REVIEW_REPLY =
 const CONFIRMED_REPLY = '✅ *Seña verificada.* ¡Tu turno quedó confirmado! 🎾';
 const INVALID_NOTIFICATION_TYPE = 'deposit_receipt_invalid';
 
-const buildInvalidReply = (reasons = []) => {
-  const detail =
-    Array.isArray(reasons) && reasons.length
-      ? reasons.join(' / ')
-      : 'no se pudo leer el comprobante';
-  return `❌ No pudimos verificar el comprobante: ${detail}. Envialo de nuevo o escribí al club.`;
+const money = (value) => `$${Number(value || 0).toLocaleString("es-AR")}`;
+
+// Mensaje claro para el cliente, explicando QUÉ falló y qué hacer.
+const buildInvalidReply = (reasons = [], parsed = null, expectedAmount = null) => {
+  const list = Array.isArray(reasons) ? reasons : [];
+  const joined = list.join(" / ");
+
+  if (/no se pudo leer/i.test(joined) || !list.length) {
+    return (
+      "❌ No pudimos leer el comprobante. 📸 Probá mandarlo más nítido (o en PDF) " +
+      "y lo revisamos al toque."
+    );
+  }
+
+  if (/monto/i.test(joined)) {
+    const got = parsed?.amount ?? parsed?.amountPaid ?? null;
+    return (
+      `❌ El monto no coincide: la seña es de ${money(expectedAmount)}` +
+      (got != null ? ` y el comprobante muestra ${money(got)}` : "") +
+      ". Si ya transferiste ese importe, escribí al club y lo revisamos."
+    );
+  }
+
+  if (/banco/i.test(joined)) {
+    return (
+      "❌ No reconocimos el banco del comprobante. Aceptamos Naranja X, MercadoPago, " +
+      "Banco Nación, BBVA, Santander y Supervielle. Probá con el comprobante de esos."
+    );
+  }
+
+  return `❌ No pudimos verificar el comprobante: ${joined}. Envialo de nuevo o escribí al club.`;
 };
 
 const runSafe = async (label, fn) => {
@@ -129,9 +155,11 @@ const handleIncomingReceipt = async (
 
   // La ventana para acreditar la seña es la configurada por el club (holdMinutes);
   // 15 min si no está seteada.
-  const settings = await runSafe('load deposit settings', () =>
-    (deps.getDepositSettings || getDepositSettings)(companyId),
-  );
+  // Sin Mongo (tests, o base caída) se usa el default de 15 min y NO se cuelga.
+  const settingsFn =
+    deps.getDepositSettings ||
+    (async (cid) => (isMongoConnected() ? getDepositSettings(cid) : null));
+  const settings = await runSafe('load deposit settings', () => settingsFn(companyId));
   const holdMinutes = Number(settings?.ok ? settings.value?.holdMinutes : 0);
   const maxDeltaMinutes = holdMinutes > 0 ? holdMinutes : 15;
 
@@ -155,7 +183,7 @@ const handleIncomingReceipt = async (
       handled: true,
       confirmed: false,
       review: onlyTimeIssue,
-      reply: onlyTimeIssue ? REVIEW_REPLY : buildInvalidReply(reasons),
+      reply: onlyTimeIssue ? REVIEW_REPLY : buildInvalidReply(reasons, parsed, booking?.deposit?.amount),
       reasons,
     };
   }
