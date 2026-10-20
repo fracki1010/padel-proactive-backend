@@ -228,7 +228,10 @@ const createUser = async (req, res) => {
 
     const resolvedWhatsappId =
       req.body.whatsappId ||
-      (await getWhatsappIdByPhone(phoneNumber, companyId));
+      (await getWhatsappIdByPhone(phoneNumber, companyId)) ||
+      // Fallback estándar: si el worker no conoce el número (cliente nuevo),
+      // se usa el formato canónico para que el alta no falle.
+      (phoneNumber ? `${phoneNumber}@c.us` : undefined);
 
     const user = await User.create({
       ...req.body,

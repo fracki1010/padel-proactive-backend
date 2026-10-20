@@ -10,7 +10,8 @@ const userSchema = new mongoose.Schema(
     },
     whatsappId: {
       type: String,
-      required: true,
+      // Opcional: un cliente cargado a mano puede no estar en WhatsApp todavía.
+      required: false,
       trim: true, // El ID de WhatsApp (ej: 5491122334455@c.us)
     },
     name: {
@@ -79,7 +80,12 @@ const userSchema = new mongoose.Schema(
   },
 );
 
-userSchema.index({ companyId: 1, whatsappId: 1 }, { unique: true });
+// Parcial: solo los usuarios CON whatsappId compiten por unicidad. Sin el filtro,
+// dos clientes sin WhatsApp (null) chocaban y el alta fallaba.
+userSchema.index(
+  { companyId: 1, whatsappId: 1 },
+  { unique: true, partialFilterExpression: { whatsappId: { $type: "string" } } },
+);
 // Unique partial index on phoneNumber: prevents duplicate clients per company,
 // but allows multiple users with empty/null phone (e.g. system accounts without phone).
 userSchema.index(
