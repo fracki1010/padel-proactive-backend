@@ -345,6 +345,33 @@ const deleteBooking = async (req, res) => {
 };
 
 // 4. ACTUALIZAR RESERVA (PUT)
+const setBookingAttendance = async (req, res) => {
+  try {
+    const companyId = resolveCompanyId(req);
+    const status = String(req.body?.status || "").trim();
+    if (!["attended", "absent", "unmarked"].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: "status debe ser attended, absent o unmarked.",
+      });
+    }
+
+    const booking = await Booking.findOneAndUpdate(
+      { _id: req.params.id, ...companyScope(req, companyId) },
+      { $set: { attendanceStatus: status } },
+      { returnDocument: "after" },
+    );
+
+    if (!booking) {
+      return res.status(404).json({ success: false, error: "Turno no encontrado." });
+    }
+
+    return res.status(200).json({ success: true, data: booking });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 const updateBooking = async (req, res) => {
   try {
     const { id } = req.params;
@@ -668,4 +695,5 @@ module.exports = {
   updateBooking,
   confirmDepositReceived,
   rematerializeFixedTurns,
+  setBookingAttendance,
 };

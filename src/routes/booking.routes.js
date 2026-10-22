@@ -7,6 +7,7 @@ const {
   updateBooking,
   confirmDepositReceived,
   rematerializeFixedTurns,
+  setBookingAttendance,
 } = require("../controllers/booking.controller");
 const { requireRole } = require("../middleware/auth.middleware");
 
@@ -32,6 +33,7 @@ router.post(
 );
 
 // PUT http://localhost:3000/api/bookings/:id -> Actualizar una reserva (ej: pago)
+router.patch("/:id/attendance", setBookingAttendance);
 router.put("/:id", updateBooking);
 
 // DELETE http://localhost:3000/api/bookings/:id -> Eliminar una reserva (o habilitar turno)
