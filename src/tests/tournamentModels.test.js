@@ -169,6 +169,19 @@ test('TournamentTeam stores optional per-player identity for duplicate detection
   assert.equal(identified.player2Phone, '999');
 });
 
+test('TournamentCategory persists an integer order and defaults it to 0', async () => {
+  const base = { companyId: oid(), tournament: oid(), name: 'Primera' };
+  const defaulted = new TournamentCategory(base);
+  await defaulted.validate();
+  assert.equal(defaulted.order, 0);
+
+  const ordered = new TournamentCategory({ ...base, order: 3 });
+  await ordered.validate();
+  assert.equal(ordered.order, 3);
+
+  await assertRejectsField(new TournamentCategory({ ...base, order: 1.5 }), 'order');
+});
+
 test('TournamentCategory tracks bracket staleness as an explicit flag', async () => {
   const base = { companyId: oid(), tournament: oid(), name: 'Primera' };
   const fresh = new TournamentCategory(base);

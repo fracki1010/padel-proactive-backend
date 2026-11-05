@@ -99,22 +99,34 @@ const collectEffectiveSlots = (
 
 // Public availability matrix: for every court, emit one pair per effective slot
 // (own slots if any, else general). `occupiedSet` keys are `courtId_slotId`.
+// `blockedCourtIds` marks every slot of a court owned by an in-progress
+// tournament as unavailable with a `tournament` reason. It is additive: booking
+// occupancy keeps its outcome and no reason, and the club stays open.
 const buildAvailabilityPairs = ({
   courts = [],
   slots = [],
   occupiedSet = new Set(),
+  blockedCourtIds = new Set(),
 } = {}) => {
   const { general, byCourt } = groupSlotsByCourt(slots);
+  const blocked =
+    blockedCourtIds instanceof Set
+      ? blockedCourtIds
+      : new Set(blockedCourtIds || []);
 
-  return courts.flatMap((court) =>
-    slotsForCourt(court?._id, general, byCourt).map((slot) => ({
-      courtId: String(court._id),
+  return courts.flatMap((court) => {
+    const courtId = String(court._id);
+    const tournamentBlocked = blocked.has(courtId);
+
+    return slotsForCourt(court?._id, general, byCourt).map((slot) => ({
+      courtId,
       slotId: String(slot._id),
-      available: !occupiedSet.has(
-        `${String(court._id)}_${String(slot._id)}`,
-      ),
-    })),
-  );
+      available:
+        !tournamentBlocked &&
+        !occupiedSet.has(`${courtId}_${String(slot._id)}`),
+      ...(tournamentBlocked ? { reason: 'tournament' } : {}),
+    }));
+  });
 };
 
 // Booking-creation counterpart of the override rule: the slot a court may book

@@ -109,7 +109,20 @@ const matches = (doc, filter = {}) =>
   });
 
 const makeQuery = (items) => ({
-  sort: () => Promise.resolve(items),
+  // Apply the sort spec the same way Mongoose would for the keys the service
+  // uses. Without this, order-driven listing could never be asserted.
+  sort: (spec = {}) => {
+    const keys = Object.entries(spec || {});
+    if (keys.length === 0) return Promise.resolve(items);
+    const sorted = [...items].sort((left, right) => {
+      for (const [key, direction] of keys) {
+        const result = compare(left[key], right[key]);
+        if (result !== 0) return direction < 0 ? -result : result;
+      }
+      return 0;
+    });
+    return Promise.resolve(sorted);
+  },
   lean: () => Promise.resolve(items),
   then: (onFulfilled, onRejected) => Promise.resolve(items).then(onFulfilled, onRejected),
   catch: (onRejected) => Promise.resolve(items).catch(onRejected),
@@ -302,6 +315,33 @@ test('activation with confirmConflicts proceeds and never touches the booking', 
   assert.equal(state.bookings[0].status, 'confirmado');
 });
 
+test('activation reports active fixed turns overlapping the range', async () => {
+  resetState();
+  const weekday = new Date('2026-11-11T00:00:00.000Z').getUTCDay();
+  state.fixedTurns.push({
+    _id: hexId(0xfa),
+    companyId: COMPANY_A,
+    court: COURT_A,
+    weekday,
+    status: 'active',
+    clientName: 'Turno fijo',
+  });
+
+  const blocked = await call(controller.activateTournament, adminReq(COMPANY_A, { params: { id: TOURNAMENT_A } }));
+  assert.equal(blocked.statusCode, 409);
+  assert.equal(blocked.payload.conflicts.length, 1);
+  assert.equal(blocked.payload.conflicts[0].type, 'fixed');
+  assert.equal(state.tournaments[0].status, 'draft');
+
+  const confirmed = await call(
+    controller.activateTournament,
+    adminReq(COMPANY_A, { params: { id: TOURNAMENT_A }, body: { confirmConflicts: true } }),
+  );
+  assert.equal(confirmed.statusCode, 200);
+  assert.equal(state.tournaments[0].status, 'in_progress');
+  assert.equal(state.fixedTurns[0].status, 'active');
+});
+
 test('invalid transitions are rejected and status is unchanged', async () => {
   resetState();
   const completeDraft = await call(controller.completeTournament, adminReq(COMPANY_A, { params: { id: TOURNAMENT_A } }));
@@ -364,6 +404,31 @@ test('category create/update/delete are scoped through the parent tournament', a
     adminReq(COMPANY_A, { params: { id: TOURNAMENT_A, categoryId: CATEGORY_B }, body: { name: 'Otra' } }),
   );
   assert.equal(foreignCategory.statusCode, 404);
+});
+
+test('category order is accepted, persisted and drives listing order', async () => {
+  resetState();
+  const params = { id: TOURNAMENT_A };
+  const second = await call(
+    controller.createCategory,
+    adminReq(COMPANY_A, { params, body: { name: 'Segunda', order: 5 } }),
+  );
+  assert.equal(second.statusCode, 201);
+  assert.equal(second.payload.data.order, 5);
+
+  const third = await call(
+    controller.createCategory,
+    adminReq(COMPANY_A, { params, body: { name: 'Tercera', order: 2 } }),
+  );
+  assert.equal(third.statusCode, 201);
+  assert.equal(third.payload.data.order, 2);
+
+  const listed = await call(controller.listCategories, adminReq(COMPANY_A, { params }));
+  assert.equal(listed.statusCode, 200);
+  assert.deepEqual(
+    listed.payload.data.map((category) => [category.name, category.order]),
+    [['Primera', 1], ['Tercera', 2], ['Segunda', 5]],
+  );
 });
 
 test('category deletion is refused with registered teams or played matches', async () => {
@@ -472,6 +537,74 @@ test('withdrawal frees capacity and is refused after a recorded result', async (
   assert.equal(state.teams[0].status, 'registered');
 });
 
+test('duplicate team seeds are rejected on create and update (TT-R4)', async () => {
+  resetState();
+  const params = { id: TOURNAMENT_A, categoryId: CATEGORY_A };
+  const first = await call(
+    controller.createTeam,
+    adminReq(COMPANY_A, {
+      params,
+      body: { player1Name: 'Ana', player2Name: 'Beto', player1Phone: '111', player2Phone: '222', seed: 1 },
+    }),
+  );
+  assert.equal(first.statusCode, 201);
+  assert.equal(first.payload.data.seed, 1);
+
+  const duplicate = await call(
+    controller.createTeam,
+    adminReq(COMPANY_A, {
+      params,
+      body: { player1Name: 'Carla', player2Name: 'Dani', player1Phone: '333', player2Phone: '444', seed: 1 },
+    }),
+  );
+  assert.equal(duplicate.statusCode, 400);
+  assert.match(duplicate.payload.error, /semilla/i);
+
+  const third = await call(
+    controller.createTeam,
+    adminReq(COMPANY_A, {
+      params,
+      body: { player1Name: 'Eva', player2Name: 'Fede', player1Phone: '555', player2Phone: '666', seed: 2 },
+    }),
+  );
+  assert.equal(third.statusCode, 201);
+
+  const updated = await call(
+    controller.updateTeam,
+    adminReq(COMPANY_A, {
+      params: { ...params, teamId: third.payload.data._id },
+      body: { seed: 1 },
+    }),
+  );
+  assert.equal(updated.statusCode, 400);
+  assert.match(updated.payload.error, /semilla/i);
+});
+
+test('a pair cannot list the same player twice (TT-R3)', async () => {
+  resetState();
+  const params = { id: TOURNAMENT_A, categoryId: CATEGORY_A };
+  const samePhone = await call(
+    controller.createTeam,
+    adminReq(COMPANY_A, {
+      params,
+      body: { player1Name: 'Ana', player1Phone: '111', player2Name: 'Ana', player2Phone: '111' },
+    }),
+  );
+  assert.equal(samePhone.statusCode, 400);
+  assert.match(samePhone.payload.error, /distintos/i);
+
+  const userId = hexId(0xa21);
+  const sameUser = await call(
+    controller.createTeam,
+    adminReq(COMPANY_A, {
+      params,
+      body: { player1Name: 'Ana', player1UserId: userId, player2Name: 'Beto', player2UserId: userId },
+    }),
+  );
+  assert.equal(sameUser.statusCode, 400);
+  assert.equal(state.teams.length, 0);
+});
+
 test('team writes under a foreign category return 404', async () => {
   resetState();
   const res = await call(
@@ -546,7 +679,8 @@ test('a single team is champion with no matches', async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.payload.data.bracketSize, 1);
   assert.equal(state.matches.length, 0);
-  assert.equal(res.payload.data.champion._id, hexId(0xe001));
+  // Champion is always a team id (or null), never a team document.
+  assert.equal(res.payload.data.champion, hexId(0xe001));
   assert.equal(state.categories[0].status, 'completed');
 });
 
@@ -620,7 +754,8 @@ test('playing the final resolves the champion and completes the category', async
     }),
   );
   assert.equal(res.statusCode, 200);
-  assert.ok(res.payload.data.champion);
+  // Both result endpoints return the champion as a team id, never a document.
+  assert.equal(res.payload.data.champion, final.teamA);
   assert.equal(state.categories[0].status, 'completed');
 });
 
@@ -1269,6 +1404,57 @@ test('cancelled tournaments reject recording and clearing results', async () => 
   assert.equal(firstMatch.status, 'played');
 });
 
+
+test('editing a played result re-advances a different winner before downstream play', async () => {
+  const firstMatch = await setupFourTeamBracket();
+  const originalWinner = firstMatch.teamA;
+  const newWinner = firstMatch.teamB;
+  const slot = firstMatch.position % 2 === 0 ? 'teamA' : 'teamB';
+  const target = state.matches.find(
+    (match) => match.round === 2 && match.position === Math.floor(firstMatch.position / 2),
+  );
+
+  assert.equal((await recordWin(firstMatch._id)).statusCode, 200);
+  assert.equal(target[slot], originalWinner);
+
+  // The edit endpoint is mounted outside the category path (see routes).
+  const edited = await call(
+    controller.editResult,
+    adminReq(COMPANY_A, {
+      params: { id: TOURNAMENT_A, matchId: firstMatch._id },
+      body: { scoreA: 0, scoreB: 2 },
+    }),
+  );
+  assert.equal(edited.statusCode, 200);
+  assert.equal(edited.payload.data.match.winner, newWinner);
+  assert.equal(edited.payload.data.match.scoreA, 0);
+  assert.equal(edited.payload.data.match.scoreB, 2);
+  assert.equal(edited.payload.data.champion, null);
+  assert.equal(target[slot], newWinner);
+});
+
+test('editing a played result is rejected once a downstream match was played', async () => {
+  const firstMatch = await setupFourTeamBracket();
+  const other = state.matches.find(
+    (match) => match.round === 1 && match.status === 'ready' && match._id !== firstMatch._id,
+  );
+  assert.equal((await recordWin(firstMatch._id)).statusCode, 200);
+  assert.equal((await recordWin(other._id)).statusCode, 200);
+  const final = state.matches.find((match) => match.round === 2 && match.status === 'ready');
+  assert.equal((await recordWin(final._id)).statusCode, 200);
+
+  const res = await call(
+    controller.editResult,
+    adminReq(COMPANY_A, {
+      params: { id: TOURNAMENT_A, matchId: firstMatch._id },
+      body: { scoreA: 0, scoreB: 2 },
+    }),
+  );
+  assert.equal(res.statusCode, 409);
+  assert.match(res.payload.error, /posterior/i);
+  assert.equal(firstMatch.winner, firstMatch.teamA);
+  assert.equal(firstMatch.scoreA, 2);
+});
 
 test('manual seeding fills missing seeds in registration order', async () => {
   resetState();

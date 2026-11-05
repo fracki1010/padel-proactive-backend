@@ -14,7 +14,11 @@ const Booking = require('../models/booking.model');
 const FixedBooking = require('../models/fixedBooking.model');
 const SlotLock = require('../models/slotLock.model');
 const { normalizePhone } = require('../utils/identityNormalization');
-const { findActivationConflicts, toUtcDate } = require('./tournamentBlocking.service');
+const {
+  findActivationConflicts,
+  getBlockedCourtsForDate,
+  toUtcDate,
+} = require('./tournamentBlocking.service');
 const {
   generateBracket: buildBracket,
   applyWinner,
@@ -197,6 +201,14 @@ const hasDuplicatePlayer = (teams, candidateKeys) =>
     return playerIdentityKeys(team).some((key) => candidateKeys.includes(key));
   });
 
+// The two players of a single pair must be different people. The identity rules
+// match the cross-team guard: userId when present, otherwise normalized name
+// plus phone.
+const hasSelfDuplicatePlayer = (source = {}) => {
+  const keys = playerIdentityKeys(source);
+  return keys.length > 1 && keys[0] === keys[1];
+};
+
 // ── Shared lookups (tenant scoped on every level) ───────────────────────────
 
 const findTournament = (companyId, id) => Tournament.findOne({ _id: id, companyId });
@@ -313,6 +325,16 @@ async function listTournaments({ companyId, status }) {
 async function getTournament({ companyId, id }) {
   const parent = await ensureTournament(companyId, id);
   return parent.error ? parent.error : ok(200, parent.tournament);
+}
+
+async function getBlockedCourts({ companyId, date }) {
+  if (!ISO_DATE.test(String(date || ''))) return fail(400, 'La fecha debe tener formato YYYY-MM-DD.');
+  const blocks = await getBlockedCourtsForDate(companyId, date);
+  return ok(200, {
+    date: blocks.date,
+    courtIds: blocks.courtIds,
+    tournaments: blocks.tournaments,
+  });
 }
 
 async function createTournament({ companyId, adminId, input }) {
@@ -526,6 +548,9 @@ async function createTeam({ companyId, tournamentId, categoryId, input }) {
   if (hasDuplicatePlayer(active, playerIdentityKeys(data))) {
     return fail(400, 'Uno de los jugadores ya está registrado en esta categoría.');
   }
+  if (hasSelfDuplicatePlayer(data)) {
+    return fail(400, 'Los dos jugadores de la pareja deben ser distintos.');
+  }
   if (data.seed != null && active.some((team) => team.seed === data.seed)) {
     return fail(400, 'La semilla ya está asignada en esta categoría.');
   }
@@ -572,6 +597,9 @@ async function updateTeam({ companyId, tournamentId, categoryId, teamId, input }
     return fail(400, 'La semilla ya está asignada en esta categoría.');
   }
   const merged = { ...plain(parent.team), ...data };
+  if (hasSelfDuplicatePlayer(merged)) {
+    return fail(400, 'Los dos jugadores de la pareja deben ser distintos.');
+  }
   if (hasDuplicatePlayer(others, playerIdentityKeys(merged))) {
     return fail(400, 'Uno de los jugadores ya está registrado en esta categoría.');
   }
@@ -677,7 +705,8 @@ async function generateCategoryBracket({ companyId, tournamentId, categoryId, se
       { bracketSize: 1, status: 'completed', bracketStale: false },
       { new: true },
     );
-    return ok(200, { bracketSize: 1, rounds: [], champion: result.champion, drawSeed });
+    // Champion is always a team id (or null) across every endpoint.
+    return ok(200, { bracketSize: 1, rounds: [], champion: teamId(result.champion), drawSeed });
   }
 
   const documents = result.matches.map((match) => ({
@@ -795,6 +824,83 @@ async function recordResult({ companyId, tournamentId, categoryId, matchId, scor
   return ok(200, { match: updated, champion });
 }
 
+// Editing an already-played result is allowed only while nothing downstream has
+// been played: the previously advanced winner is replaced consistently and the
+// returned shape mirrors recordResult ({ match, champion }).
+async function editResult({ companyId, tournamentId, categoryId, matchId, scoreA, scoreB }) {
+  const parent = await ensureTournament(companyId, tournamentId);
+  if (parent.error) return parent.error;
+  if (!isObjectId(String(matchId))) return invalidId();
+
+  const matchFilter = { _id: matchId, companyId, tournament: tournamentId };
+  if (categoryId !== undefined && categoryId !== null) {
+    if (!isObjectId(String(categoryId))) return invalidId();
+    matchFilter.category = categoryId;
+  }
+  const match = await TournamentMatch.findOne(matchFilter);
+  if (!match) return fail(404, 'Partido no encontrado.');
+
+  const category = await TournamentCategory.findOne({
+    _id: match.category,
+    companyId,
+    tournament: tournamentId,
+  });
+  if (!category) return fail(404, 'Categoría no encontrada.');
+  if (parent.tournament.status === 'finished' || parent.tournament.status === 'cancelled') {
+    return fail(409, RESULT_LOCKED);
+  }
+  if (category.bracketStale === true) return fail(409, STALE_BRACKET);
+
+  const resolved = resolveResult({ scoreA, scoreB });
+  if (resolved.errors.length) return fail(400, resolved.errors[0]);
+  if (match.status !== 'played') {
+    return fail(409, 'El partido no tiene un resultado registrado para editar.');
+  }
+
+  const matches = await TournamentMatch.find({
+    companyId,
+    tournament: tournamentId,
+    category: match.category,
+  });
+  const guard = canClearResult({ matches, round: match.round, position: match.position });
+  if (!guard.allowed) return fail(409, guard.reason);
+
+  const previousWinner = match.winner;
+  const winnerId = resolved.winner === 'A' ? match.teamA : match.teamB;
+  const updated = await TournamentMatch.findOneAndUpdate(
+    { _id: matchId, companyId },
+    { winner: winnerId, scoreA, scoreB },
+    { new: true, runValidators: true },
+  );
+  if (!updated) return fail(500, 'No se pudo registrar el resultado.');
+
+  const target = nextRoundTarget({ round: match.round, position: match.position });
+  const targetMatch = matches.find(
+    (item) => item.round === target.round && item.position === target.position,
+  );
+  let champion = null;
+  if (targetMatch) {
+    // Replace only the slot this match owns; the sibling participant and any
+    // later rounds stay untouched because a played downstream match is refused.
+    if (String(previousWinner || '') !== String(winnerId)) {
+      const sibling = target.slot === 'teamA' ? targetMatch.teamB : targetMatch.teamA;
+      await TournamentMatch.findOneAndUpdate(
+        { _id: targetMatch._id, companyId },
+        { [target.slot]: winnerId, status: sibling ? 'ready' : 'pending' },
+        { new: true, runValidators: true },
+      );
+    }
+  } else {
+    champion = winnerId;
+    await TournamentCategory.findOneAndUpdate(
+      { _id: match.category, companyId },
+      { status: 'completed' },
+      { new: true },
+    );
+  }
+  return ok(200, { match: updated, champion });
+}
+
 async function clearResult({ companyId, tournamentId, categoryId, matchId }) {
   const parent = await ensureCategory(companyId, tournamentId, categoryId);
   if (parent.error) return parent.error;
@@ -893,8 +999,10 @@ module.exports = {
   validateTeamInput,
   playerIdentityKeys,
   hasDuplicatePlayer,
+  hasSelfDuplicatePlayer,
   listTournaments,
   getTournament,
+  getBlockedCourts,
   createTournament,
   updateTournament,
   deleteTournament,
@@ -912,6 +1020,7 @@ module.exports = {
   generateCategoryBracket,
   getCategoryBracket,
   recordResult,
+  editResult,
   clearResult,
   scheduleMatch,
 };
