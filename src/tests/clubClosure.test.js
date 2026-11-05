@@ -20,6 +20,7 @@ const CLOSURE_ID = '64b0000000000000000000e1';
 const state = {
   closures: [],
   createdBookings: [],
+  materializeCalls: 0,
 };
 
 const resetState = () => {
@@ -33,6 +34,7 @@ const resetState = () => {
     },
   ];
   state.createdBookings = [];
+  state.materializeCalls = 0;
 };
 
 const toDateOnly = (value) => {
@@ -85,7 +87,9 @@ slotLockService.createMongooseSlotLockStore = () => ({
   findActiveLocksForDate: async () => [],
   deleteLocksForSlot: async () => {},
 });
-fixedTurnsService.materializeFixedBookingsForDate = async () => {};
+fixedTurnsService.materializeFixedBookingsForDate = async () => {
+  state.materializeCalls += 1;
+};
 bookingWhatsapp.sendBookingWhatsappConfirmation = async () => ({ ok: true });
 fixedBookingService.findConflictingFixedForBooking = async () => null;
 whatsappQueue.enqueueWhatsappCommand = async () => ({ command: { _id: 'cmd-x' } });
@@ -194,6 +198,7 @@ test('availability blocks a closure on its startDate (inclusive)', async () => {
   assert.equal(res.payload.data.closed, true);
   assert.equal(res.payload.data.closureReason, 'Mantenimiento');
   assert.deepEqual(res.payload.data.courts, []);
+  assert.deepEqual(res.payload.data.slots, []);
   assert.deepEqual(res.payload.data.availability, []);
 });
 
@@ -224,6 +229,11 @@ test('booking creation returns 409 inside the closure and writes no Booking', as
   assert.equal(res.payload.success, false);
   assert.equal(res.payload.error, 'El club está cerrado ese día');
   assert.equal(state.createdBookings.length, 0, 'no booking may be persisted on a closed day');
+  assert.equal(
+    state.materializeCalls,
+    0,
+    'fixed bookings must not be materialized on a closed day',
+  );
 });
 
 test('booking creation succeeds outside the closure (triangulation)', async () => {
