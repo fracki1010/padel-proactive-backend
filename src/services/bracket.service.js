@@ -100,7 +100,12 @@ const emptyBracket = (errors) => ({ bracketSize: 0, totalRounds: 0, matches: [],
 function generateBracket({ teams, size, rng = Math.random } = {}) {
   if (!Array.isArray(teams)) return emptyBracket(['teams debe ser un arreglo.']);
   if (teams.length === 0) return emptyBracket(['Se requiere al menos un equipo para generar la llave.']);
-  if (teams.length === 1 && (size == null || size === 1)) {
+  if (teams.some((entry) => entry == null || typeof entry !== 'object')) {
+    return emptyBracket(['Cada equipo debe ser un objeto válido.']);
+  }
+  // A single team is resolved as champion before any sizing logic, so an
+  // explicit larger size cannot create unplayable bye-only matches.
+  if (teams.length === 1) {
     return { bracketSize: 1, totalRounds: 0, matches: [], byeCount: 0, champion: teams[0], errors: [] };
   }
   if (teams.length > MAX_TEAMS) {
@@ -205,6 +210,11 @@ function applyWinner({ matches, round, position, winner } = {}) {
   const winnerKey = teamKey(winner);
   if (winnerKey !== teamKey(match.teamA) && winnerKey !== teamKey(match.teamB)) {
     return { matches, errors: ['El ganador debe ser uno de los dos equipos del partido.'] };
+  }
+  // Results only apply to a ready match; pending matches must first have both
+  // participants confirmed by the engine or an earlier advancement.
+  if (match.status !== 'ready') {
+    return { matches, errors: ['El partido debe estar listo para registrar un resultado.'] };
   }
 
   const next = matches.map((item) => ({ ...item }));

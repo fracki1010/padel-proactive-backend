@@ -62,11 +62,31 @@ test('generateBracket rejects zero teams', () => {
 
 test('generateBracket resolves a single team as champion with no matches', () => {
   const only = team('solo');
-  const result = generateBracket({ teams: [only] });
-  assert.deepEqual(result.errors, []);
-  assert.equal(result.bracketSize, 1);
-  assert.equal(result.matches.length, 0);
-  assert.equal(result.champion, only);
+  for (const size of [undefined, 1, 2, 4, 8]) {
+    const input = size == null ? { teams: [only] } : { teams: [only], size };
+    const result = generateBracket(input);
+    assert.deepEqual(result.errors, [], `size ${size}`);
+    assert.equal(result.bracketSize, 1, `size ${size}`);
+    assert.equal(result.matches.length, 0, `size ${size}`);
+    assert.equal(result.champion, only, `size ${size}`);
+  }
+});
+
+test('generateBracket rejects null and non-object team entries', () => {
+  const cases = [
+    [null],
+    [undefined],
+    ['team'],
+    [42],
+    [{ id: 'a' }, null],
+    [null, null, { id: 'a' }, { id: 'b' }],
+  ];
+  for (const teams of cases) {
+    const result = generateBracket({ teams });
+    assert.equal(result.matches.length, 0, JSON.stringify(teams));
+    assert.ok(result.errors.length > 0, JSON.stringify(teams));
+    assert.match(result.errors[0], /equipo|objeto/i);
+  }
 });
 
 test('generateBracket rejects more than 64 teams', () => {
@@ -133,6 +153,7 @@ test('generateBracket gives an eight-slot bracket with three byes to five teams'
     .filter(Boolean)
     .sort();
   assert.deepEqual(advanced, ['t1', 't2', 't3']);
+  assert.ok(result.matches.every((match) => !Object.prototype.hasOwnProperty.call(match, 'isBye')));
 });
 
 test('generateBracket handles seven teams with one bye', () => {
@@ -224,6 +245,15 @@ test('applyWinner rejects a match that does not have both teams', () => {
   const result = applyWinner({ matches: bracket.matches, round: 2, position: 0, winner: pending.teamA });
   assert.equal(result.matches, bracket.matches);
   assert.match(result.errors[0], /ambos equipos/i);
+});
+
+test('applyWinner refuses a pending match even when both teams are set', () => {
+  const pending = [
+    { round: 1, position: 0, teamA: team('a'), teamB: team('b'), winner: null, status: 'pending' },
+  ];
+  const result = applyWinner({ matches: pending, round: 1, position: 0, winner: team('a') });
+  assert.equal(result.matches, pending);
+  assert.match(result.errors[0], /listo|pendiente/i);
 });
 
 test('applyWinner rejects a match already played or decided by a bye', () => {
@@ -318,6 +348,8 @@ test('canClearResult is refused when a downstream match already played', () => {
 test('canClearResult rejects invalid coordinates instead of throwing', () => {
   const bracket = generateBracket({ teams: fourTeams() });
   const invalid = [
+    {},
+    { round: 1 },
     { round: '1', position: 0 },
     { round: 1, position: '0' },
     { round: 1.5, position: 0 },
