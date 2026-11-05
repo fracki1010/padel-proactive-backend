@@ -36,7 +36,12 @@ const {
   canResolveTournamentBlocks,
   getBlockedCourtIdsForDate,
   isCourtBlockedByTournament,
+  resolveCompanyForCourt,
 } = require("./tournamentBlocking.service");
+const {
+  canResolveClosures,
+  isClubClosedForDate,
+} = require("./clubClosure.service");
 const {
   buildForeignLockedKeys,
   createMongooseSlotLockStore,
@@ -241,6 +246,10 @@ const createNewBooking = async ({
     }
     // A bot write must never proceed while tournament blocking cannot be
     // resolved: Mongoose would buffer it and commit after the reconnect.
+    // A bot write must never proceed while the closure state is unknown.
+    if (!canResolveClosures()) {
+      return { success: false, error: "CLOSURE_UNAVAILABLE" };
+    }
     if (!canResolveTournamentBlocks()) {
       return { success: false, error: "BLOCKING_UNAVAILABLE" };
     }
@@ -249,11 +258,6 @@ const createNewBooking = async ({
     if (hasSlotStarted(dateStr, timeStr)) {
       return { success: false, error: "PAST_TIME" };
     }
-
-    await materializeFixedBookingsForDate({
-      companyId,
-      searchDate: bookingDate,
-    });
 
     // 2.0 Límite diario por cliente: máximo N reservas activas por día
     // Los turnos fijos no cuentan — son recurrentes acordados, no reservas nuevas del día
@@ -469,12 +473,37 @@ const createNewBooking = async ({
       }
     }
 
+    // The webhook companyId can be null. The selected court is authoritative:
+    // derive its tenant before evaluating closures or materializing fixed
+    // turns. If the tenant still cannot be determined, refuse the write instead
+    // of defaulting to "open".
+    const tenantCompanyId =
+      companyId || (await resolveCompanyForCourt(selectedCourt._id));
+    if (!tenantCompanyId) {
+      return { success: false, error: "CLOSURE_UNAVAILABLE" };
+    }
+
+    // A club closure blocks the whole day: refuse with zero writes (the reply
+    // builder maps CLUB_CLOSED to neutral Spanish copy).
+    const closure = await isClubClosedForDate(tenantCompanyId, dateStr);
+    if (closure.closed) {
+      return { success: false, error: "CLUB_CLOSED" };
+    }
+
     // A global/super-admin bot call may arrive without a company scope, which
     // makes the busy-pool block lookup empty. Derive the court tenant before
     // the write; never evaluate blocks with an empty company scope.
-    if (!companyId && (await isCourtBlockedByTournament(null, selectedCourt._id, bookingDate))) {
+    if (
+      !companyId &&
+      (await isCourtBlockedByTournament(tenantCompanyId, selectedCourt._id, bookingDate))
+    ) {
       return { success: false, error: "BUSY" };
     }
+
+    await materializeFixedBookingsForDate({
+      companyId: tenantCompanyId,
+      searchDate: bookingDate,
+    });
 
     // =================================================================
     // CREACIÓN DE LA RESERVA
@@ -769,6 +798,33 @@ const getAvailableSlots = async (dateStr, options = {}) => {
       return { success: true, date: dateStr, slots: [] };
     }
 
+    // Availability spans every court in its scope, so a null companyId has no
+    // tenant to derive a closure from. Refuse instead of materializing against
+    // an unknown tenant or offering a day whose closure was never evaluated.
+    if (!companyId) {
+      return { success: false, error: "CLOSURE_UNAVAILABLE", data: [] };
+    }
+
+    // Availability materializes fixed turns, so it must not run while the
+    // closure state is unknown. Refuse instead of pretending the day is open.
+    if (!canResolveClosures()) {
+      return { success: false, error: "CLOSURE_UNAVAILABLE", data: [] };
+    }
+
+    // A closed day offers no slots: report the closure instead of hiding it
+    // behind an empty grid. The shape stays the usual one plus `closed`.
+    const closure = await isClubClosedForDate(companyId, dateStr);
+    if (closure.closed) {
+      return {
+        success: true,
+        date: dateStr,
+        slots: [],
+        blockedSlots: {},
+        closed: true,
+        closureReason: closure.reason,
+      };
+    }
+
     await materializeFixedBookingsForDate({
       companyId,
       searchDate: queryDate,
@@ -928,6 +984,7 @@ const getAvailableSlots = async (dateStr, options = {}) => {
         };
       }),
       blockedSlots,
+      closed: false,
     };
   } catch (error) {
     console.error("Error obteniendo disponibilidad:", error);

@@ -189,6 +189,7 @@ module.exports = {
   getBlockedCourtsForDate,
   getBlockedCourtIdsForDate,
   isCourtBlockedByTournament,
+  resolveCompanyForCourt,
   findActivationConflicts,
   weekdaysInRange,
   toUtcDate,

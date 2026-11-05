@@ -1,6 +1,10 @@
 const Booking = require("../models/booking.model");
 const User = require("../models/user.model");
 const { normalizeClientIdentity } = require("../utils/identityNormalization");
+const {
+  canResolveClosures,
+  isClubClosedForDate,
+} = require("./clubClosure.service");
 
 const DEFAULT_MATERIALIZATION_DAYS_AHEAD = Number(
   process.env.FIXED_TURNS_MATERIALIZATION_DAYS_AHEAD || 90,
@@ -35,6 +39,19 @@ const materializeFixedBookingsForDate = async ({
   const normalizedSearchDate = normalizeDateToUtcMidnight(searchDate);
   if (!normalizedSearchDate) {
     return { createdCount: 0, skippedCount: 0 };
+  }
+
+  // Materialization writes bookings: never proceed while the closure state is
+  // unknown, otherwise the writes would buffer and commit after a reconnect.
+  if (!canResolveClosures()) {
+    return { createdCount: 0, skippedCount: 0, unavailable: true };
+  }
+
+  // A closed day never materializes fixed turns: skip the whole date without
+  // reading users or writing bookings. Open dates keep the normal flow.
+  const closure = await isClubClosedForDate(companyId, normalizedSearchDate);
+  if (closure.closed) {
+    return { createdCount: 0, skippedCount: 0, closed: true };
   }
 
   const dayOfWeek = normalizedSearchDate.getUTCDay();
@@ -127,6 +144,16 @@ const materializeFixedBookingsInRange = async ({
   const normalizedFromDate = normalizeDateToUtcMidnight(fromDate);
   if (!normalizedFromDate) {
     return { createdCount: 0, skippedCount: 0, datesProcessed: 0 };
+  }
+
+  // Same write-safety invariant as the single-date materialization.
+  if (!canResolveClosures()) {
+    return {
+      createdCount: 0,
+      skippedCount: 0,
+      datesProcessed: 0,
+      unavailable: true,
+    };
   }
 
   const safeDaysAhead = Math.max(0, Number(daysAhead) || 0);

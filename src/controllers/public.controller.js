@@ -5,7 +5,6 @@ const Company = require("../models/company.model");
 const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
 const Booking = require("../models/booking.model");
-const ClubClosure = require("../models/clubClosure.model");
 const Announcement = require("../models/announcement.model");
 const ClientAccount = require("../models/clientAccount.model");
 const OtpVerification = require("../models/otpVerification.model");
@@ -28,6 +27,7 @@ const {
 const { getCancellationContactPhone } = require("../services/bookingService");
 const { isMongoConnected } = require("../config/database");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
+const { toIsoDateString } = require("../utils/isoDate");
 const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
@@ -81,6 +81,13 @@ const {
   getBlockedCourtsForDate,
   isCourtBlockedByTournament,
 } = require("../services/tournamentBlocking.service");
+const {
+  canResolveClosures,
+  isClubClosedForDate,
+} = require("../services/clubClosure.service");
+
+const CLOSURE_UNAVAILABLE_ERROR =
+  "No podemos verificar la disponibilidad por un problema técnico. Intentá nuevamente en unos minutos.";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 // Duración de la sesión del cliente del portal (default: 1 año).
@@ -124,12 +131,6 @@ const getMinutesUntilSlotStart = (dateStr, timeStr) => {
 const OTP_TTL_MINUTES = 10;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-const toIsoDateOnly = (value) => {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value || "");
-  return date.toISOString().slice(0, 10);
-};
 
 const parseDateToUtcMidnight = (value) => {
   if (!value) return null;
@@ -256,13 +257,22 @@ const getAvailability = async (req, res) => {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
     }
 
-    const closure = await ClubClosure.findOne({ companyId: company._id, date: searchDate });
-    if (closure) {
+    // Availability materializes fixed turns, so it must not run while the
+    // closure state is unknown. Never claim the club is open in that case.
+    if (!canResolveClosures()) {
+      return res.status(503).json({
+        success: false,
+        error: CLOSURE_UNAVAILABLE_ERROR,
+      });
+    }
+
+    const closure = await isClubClosedForDate(company._id, searchDate);
+    if (closure.closed) {
       return res.json({
         success: true,
         data: {
           closed: true,
-          closureReason: closure.reason || "El club está cerrado ese día",
+          closureReason: closure.reason,
           courts: [],
           slots: [],
           availability: [],
@@ -376,6 +386,17 @@ const acquireSlotLockHandler = async (req, res) => {
     const searchDate = parseDateToUtcMidnight(date);
     if (!searchDate) {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
+    }
+
+    // A slot lock is a write: refuse while the closure state is unknown.
+    if (!canResolveClosures()) {
+      return res.status(503).json({ success: false, error: CLOSURE_UNAVAILABLE_ERROR });
+    }
+
+    // A closed day must not reserve a slot lock: refuse before creating one.
+    const closure = await isClubClosedForDate(company._id, searchDate);
+    if (closure.closed) {
+      return res.status(409).json({ success: false, error: "El club está cerrado ese día" });
     }
 
     const [court, slot] = await Promise.all([
@@ -942,8 +963,13 @@ const createClientBooking = async (req, res) => {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
     }
 
-    const closure = await ClubClosure.findOne({ companyId: company._id, date: searchDate });
-    if (closure) {
+    // No Booking write may proceed while the closure state is unknown.
+    if (!canResolveClosures()) {
+      return res.status(503).json({ success: false, error: CLOSURE_UNAVAILABLE_ERROR });
+    }
+
+    const closure = await isClubClosedForDate(company._id, searchDate);
+    if (closure.closed) {
       return res.status(409).json({ success: false, error: "El club está cerrado ese día" });
     }
 
@@ -1174,11 +1200,11 @@ const createClientBooking = async (req, res) => {
         client,
         court: populated.court,
         slot: populated.timeSlot,
-        date: toIsoDateOnly(searchDate),
+        date: toIsoDateString(searchDate),
       });
     }
 
-    const responseData = { ...populated.toObject(), date: toIsoDateOnly(populated.date) };
+    const responseData = { ...populated.toObject(), date: toIsoDateString(populated.date) };
     if (depositEnabled) {
       responseData.deposit = depositInfo;
       responseData.payment = paymentInfo;
@@ -1236,7 +1262,7 @@ const getMyBookings = async (req, res) => {
       }).populate("court").populate("timeSlot").sort({ date: -1 }).limit(30),
     ]);
 
-    const fmt = (b) => ({ ...b.toObject(), date: toIsoDateOnly(b.date) });
+    const fmt = (b) => ({ ...b.toObject(), date: toIsoDateString(b.date) });
 
     return res.json({
       success: true,
@@ -1293,7 +1319,7 @@ const cancelMyBooking = async (req, res) => {
     const slot = await TimeSlot.findById(booking.timeSlot).lean();
     const cancellationLockHours = await getCancellationLockHours(company._id);
     if (cancellationLockHours > 0 && slot) {
-      const dateStr = toIsoDateOnly(booking.date);
+      const dateStr = toIsoDateString(booking.date);
       const minutesUntilStart = getMinutesUntilSlotStart(dateStr, slot.startTime);
       if (minutesUntilStart < cancellationLockHours * 60) {
         return res.status(409).json({
