@@ -28,6 +28,7 @@ const {
 const { getCancellationContactPhone } = require("../services/bookingService");
 const { isMongoConnected } = require("../config/database");
 const { formatBookingDateShort } = require("../utils/formatBookingDateShort");
+const { toIsoDateString } = require("../utils/isoDate");
 const {
   COMMAND_TYPES,
   enqueueWhatsappCommand,
@@ -119,12 +120,6 @@ const getMinutesUntilSlotStart = (dateStr, timeStr) => {
 const OTP_TTL_MINUTES = 10;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-const toIsoDateOnly = (value) => {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value || "");
-  return date.toISOString().slice(0, 10);
-};
 
 const parseDateToUtcMidnight = (value) => {
   if (!value) return null;
@@ -251,7 +246,12 @@ const getAvailability = async (req, res) => {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
     }
 
-    const closure = await ClubClosure.findOne({ companyId: company._id, date: searchDate });
+    const closureDate = toIsoDateString(searchDate);
+    const closure = await ClubClosure.findOne({
+      companyId: company._id,
+      startDate: { $lte: closureDate },
+      endDate: { $gte: closureDate },
+    });
     if (closure) {
       return res.json({
         success: true,
@@ -922,7 +922,12 @@ const createClientBooking = async (req, res) => {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
     }
 
-    const closure = await ClubClosure.findOne({ companyId: company._id, date: searchDate });
+    const closureDate = toIsoDateString(searchDate);
+    const closure = await ClubClosure.findOne({
+      companyId: company._id,
+      startDate: { $lte: closureDate },
+      endDate: { $gte: closureDate },
+    });
     if (closure) {
       return res.status(409).json({ success: false, error: "El club está cerrado ese día" });
     }
@@ -1136,11 +1141,11 @@ const createClientBooking = async (req, res) => {
         client,
         court: populated.court,
         slot: populated.timeSlot,
-        date: toIsoDateOnly(searchDate),
+        date: toIsoDateString(searchDate),
       });
     }
 
-    const responseData = { ...populated.toObject(), date: toIsoDateOnly(populated.date) };
+    const responseData = { ...populated.toObject(), date: toIsoDateString(populated.date) };
     if (depositEnabled) {
       responseData.deposit = depositInfo;
       responseData.payment = paymentInfo;
@@ -1198,7 +1203,7 @@ const getMyBookings = async (req, res) => {
       }).populate("court").populate("timeSlot").sort({ date: -1 }).limit(30),
     ]);
 
-    const fmt = (b) => ({ ...b.toObject(), date: toIsoDateOnly(b.date) });
+    const fmt = (b) => ({ ...b.toObject(), date: toIsoDateString(b.date) });
 
     return res.json({
       success: true,
@@ -1255,7 +1260,7 @@ const cancelMyBooking = async (req, res) => {
     const slot = await TimeSlot.findById(booking.timeSlot).lean();
     const cancellationLockHours = await getCancellationLockHours(company._id);
     if (cancellationLockHours > 0 && slot) {
-      const dateStr = toIsoDateOnly(booking.date);
+      const dateStr = toIsoDateString(booking.date);
       const minutesUntilStart = getMinutesUntilSlotStart(dateStr, slot.startTime);
       if (minutesUntilStart < cancellationLockHours * 60) {
         return res.status(409).json({
