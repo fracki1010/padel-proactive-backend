@@ -100,7 +100,8 @@ app.use(
 app.use(
   "/api/tournaments",
   protect,
-  requireRole("admin", "manager"),
+  // Spec TM-R1: tournament management is admin-only.
+  requireRole("admin"),
   requireTenant,
   require("./routes/tournament.routes"),
 );
