@@ -5,7 +5,6 @@ const Company = require("../models/company.model");
 const Court = require("../models/court.model");
 const TimeSlot = require("../models/timeSlot.model");
 const Booking = require("../models/booking.model");
-const ClubClosure = require("../models/clubClosure.model");
 const Announcement = require("../models/announcement.model");
 const ClientAccount = require("../models/clientAccount.model");
 const OtpVerification = require("../models/otpVerification.model");
@@ -82,6 +81,7 @@ const {
   getBlockedCourtsForDate,
   isCourtBlockedByTournament,
 } = require("../services/tournamentBlocking.service");
+const { isClubClosedForDate } = require("../services/clubClosure.service");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 // Duración de la sesión del cliente del portal (default: 1 año).
@@ -251,18 +251,13 @@ const getAvailability = async (req, res) => {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
     }
 
-    const closureDate = toIsoDateString(searchDate);
-    const closure = await ClubClosure.findOne({
-      companyId: company._id,
-      startDate: { $lte: closureDate },
-      endDate: { $gte: closureDate },
-    });
-    if (closure) {
+    const closure = await isClubClosedForDate(company._id, searchDate);
+    if (closure.closed) {
       return res.json({
         success: true,
         data: {
           closed: true,
-          closureReason: closure.reason || "El club está cerrado ese día",
+          closureReason: closure.reason,
           courts: [],
           slots: [],
           availability: [],
@@ -376,6 +371,12 @@ const acquireSlotLockHandler = async (req, res) => {
     const searchDate = parseDateToUtcMidnight(date);
     if (!searchDate) {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
+    }
+
+    // A closed day must not reserve a slot lock: refuse before creating one.
+    const closure = await isClubClosedForDate(company._id, searchDate);
+    if (closure.closed) {
+      return res.status(409).json({ success: false, error: "El club está cerrado ese día" });
     }
 
     const [court, slot] = await Promise.all([
@@ -942,13 +943,8 @@ const createClientBooking = async (req, res) => {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
     }
 
-    const closureDate = toIsoDateString(searchDate);
-    const closure = await ClubClosure.findOne({
-      companyId: company._id,
-      startDate: { $lte: closureDate },
-      endDate: { $gte: closureDate },
-    });
-    if (closure) {
+    const closure = await isClubClosedForDate(company._id, searchDate);
+    if (closure.closed) {
       return res.status(409).json({ success: false, error: "El club está cerrado ese día" });
     }
 
