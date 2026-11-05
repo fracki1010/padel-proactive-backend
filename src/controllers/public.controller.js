@@ -76,6 +76,10 @@ const {
   collectEffectiveSlots,
   buildAvailabilityPairs,
 } = require("../utils/slotSchedule");
+const {
+  getBlockedCourtsForDate,
+  isCourtBlockedByTournament,
+} = require("../services/tournamentBlocking.service");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 // Duración de la sesión del cliente del portal (default: 1 año).
@@ -297,10 +301,16 @@ const getAvailability = async (req, res) => {
       occupiedSet.add(`${String(fixed.court)}_${String(fixed.timeSlot)}`);
     }
 
+    // An in-progress tournament blocks only its own courts. The club stays open
+    // and untouched courts keep their normal availability.
+    const tournamentBlocks = await getBlockedCourtsForDate(company._id, date);
+    const blockedCourtIds = new Set(tournamentBlocks.courtIds);
+
     const baseAvailability = buildAvailabilityPairs({
       courts,
       slots,
       occupiedSet,
+      blockedCourtIds,
     });
 
     const availability = applyLocksToAvailability({
@@ -319,7 +329,14 @@ const getAvailability = async (req, res) => {
 
     return res.json({
       success: true,
-      data: { closed: false, courts, slots: effectiveSlots, availability },
+      data: {
+        closed: false,
+        courts,
+        slots: effectiveSlots,
+        availability,
+        blockedCourts: tournamentBlocks.courtIds,
+        tournamentBlocks: tournamentBlocks.tournaments,
+      },
     });
   } catch (err) {
     console.error("[public.controller]", err);
@@ -952,6 +969,15 @@ const createClientBooking = async (req, res) => {
       return res.status(403).json({
         success: false,
         error: "Tu cuenta está suspendida. Comunicate con el club para más información.",
+      });
+    }
+
+    // An in-progress tournament owns this court for the whole day. Refuse before
+    // any Booking write (including fixed-turn materialization).
+    if (await isCourtBlockedByTournament(company._id, court._id, searchDate)) {
+      return res.status(409).json({
+        success: false,
+        error: "La cancha está ocupada por un torneo en curso.",
       });
     }
 

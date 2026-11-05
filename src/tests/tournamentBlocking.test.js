@@ -17,6 +17,8 @@ const COURT_B = hexId(0xc2);
 const COURT_A2 = hexId(0xc5);
 const COURT_INACTIVE = hexId(0xc3);
 const COURT_MISSING = hexId(0xc4);
+const SLOT_ID = hexId(0xd1);
+const CLIENT_ID = hexId(0xe1);
 
 // ── Model doubles ────────────────────────────────────────────────────────────
 
@@ -25,6 +27,10 @@ const state = {
   courts: [],
   bookings: [],
   fixedTurns: [],
+  timeSlots: [],
+  users: [],
+  companies: [],
+  materializeCalls: 0,
 };
 
 const resetState = () => {
@@ -56,6 +62,20 @@ const resetState = () => {
   ];
   state.bookings = [];
   state.fixedTurns = [];
+  state.timeSlots = [
+    {
+      _id: SLOT_ID,
+      companyId: COMPANY_A,
+      court: null,
+      startTime: '20:00',
+      endTime: '21:00',
+      price: 10000,
+      isActive: true,
+    },
+  ];
+  state.users = [];
+  state.companies = [{ _id: COMPANY_A, slug: 'club-a', isActive: true }];
+  state.materializeCalls = 0;
 };
 
 const norm = (value) => {
@@ -290,4 +310,171 @@ test('isCourtBlockedByTournament matches only blocked court/date pairs', async (
   assert.equal(await isCourtBlockedByTournament(COMPANY_A, COURT_B, '2026-11-11'), false);
   assert.equal(await isCourtBlockedByTournament(COMPANY_A, COURT_A, '2026-11-13'), false);
   assert.equal(await isCourtBlockedByTournament(COMPANY_B, COURT_A, '2026-11-11'), false);
+});
+
+// ── Surface parity: public availability and public booking creation ─────────
+
+const realSlotLockService = require('../services/slotLock.service');
+
+stubModule('../models/timeSlot.model', createModel('timeSlots'));
+stubModule('../models/user.model', createModel('users'));
+stubModule('../models/company.model', {
+  findOne: async (filter = {}) => state.companies.find((company) => matches(company, filter)) || null,
+});
+stubModule('../models/clubClosure.model', { findOne: async () => null });
+stubModule('../models/clientAccount.model', {
+  findById: async () => ({
+    _id: CLIENT_ID,
+    companyId: COMPANY_A,
+    name: 'Ana',
+    phone: '5491100000000',
+  }),
+});
+stubModule('../services/fixedTurnsMaterialization.service', {
+  materializeFixedBookingsForDate: async () => {
+    state.materializeCalls += 1;
+  },
+});
+stubModule('../services/slotLock.service', {
+  ...realSlotLockService,
+  createMongooseSlotLockStore: () => ({
+    findActiveLocksForDate: async () => [],
+    deleteLocksForSlot: async () => ({ deletedCount: 0 }),
+  }),
+});
+stubModule('../services/fixedBooking.service', {
+  getWeekdayFromDate: (value) =>
+    (value instanceof Date ? value : new Date(value)).getUTCDay(),
+  findConflictingFixedForBooking: async () => null,
+});
+stubModule('../services/appConfig.service', {
+  getBookingsPaused: async () => false,
+  getDepositSettings: async () => ({
+    depositEnabled: false,
+    depositAmount: 0,
+    depositExemptPhones: [],
+  }),
+  getCancellationLockHours: async () => 0,
+  getPenaltyLimit: async () => 2,
+  getPenaltySystemEnabled: async () => false,
+  isPhoneExempt: () => false,
+});
+stubModule('../services/notificationService', {
+  sendAdminNotification: async () => {},
+});
+stubModule('../services/depositNotification.service', {
+  notifyDepositPending: async () => {},
+});
+stubModule('../services/bookingWhatsappConfirmation.service', {
+  sendBookingWhatsappConfirmation: async () => {},
+});
+stubModule('../services/whatsappCommandQueue.service', {
+  COMMAND_TYPES: { SEND_MESSAGE: 'SEND_MESSAGE', NOTIFY_CANCELLATION_GROUP: 'NOTIFY_CANCELLATION_GROUP' },
+  enqueueWhatsappCommand: async () => ({ command: { _id: 'cmd-x' } }),
+});
+stubModule('../services/deposit.service', {
+  buildDepositFields: () => ({}),
+  buildDepositPaymentLink: async () => ({ initPoint: '' }),
+  markRefundableOnCancel: () => ({ refundable: false, deposit: null }),
+});
+
+const bookingStub = require.cache[require.resolve('../models/booking.model')].exports;
+bookingStub.findById = () => {
+  const created = state.bookings[state.bookings.length - 1];
+  const populated = { ...created, toObject: () => created };
+  const chain = {
+    populate: () => chain,
+    then: (resolve, reject) => Promise.resolve(populated).then(resolve, reject),
+    catch: (reject) => Promise.resolve(populated).catch(reject),
+  };
+  return chain;
+};
+
+const publicController = require('../controllers/public.controller');
+
+const call = async (handler, req) => {
+  const result = { statusCode: 200, body: null };
+  const res = {
+    status(code) {
+      result.statusCode = code;
+      return res;
+    },
+    json(payload) {
+      result.body = payload;
+      return res;
+    },
+    setHeader() {},
+  };
+  await handler(req, res);
+  return result;
+};
+
+const publicAvailability = (date) =>
+  call(publicController.getAvailability, {
+    params: { slug: 'club-a' },
+    query: { date },
+  });
+
+test('public availability marks blocked courts with a tournament reason and leaves the club open', async () => {
+  const response = await publicAvailability('2026-11-11');
+  assert.equal(response.statusCode, 200);
+
+  const data = response.body.data;
+  assert.equal(data.closed, false);
+  assert.deepEqual(data.blockedCourts, [COURT_A]);
+  assert.equal(data.tournamentBlocks.length, 1);
+  assert.equal(data.tournamentBlocks[0]._id, TOURNAMENT_A);
+
+  const blockedPairs = data.availability.filter((pair) => pair.courtId === COURT_A);
+  assert.ok(blockedPairs.length > 0);
+  for (const pair of blockedPairs) {
+    assert.equal(pair.available, false);
+    assert.equal(pair.reason, 'tournament');
+  }
+
+  const freePairs = data.availability.filter((pair) => pair.courtId === COURT_A2);
+  assert.ok(freePairs.length > 0);
+  for (const pair of freePairs) {
+    assert.equal(pair.available, true);
+    assert.equal(pair.reason, undefined);
+  }
+});
+
+test('public availability on an unblocked date reports no tournament blocks', async () => {
+  const response = await publicAvailability('2026-11-13');
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body.data.blockedCourts, []);
+  assert.deepEqual(response.body.data.tournamentBlocks, []);
+  assert.ok(response.body.data.availability.every((pair) => pair.available !== false));
+});
+
+const publicBooking = (body) =>
+  call(publicController.createClientBooking, {
+    params: { slug: 'club-a' },
+    body,
+    clientUser: { id: CLIENT_ID, companyId: COMPANY_A },
+  });
+
+test('public booking creation rejects a tournament-blocked court with 409 before any write', async () => {
+  const response = await publicBooking({
+    courtId: COURT_A,
+    slotId: SLOT_ID,
+    date: '2026-11-11',
+  });
+  assert.equal(response.statusCode, 409);
+  assert.match(response.body.error, /torneo/i);
+  assert.equal(state.bookings.length, 0);
+  assert.equal(state.materializeCalls, 0);
+});
+
+test('public booking creation still proceeds for a free court on a blocked date', async () => {
+  const response = await publicBooking({
+    courtId: COURT_A2,
+    slotId: SLOT_ID,
+    date: '2026-11-11',
+  });
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.body.success, true);
+  assert.equal(state.bookings.length, 1);
+  assert.equal(state.materializeCalls, 1);
 });
