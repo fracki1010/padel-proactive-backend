@@ -57,7 +57,7 @@ test('seedOrder keeps every seed once and pairs sum to size + 1', () => {
 test('generateBracket rejects zero teams', () => {
   const result = generateBracket({ teams: [] });
   assert.equal(result.matches.length, 0);
-  assert.match(result.errors[0], /team/i);
+  assert.match(result.errors[0], /equipo/i);
 });
 
 test('generateBracket resolves a single team as champion with no matches', () => {
@@ -76,6 +76,24 @@ test('generateBracket rejects more than 64 teams', () => {
   assert.match(result.errors[0], /64/);
 });
 
+test('generateBracket rejects an explicit size with an unplayable first round', () => {
+  for (const teams of [[team('a'), team('b')], [team('a'), team('b'), team('c')]]) {
+    const result = generateBracket({ teams, size: 8 });
+    assert.equal(result.matches.length, 0, `${teams.length} teams in 8 slots`);
+    assert.match(result.errors[0], /primera ronda|al menos un equipo/i);
+  }
+});
+
+test('generateBracket accepts an explicit size equal to twice the team count', () => {
+  const result = generateBracket({ teams: fourTeams(), size: 8 });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.bracketSize, 8);
+  assert.equal(result.byeCount, 4);
+  for (const match of result.matches.filter((item) => item.round === 1)) {
+    assert.ok(match.teamA || match.teamB, 'every first-round match needs at least one team');
+  }
+});
+
 test('generateBracket builds an exact power-of-two bracket without byes', () => {
   const result = generateBracket({ teams: fourTeams() });
   assert.deepEqual(result.errors, []);
@@ -88,7 +106,8 @@ test('generateBracket builds an exact power-of-two bracket without byes', () => 
     { round: 1, position: 1, teamA: 'c', teamB: 'b' },
     { round: 2, position: 0, teamA: null, teamB: null },
   ]);
-  assert.ok(result.matches.every((match) => match.isBye === false));
+  assert.ok(result.matches.every((match) => match.status !== 'bye'));
+  assert.ok(result.matches.every((match) => !Object.prototype.hasOwnProperty.call(match, 'isBye')));
 });
 
 test('generateBracket gives an eight-slot bracket with three byes to five teams', () => {
@@ -103,10 +122,10 @@ test('generateBracket gives an eight-slot bracket with three byes to five teams'
   for (const match of firstRound) {
     const filled = Number(Boolean(match.teamA)) + Number(Boolean(match.teamB));
     assert.ok(filled >= 1, 'no first-round match may start empty');
-    assert.equal(match.isBye, filled === 1);
+    assert.equal(match.status === 'bye', filled === 1);
   }
   const topSeed = firstRound.find((m) => m.teamA?.id === 't1' || m.teamB?.id === 't1');
-  assert.equal(topSeed.isBye, true);
+  assert.equal(topSeed.status, 'bye');
 
   const advanced = result.matches
     .filter((match) => match.round === 2)
@@ -123,7 +142,7 @@ test('generateBracket handles seven teams with one bye', () => {
   assert.equal(result.bracketSize, 8);
   assert.equal(result.byeCount, 1);
 
-  const byes = result.matches.filter((match) => match.isBye);
+  const byes = result.matches.filter((match) => match.status === 'bye');
   assert.equal(byes.length, 1);
   assert.equal(byes[0].round, 1);
   assert.ok([byes[0].teamA?.id, byes[0].teamB?.id].includes('t1'));
@@ -156,10 +175,18 @@ test('generateBracket honors explicit seeds before the random draw', () => {
 
 test('generateBracket rejects duplicate or out-of-range explicit seeds', () => {
   const duplicated = generateBracket({ teams: [team('a', 1), team('b', 1), team('c', 2), team('d', 3)] });
-  assert.match(duplicated.errors[0], /seed 1/i);
+  assert.match(duplicated.errors[0], /semilla 1/i);
 
   const outOfRange = generateBracket({ teams: [team('a', 1), team('b', 2), team('c', 3), team('d', 9)] });
-  assert.match(outOfRange.errors[0], /between 1 and 4/i);
+  assert.match(outOfRange.errors[0], /entre 1 y 4/i);
+});
+
+test('generateBracket rejects present but non-integer explicit seeds', () => {
+  for (const seed of ['1', 1.5, NaN]) {
+    const result = generateBracket({ teams: [team('a'), team('b'), { id: 'c', seed }] });
+    assert.equal(result.matches.length, 0, `seed ${String(seed)}`);
+    assert.match(result.errors[0], /semilla|entero/i);
+  }
 });
 
 test('nextRoundTarget computes the derived parent slot', () => {
@@ -183,6 +210,36 @@ test('applyWinner advances the winner and marks the next match ready', () => {
   assert.equal(readySemi.status, 'ready');
 });
 
+test('applyWinner rejects a winner that is not one of the two teams', () => {
+  const bracket = generateBracket({ teams: fourTeams() });
+  const result = applyWinner({ matches: bracket.matches, round: 1, position: 0, winner: team('z') });
+  assert.equal(result.matches, bracket.matches);
+  assert.match(result.errors[0], /ganador|equipo/i);
+});
+
+test('applyWinner rejects a match that does not have both teams', () => {
+  const bracket = generateBracket({ teams: [team('a', 1), team('b', 2), team('c', 3)] });
+  const pending = bracket.matches.find((match) => match.round === 2 && match.position === 0);
+  assert.equal(pending.status, 'pending');
+  const result = applyWinner({ matches: bracket.matches, round: 2, position: 0, winner: pending.teamA });
+  assert.equal(result.matches, bracket.matches);
+  assert.match(result.errors[0], /ambos equipos/i);
+});
+
+test('applyWinner rejects a match already played or decided by a bye', () => {
+  const bracket = generateBracket({ teams: fourTeams() });
+  const replayed = played(bracket, 1, 0);
+  const replay = applyWinner({ matches: replayed.matches, round: 1, position: 0, winner: replayed.matches[0].teamA });
+  assert.equal(replay.matches, replayed.matches);
+  assert.match(replay.errors[0], /jugado|bye/i);
+
+  const withBye = generateBracket({ teams: [team('a', 1), team('b', 2), team('c', 3)] });
+  const byeMatch = withBye.matches.find((match) => match.status === 'bye');
+  const onBye = applyWinner({ matches: withBye.matches, round: byeMatch.round, position: byeMatch.position, winner: byeMatch.winner });
+  assert.equal(onBye.matches, withBye.matches);
+  assert.match(onBye.errors[0], /bye/i);
+});
+
 test('the final match resolves the category champion', () => {
   const bracket = generateBracket({ teams: [team('a', 1), team('b', 2)] });
   const pending = resolveChampion({ bracketSize: bracket.bracketSize, matches: bracket.matches });
@@ -195,6 +252,17 @@ test('the final match resolves the category champion', () => {
   assert.equal(resolved.champion.id, 'a');
 });
 
+test('resolveChampion returns the single team of a one-team bracket', () => {
+  const only = team('solo');
+  const result = resolveChampion({ bracketSize: 1, matches: [], teams: [only] });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.champion, only);
+
+  const missing = resolveChampion({ bracketSize: 1, matches: [] });
+  assert.equal(missing.champion, null);
+  assert.equal(missing.errors.length, 1);
+});
+
 test('resolveResult derives the winner from a valid score', () => {
   assert.deepEqual(resolveResult({ scoreA: 2, scoreB: 1 }), { winner: 'A', errors: [] });
   assert.deepEqual(resolveResult({ scoreA: 1, scoreB: 2 }), { winner: 'B', errors: [] });
@@ -204,7 +272,11 @@ test('resolveResult derives the winner from a valid score', () => {
 test('resolveResult rejects ties, incomplete scores and a contradictory winner', () => {
   const tied = resolveResult({ scoreA: 2, scoreB: 2 });
   assert.equal(tied.winner, null);
-  assert.match(tied.errors[0], /tie/i);
+  assert.match(tied.errors[0], /empat/i);
+
+  const tiedWithWinner = resolveResult({ scoreA: 2, scoreB: 2, winner: 'A' });
+  assert.equal(tiedWithWinner.winner, null);
+  assert.match(tiedWithWinner.errors[0], /empat/i);
 
   const incomplete = resolveResult({ scoreA: 2 });
   assert.equal(incomplete.winner, null);
@@ -240,5 +312,21 @@ test('canClearResult is refused when a downstream match already played', () => {
 
   const guard = canClearResult({ matches: done, round: 1, position: 0 });
   assert.equal(guard.allowed, false);
-  assert.match(guard.reason, /downstream/i);
+  assert.match(guard.reason, /posterior/i);
+});
+
+test('canClearResult rejects invalid coordinates instead of throwing', () => {
+  const bracket = generateBracket({ teams: fourTeams() });
+  const invalid = [
+    { round: '1', position: 0 },
+    { round: 1, position: '0' },
+    { round: 1.5, position: 0 },
+    { round: 1, position: -1 },
+    { round: 0, position: 0 },
+  ];
+  for (const coords of invalid) {
+    const guard = canClearResult({ matches: bracket.matches, ...coords });
+    assert.equal(guard.allowed, false, JSON.stringify(coords));
+    assert.match(guard.reason, /inválid/i);
+  }
 });
