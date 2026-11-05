@@ -550,6 +550,37 @@ test('bot booking creation still books an open date', async () => {
   assert.equal(state.bookings.length, 1);
 });
 
+// The webhook companyId can be null. The target court is authoritative, so the
+// closure must be evaluated for the court tenant; when the court has no tenant
+// either, the write is refused instead of defaulting to "open".
+test('bot booking creation refuses when the selected court has no resolvable tenant', async () => {
+  state.courts = [
+    { _id: COURT_ID, name: 'Cancha 1', courtType: null, isActive: true },
+  ];
+  state.timeSlots = [
+    {
+      _id: SLOT_ID,
+      court: null,
+      startTime: '20:00',
+      endTime: '21:00',
+      price: 25000,
+      isActive: true,
+    },
+  ];
+
+  const result = await bookingService.createNewBooking({
+    courtName: 'Cancha 1',
+    dateStr: OPEN_DATE,
+    timeStr: '20:00',
+    clientName: 'Ana',
+    clientPhone: '5491100000000',
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'CLOSURE_UNAVAILABLE');
+  assert.equal(state.bookings.length, 0);
+});
+
 test('buildBookingReplyText maps CLUB_CLOSED to a neutral Spanish message', () => {
   const reply = buildBookingReplyText('2099-02-11', 'Ana', {
     success: false,
@@ -581,6 +612,17 @@ test('bot availability stays unchanged on an open date', async () => {
   assert.equal(result.success, true);
   assert.equal(result.closed, false);
   assert.equal(result.slots.length, 1);
+});
+
+// Availability spans every court in its scope, so a null companyId has no
+// tenant to derive. Refuse instead of offering a day whose closure was never
+// evaluated (and never trigger materialization).
+test('bot availability refuses when the tenant is unknown', async () => {
+  const result = await bookingService.getAvailableSlots(OPEN_DATE, {});
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'CLOSURE_UNAVAILABLE');
+  assert.equal(state.userFindCalls, 0);
 });
 
 // ── Fixed-turn materialization ──────────────────────────────────────────────
@@ -720,6 +762,36 @@ test('rematerialize requires an explicit companyId for a caller without one', as
   assert.equal(res.statusCode, 400);
   assert.equal(state.userFindCalls, 0);
   assert.equal(state.bookings.length, 0);
+});
+
+// A read must never trigger materialization without a tenant: with an unknown
+// companyId there is no closure to evaluate, so the write side-effect is
+// skipped and the stored bookings are returned as-is.
+test('super_admin getBookings with a date but no companyId materializes nothing', async () => {
+  seedFixedTurnUser(closedWeekday());
+
+  const res = await call(getBookings, {
+    user: { role: 'super_admin', _id: hexId(0xf2) },
+    query: { date: CLOSED_START },
+    body: {},
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(state.userFindCalls, 0, 'an unknown tenant must not materialize');
+  assert.equal(state.bookings.length, 0);
+});
+
+test('super_admin getBookings with an explicit companyId still materializes an open date', async () => {
+  seedFixedTurnUser(openWeekday());
+
+  const res = await call(getBookings, {
+    user: { role: 'super_admin', _id: hexId(0xf2) },
+    query: { date: OPEN_DATE, companyId: COMPANY },
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(state.userFindCalls, 1);
+  assert.equal(res.payload.data.length, 1);
 });
 
 // ── Fail-closed writes while closure resolvability is unknown ───────────────

@@ -91,7 +91,7 @@ const getBookings = async (req, res) => {
       query.date = searchDate;
     }
 
-    if (date) {
+    if (date && companyId) {
       // Reading a date triggers materialization, which writes. Refuse while the
       // closure state cannot be resolved instead of buffering those writes.
       if (!canResolveClosures()) {
@@ -100,10 +100,11 @@ const getBookings = async (req, res) => {
           error: CLOSURE_UNAVAILABLE_ERROR,
         });
       }
-      const fixedTurnsCompanyId =
-        req.user?.role === "super_admin" && !companyId ? undefined : companyId;
+      // A super_admin may read without a company scope. There is no tenant to
+      // evaluate closures for, so skip the write side-effect and return the
+      // stored bookings as-is (never materialize every tenant).
       await materializeFixedBookingsForDate({
-        companyId: fixedTurnsCompanyId,
+        companyId,
         searchDate,
       });
     }
