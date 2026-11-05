@@ -8,6 +8,7 @@ const Booking = require('../models/booking.model');
 const FixedBooking = require('../models/fixedBooking.model');
 const Tournament = require('../models/tournament.model');
 const Court = require('../models/court.model');
+const { isMongoConnected } = require('../config/database');
 
 // Only an in-progress tournament owns its courts. Draft, finished and cancelled
 // tournaments release every block, and the status filter makes that immediate.
@@ -53,6 +54,10 @@ const collectCourtIds = (tournaments = []) => {
 const resolveBlockedCourts = async (companyId, date) => {
   const day = normalizeDateOnly(date);
   if (!companyId || !day) {
+    return { date: day, courtIds: [], tournaments: [] };
+  }
+  // Skip the query if the DB is down: writes would fail too, so fail open.
+  if (!isMongoConnected()) {
     return { date: day, courtIds: [], tournaments: [] };
   }
 

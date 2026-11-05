@@ -27,6 +27,9 @@ const {
   normalizeClientIdentity,
 } = require("../utils/identityNormalization");
 const { findEffectiveSlotForCourt } = require("../utils/slotSchedule");
+const {
+  isCourtBlockedByTournament,
+} = require("../services/tournamentBlocking.service");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
@@ -181,6 +184,15 @@ const createBooking = async (req, res) => {
     // C. Preparar fecha exacta
     const bookingDate = new Date(date);
     bookingDate.setUTCHours(0, 0, 0, 0);
+
+    // An in-progress tournament owns this court for the whole day: refuse before
+    // any Booking write (fixed-turn materialization included).
+    if (await isCourtBlockedByTournament(companyId, courtId, bookingDate)) {
+      return res.status(409).json({
+        success: false,
+        error: "La cancha está ocupada por un torneo en curso.",
+      });
+    }
 
     const fixedTurnsCompanyId =
       req.user?.role === "super_admin" && !companyId ? undefined : companyId;
@@ -393,6 +405,13 @@ const updateBooking = async (req, res) => {
         req.body.date !== undefined
           ? parseDateToUtcMidnight(req.body.date)
           : previousBooking.date;
+
+      if (await isCourtBlockedByTournament(companyId, nextCourt, nextDate)) {
+        return res.status(409).json({
+          success: false,
+          error: "La cancha está ocupada por un torneo en curso.",
+        });
+      }
 
       const conflictingFixed = await findConflictingFixedForBooking({
         companyId,

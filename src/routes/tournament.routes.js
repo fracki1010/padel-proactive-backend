@@ -6,6 +6,9 @@ const router = express.Router();
 router.get("/", controller.listTournaments);
 router.post("/", controller.createTournament);
 
+// Declared BEFORE /:id so "blocked-courts" is not captured as a tournament id.
+router.get("/blocked-courts", controller.getBlockedCourts);
+
 router.post("/:id/activate", controller.activateTournament);
 router.post("/:id/complete", controller.completeTournament);
 router.post("/:id/cancel", controller.cancelTournament);

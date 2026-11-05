@@ -1,5 +1,7 @@
 'use strict';
 
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-blocking';
+
 // Tournament court blocking. The resolver is the single source of truth used by
 // public availability, public/admin booking creation and the bot availability
 // helper; everything here runs against in-memory model doubles (no MongoDB).
@@ -98,6 +100,7 @@ const matches = (doc, filter = {}) =>
   Object.entries(filter).every(([key, value]) => {
     const actual = doc[key];
     if (isOperator(value)) {
+      if ('$regex' in value) return value.$regex.test(String(actual));
       if ('$in' in value) return value.$in.some((item) => norm(actual) === norm(item));
       if ('$ne' in value) return norm(actual) !== norm(value.$ne);
       if ('$gte' in value) return compare(actual, value.$gte) >= 0;
@@ -127,6 +130,7 @@ const createModel = (key) => ({
   countDocuments: async (filter = {}) => state[key].filter((doc) => matches(doc, filter)).length,
   create: async (doc) => {
     const created = { _id: hexId(0x1000 + state[key].length), ...doc };
+    created.populate = async () => created;
     state[key].push(created);
     return created;
   },
@@ -144,8 +148,12 @@ const stubModule = (requestPath, exportsObj) => {
 
 beforeEach(resetState);
 resetState();
+stubModule('../config/database', { isMongoConnected: () => true });
 stubModule('../models/tournament.model', createModel('tournaments'));
-stubModule('../models/court.model', createModel('courts'));
+stubModule('../models/court.model', {
+  ...createModel('courts'),
+  COURT_TYPES: ['Techada', 'VIP'],
+});
 stubModule('../models/booking.model', createModel('bookings'));
 stubModule('../models/fixedBooking.model', createModel('fixedTurns'));
 
@@ -477,4 +485,76 @@ test('public booking creation still proceeds for a free court on a blocked date'
   assert.equal(response.body.success, true);
   assert.equal(state.bookings.length, 1);
   assert.equal(state.materializeCalls, 1);
+});
+
+const bookingController = require('../controllers/booking.controller');
+const bookingService = require('../services/bookingService');
+const tournamentController = require('../controllers/tournament.controller');
+
+const adminBooking = (body) =>
+  call(bookingController.createBooking, {
+    user: { role: 'admin', companyId: COMPANY_A, _id: hexId(0xf1) }, body,
+  });
+const blockingBody = {
+  courtId: COURT_A,
+  slotId: SLOT_ID,
+  date: '2026-11-11',
+  clientName: 'Ana',
+  clientPhone: '5491100000000',
+};
+
+test('admin booking creation rejects a tournament-blocked court without writing', async () => {
+  const response = await adminBooking(blockingBody);
+  assert.equal(response.statusCode, 409);
+  assert.match(response.body.error, /torneo/i);
+  assert.equal(state.bookings.length, 0);
+  assert.equal(state.materializeCalls, 0);
+});
+
+test('admin booking creation still writes a free court on the same blocked date', async () => {
+  const response = await adminBooking({ ...blockingBody, courtId: COURT_A2 });
+  assert.equal(response.statusCode, 201);
+  assert.equal(state.bookings.length, 1);
+  assert.equal(String(state.bookings[0].court), COURT_A2);
+});
+
+test('bot availability drops blocked courts from the slot capacity', async () => {
+  const result = await bookingService.getAvailableSlots('2026-11-11', { companyId: COMPANY_A });
+  assert.equal(result.success, true);
+  assert.equal(result.slots.length, 1);
+  assert.equal(result.slots[0].totalCourts, 2);
+  assert.equal(result.slots[0].availableCourts, 1);
+});
+test('bot availability omits a slot when every applicable court is tournament-blocked', async () => {
+  state.tournaments[0].courts = [COURT_A, COURT_A2];
+  const result = await bookingService.getAvailableSlots('2026-11-11', { companyId: COMPANY_A });
+  assert.equal(result.success, true);
+  assert.equal(result.slots.length, 0);
+});
+
+const botBooking = (overrides = {}) =>
+  bookingService.createNewBooking({
+    companyId: COMPANY_A, courtName: 'Cancha A', dateStr: '2026-11-11',
+    timeStr: '20:00', clientName: 'Ana', clientPhone: '5491100000000', ...overrides,
+  });
+
+test('bot booking creation refuses a tournament-blocked specific court without writing', async () => {
+  const result = await botBooking();
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'BUSY');
+  assert.equal(state.bookings.length, 0);
+});
+test('bot booking with INDIFERENTE skips the tournament-blocked court and books a free one', async () => {
+  const result = await botBooking({ courtName: 'INDIFERENTE' });
+  assert.equal(result.success, true);
+  assert.equal(state.bookings.length, 1);
+  assert.equal(String(state.bookings[0].court), COURT_A2);
+});
+test('GET blocked-courts exposes the same blocked ids as every other surface', async () => {
+  const response = await call(tournamentController.getBlockedCourts, {
+    user: { role: 'admin', companyId: COMPANY_A }, query: { date: '2026-11-11' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body.data.courtIds, [COURT_A]);
+  assert.equal(response.body.data.date, '2026-11-11');
 });

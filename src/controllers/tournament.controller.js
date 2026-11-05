@@ -51,6 +51,10 @@ const getTournament = withCompany((req, companyId) =>
   service.getTournament({ companyId, id: req.params.id }),
 );
 
+const getBlockedCourts = withCompany((req, companyId) =>
+  service.getBlockedCourts({ companyId, date: req.query.date }),
+);
+
 const createTournament = withCompany((req, companyId) =>
   service.createTournament({ companyId, adminId: req.user?.id, input: req.body || {} }),
 );
@@ -201,6 +205,7 @@ const scheduleMatch = withCompany((req, companyId) =>
 module.exports = {
   listTournaments,
   getTournament,
+  getBlockedCourts,
   createTournament,
   updateTournament,
   deleteTournament,

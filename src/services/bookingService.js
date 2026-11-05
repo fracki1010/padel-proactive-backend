@@ -33,6 +33,9 @@ const {
   getWeekdayFromDate,
 } = require("./fixedBooking.service");
 const {
+  getBlockedCourtIdsForDate,
+} = require("./tournamentBlocking.service");
+const {
   buildForeignLockedKeys,
   createMongooseSlotLockStore,
 } = require("./slotLock.service");
@@ -282,6 +285,11 @@ const createNewBooking = async ({
       now,
     });
     const lockedKeys = buildForeignLockedKeys(activeLocks, null, now);
+    // In-progress tournaments own their courts for the whole day: they join the
+    // busy pool so neither INDIFERENTE nor a specific court can book them.
+    const blockedCourtIds = new Set(
+      await getBlockedCourtIdsForDate(companyId, dateStr),
+    );
 
     const busyCourtIdsForSlot = async (slotId) => {
       const slotIdStr = String(slotId);
@@ -306,6 +314,7 @@ const createNewBooking = async ({
         ...busyBookings.map((b) => String(b.court)),
         ...fixedCourtsForSlot.map((f) => String(f.court)),
         ...lockedCourtIdsForSlot,
+        ...blockedCourtIds,
       ]);
     };
 
@@ -814,9 +823,12 @@ const getAvailableSlots = async (dateStr, options = {}) => {
       now,
     });
     const lockedSet = buildForeignLockedKeys(activeLocks, null, now);
+    const blockedCourtIds = new Set(
+      await getBlockedCourtIdsForDate(companyId, dateStr),
+    );
 
-    // Occupied courts for a slot = booked + fixed + locked, limited to the
-    // courts this slot actually applies to.
+    // Occupied courts for a slot = booked + fixed + locked/tournament, limited
+    // to the courts this slot actually applies to.
     const occupiedCourtsForSlot = (slot) => {
       const occupied = new Set(
         bookings
@@ -825,9 +837,14 @@ const getAvailableSlots = async (dateStr, options = {}) => {
           .filter(Boolean),
       );
       for (const court of applicableCourtsBySlot.get(String(slot._id)) || []) {
-        const key = `${String(court._id)}_${String(slot._id)}`;
-        if (fixedSet.has(key) || lockedSet.has(key)) {
-          occupied.add(String(court._id));
+        const courtId = String(court._id);
+        const key = `${courtId}_${String(slot._id)}`;
+        if (
+          fixedSet.has(key) ||
+          lockedSet.has(key) ||
+          blockedCourtIds.has(courtId)
+        ) {
+          occupied.add(courtId);
         }
       }
       return occupied;

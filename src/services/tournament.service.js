@@ -14,7 +14,11 @@ const Booking = require('../models/booking.model');
 const FixedBooking = require('../models/fixedBooking.model');
 const SlotLock = require('../models/slotLock.model');
 const { normalizePhone } = require('../utils/identityNormalization');
-const { findActivationConflicts, toUtcDate } = require('./tournamentBlocking.service');
+const {
+  findActivationConflicts,
+  getBlockedCourtsForDate,
+  toUtcDate,
+} = require('./tournamentBlocking.service');
 const {
   generateBracket: buildBracket,
   applyWinner,
@@ -313,6 +317,16 @@ async function listTournaments({ companyId, status }) {
 async function getTournament({ companyId, id }) {
   const parent = await ensureTournament(companyId, id);
   return parent.error ? parent.error : ok(200, parent.tournament);
+}
+
+async function getBlockedCourts({ companyId, date }) {
+  if (!ISO_DATE.test(String(date || ''))) return fail(400, 'La fecha debe tener formato YYYY-MM-DD.');
+  const blocks = await getBlockedCourtsForDate(companyId, date);
+  return ok(200, {
+    date: blocks.date,
+    courtIds: blocks.courtIds,
+    tournaments: blocks.tournaments,
+  });
 }
 
 async function createTournament({ companyId, adminId, input }) {
@@ -895,6 +909,7 @@ module.exports = {
   hasDuplicatePlayer,
   listTournaments,
   getTournament,
+  getBlockedCourts,
   createTournament,
   updateTournament,
   deleteTournament,
