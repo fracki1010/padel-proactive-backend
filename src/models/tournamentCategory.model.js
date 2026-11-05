@@ -12,7 +12,7 @@ const tournamentCategorySchema = new mongoose.Schema(
       max: 64,
       validate: {
         validator: (value) => value === null || Number.isInteger(value),
-        message: "maxTeams must be an integer.",
+        message: "maxTeams debe ser un entero.",
       },
     },
     seeding: { type: String, enum: ["manual", "shuffle"], default: "shuffle" },

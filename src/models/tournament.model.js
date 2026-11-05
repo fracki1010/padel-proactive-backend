@@ -13,19 +13,19 @@ const tournamentSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
-      validate: { validator: isValidDate, message: "startDate must use YYYY-MM-DD." },
+      validate: { validator: isValidDate, message: "startDate debe usar el formato YYYY-MM-DD." },
     },
     endDate: {
       type: String,
       required: true,
       trim: true,
       validate: [
-        { validator: isValidDate, message: "endDate must use YYYY-MM-DD." },
+        { validator: isValidDate, message: "endDate debe usar el formato YYYY-MM-DD." },
         {
           validator(value) {
             return !this.startDate || value >= this.startDate;
           },
-          message: "endDate must be on or after startDate.",
+          message: "endDate debe ser igual o posterior a startDate.",
         },
       ],
     },

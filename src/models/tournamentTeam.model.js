@@ -14,7 +14,7 @@ const tournamentTeamSchema = new mongoose.Schema(
       min: 1,
       validate: {
         validator: (value) => value === null || Number.isInteger(value),
-        message: "seed must be a positive integer.",
+        message: "seed debe ser un entero positivo.",
       },
     },
     status: { type: String, enum: ["registered", "withdrawn"], default: "registered" },

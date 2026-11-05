@@ -94,6 +94,26 @@ test('TournamentTeam defaults to registered and rejects design-only statuses', a
   assert.ok(hasIndex(TournamentTeam, { companyId: 1, category: 1 }));
 });
 
+test('status enums match the spec values', async () => {
+  const tournamentBase = { companyId: oid(), name: 'Cup', startDate: '2026-11-10', endDate: '2026-11-12' };
+  for (const status of ['draft', 'in_progress', 'finished', 'cancelled']) {
+    await new Tournament({ ...tournamentBase, status }).validate();
+  }
+  await assertRejectsField(new Tournament({ ...tournamentBase, status: 'completed' }), 'status');
+
+  const teamBase = { companyId: oid(), tournament: oid(), category: oid(), name: 'Pareja' };
+  for (const status of ['registered', 'withdrawn']) {
+    await new TournamentTeam({ ...teamBase, status }).validate();
+  }
+  await assertRejectsField(new TournamentTeam({ ...teamBase, status: 'active' }), 'status');
+
+  // The spec is silent on category status; the design defines these values.
+  const categoryBase = { companyId: oid(), tournament: oid(), name: 'Primera' };
+  for (const status of ['draft', 'active', 'completed']) {
+    await new TournamentCategory({ ...categoryBase, status }).validate();
+  }
+});
+
 test('TournamentMatch validates a ready match and rejects bad slots', async () => {
   const base = {
     companyId: oid(),
