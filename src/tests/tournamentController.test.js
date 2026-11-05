@@ -109,7 +109,20 @@ const matches = (doc, filter = {}) =>
   });
 
 const makeQuery = (items) => ({
-  sort: () => Promise.resolve(items),
+  // Apply the sort spec the same way Mongoose would for the keys the service
+  // uses. Without this, order-driven listing could never be asserted.
+  sort: (spec = {}) => {
+    const keys = Object.entries(spec || {});
+    if (keys.length === 0) return Promise.resolve(items);
+    const sorted = [...items].sort((left, right) => {
+      for (const [key, direction] of keys) {
+        const result = compare(left[key], right[key]);
+        if (result !== 0) return direction < 0 ? -result : result;
+      }
+      return 0;
+    });
+    return Promise.resolve(sorted);
+  },
   lean: () => Promise.resolve(items),
   then: (onFulfilled, onRejected) => Promise.resolve(items).then(onFulfilled, onRejected),
   catch: (onRejected) => Promise.resolve(items).catch(onRejected),
@@ -364,6 +377,31 @@ test('category create/update/delete are scoped through the parent tournament', a
     adminReq(COMPANY_A, { params: { id: TOURNAMENT_A, categoryId: CATEGORY_B }, body: { name: 'Otra' } }),
   );
   assert.equal(foreignCategory.statusCode, 404);
+});
+
+test('category order is accepted, persisted and drives listing order', async () => {
+  resetState();
+  const params = { id: TOURNAMENT_A };
+  const second = await call(
+    controller.createCategory,
+    adminReq(COMPANY_A, { params, body: { name: 'Segunda', order: 5 } }),
+  );
+  assert.equal(second.statusCode, 201);
+  assert.equal(second.payload.data.order, 5);
+
+  const third = await call(
+    controller.createCategory,
+    adminReq(COMPANY_A, { params, body: { name: 'Tercera', order: 2 } }),
+  );
+  assert.equal(third.statusCode, 201);
+  assert.equal(third.payload.data.order, 2);
+
+  const listed = await call(controller.listCategories, adminReq(COMPANY_A, { params }));
+  assert.equal(listed.statusCode, 200);
+  assert.deepEqual(
+    listed.payload.data.map((category) => [category.name, category.order]),
+    [['Primera', 1], ['Tercera', 2], ['Segunda', 5]],
+  );
 });
 
 test('category deletion is refused with registered teams or played matches', async () => {

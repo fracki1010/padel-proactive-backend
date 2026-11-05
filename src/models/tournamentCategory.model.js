@@ -16,6 +16,15 @@ const tournamentCategorySchema = new mongoose.Schema(
       },
     },
     seeding: { type: String, enum: ["manual", "shuffle"], default: "shuffle" },
+    // Display order inside the tournament (lower first).
+    order: {
+      type: Number,
+      default: 0,
+      validate: {
+        validator: (value) => Number.isInteger(value),
+        message: "order debe ser un entero.",
+      },
+    },
     // Filled by the bracket engine when the category is generated.
     bracketSize: { type: Number, default: null },
     // Set when the registered team set changes after generation; results and
