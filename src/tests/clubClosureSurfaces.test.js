@@ -308,6 +308,10 @@ const { isClubClosedForDate } = require('../services/clubClosure.service');
 const bookingService = require('../services/bookingService');
 const { createBooking, updateBooking } = require('../controllers/booking.controller');
 const publicController = require('../controllers/public.controller');
+const {
+  materializeFixedBookingsForDate,
+  materializeFixedBookingsInRange,
+} = require('../services/fixedTurnsMaterialization.service');
 const { buildBookingReplyText } = require('../handlers/messageHandler');
 
 const createResponse = () => ({
@@ -327,6 +331,28 @@ const call = async (handler, req) => {
   const res = createResponse();
   await handler(req, res);
   return res;
+};
+
+const closedWeekday = () => new Date(`${CLOSED_START}T00:00:00.000Z`).getUTCDay();
+const openWeekday = () => new Date(`${OPEN_DATE}T00:00:00.000Z`).getUTCDay();
+
+const seedFixedTurnUser = (dayOfWeek) => {
+  state.users = [
+    {
+      _id: hexId(0xaa1),
+      companyId: COMPANY,
+      name: 'Fija',
+      phoneNumber: '5491100000000',
+      whatsappId: '5491100000000@c.us',
+      fixedTurns: [
+        {
+          dayOfWeek,
+          court: { _id: COURT_ID, name: 'Cancha 1' },
+          timeSlot: { _id: SLOT_ID, startTime: '20:00', endTime: '21:00', price: 25000 },
+        },
+      ],
+    },
+  ];
 };
 
 // ── Shared helper: inclusive range semantics ─────────────────────────────────
@@ -545,3 +571,86 @@ test('bot availability stays unchanged on an open date', async () => {
   assert.equal(result.slots.length, 1);
 });
 
+// ── Fixed-turn materialization ──────────────────────────────────────────────
+
+test('materialization skips a closed date without writing fixed bookings', async () => {
+  state.closures.push({
+    _id: hexId(0xe3),
+    companyId: COMPANY,
+    startDate: CLOSED_START,
+    endDate: CLOSED_END,
+    reason: 'Feriado',
+  });
+  seedFixedTurnUser(closedWeekday());
+
+  const result = await materializeFixedBookingsForDate({
+    companyId: COMPANY,
+    searchDate: new Date(`${CLOSED_START}T00:00:00.000Z`),
+  });
+
+  assert.equal(result.closed, true);
+  assert.equal(result.createdCount, 0);
+  assert.equal(state.bookings.length, 0);
+});
+
+test('materialization still creates fixed bookings on an open date', async () => {
+  seedFixedTurnUser(openWeekday());
+
+  const result = await materializeFixedBookingsForDate({
+    companyId: COMPANY,
+    searchDate: new Date(`${OPEN_DATE}T00:00:00.000Z`),
+  });
+
+  assert.equal(result.closed, undefined);
+  assert.equal(result.createdCount, 1);
+  assert.equal(state.bookings.length, 1);
+});
+
+test('in-range materialization skips closed dates and keeps open ones', async () => {
+  state.users = [
+    {
+      _id: hexId(0xaa2),
+      companyId: COMPANY,
+      name: 'Fija',
+      phoneNumber: '5491100000000',
+      fixedTurns: Array.from({ length: 7 }, (_, dayOfWeek) => ({
+        dayOfWeek,
+        court: { _id: COURT_ID, name: 'Cancha 1' },
+        timeSlot: { _id: SLOT_ID, startTime: '20:00', endTime: '21:00', price: 25000 },
+      })),
+    },
+  ];
+
+  const result = await materializeFixedBookingsInRange({
+    companyId: COMPANY,
+    fromDate: new Date(`${CLOSED_START}T00:00:00.000Z`),
+    daysAhead: 3,
+  });
+
+  assert.equal(result.datesProcessed, 4);
+  assert.equal(state.bookings.length, 1, 'only the one open date creates a booking');
+  assert.equal(state.bookings[0].date.toISOString().slice(0, 10), OPEN_DATE);
+});
+
+// ── Public slot lock ────────────────────────────────────────────────────────
+
+const slotLockReq = (date) => ({
+  params: { slug: 'club' },
+  body: { courtId: COURT_ID, slotId: SLOT_ID, date, holderId: 'holder-1' },
+});
+
+test('slot lock acquisition refuses a closed date before creating a lock', async () => {
+  const res = await call(publicController.acquireSlotLockHandler, slotLockReq('2099-02-11'));
+
+  assert.equal(res.statusCode, 409);
+  assert.match(res.payload.error, /cerrado/i);
+  assert.equal(state.lockAcquires, 0);
+});
+
+test('slot lock acquisition still succeeds on an open date', async () => {
+  const res = await call(publicController.acquireSlotLockHandler, slotLockReq(OPEN_DATE));
+
+  assert.equal(res.statusCode, undefined);
+  assert.equal(res.payload.success, true);
+  assert.equal(state.lockAcquires, 1);
+});

@@ -1,6 +1,7 @@
 const Booking = require("../models/booking.model");
 const User = require("../models/user.model");
 const { normalizeClientIdentity } = require("../utils/identityNormalization");
+const { isClubClosedForDate } = require("./clubClosure.service");
 
 const DEFAULT_MATERIALIZATION_DAYS_AHEAD = Number(
   process.env.FIXED_TURNS_MATERIALIZATION_DAYS_AHEAD || 90,
@@ -35,6 +36,13 @@ const materializeFixedBookingsForDate = async ({
   const normalizedSearchDate = normalizeDateToUtcMidnight(searchDate);
   if (!normalizedSearchDate) {
     return { createdCount: 0, skippedCount: 0 };
+  }
+
+  // A closed day never materializes fixed turns: skip the whole date without
+  // reading users or writing bookings. Open dates keep the normal flow.
+  const closure = await isClubClosedForDate(companyId, normalizedSearchDate);
+  if (closure.closed) {
+    return { createdCount: 0, skippedCount: 0, closed: true };
   }
 
   const dayOfWeek = normalizedSearchDate.getUTCDay();
