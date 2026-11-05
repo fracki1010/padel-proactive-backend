@@ -319,7 +319,11 @@ const {
   materializeFixedBookingsForDate,
   materializeFixedBookingsInRange,
 } = require('../services/fixedTurnsMaterialization.service');
-const { buildBookingReplyText } = require('../handlers/messageHandler');
+const {
+  buildBookingReplyText,
+  buildAvailabilityResponse,
+} = require('../handlers/messageHandler');
+const { toIsoDateString } = require('../utils/isoDate');
 const ClubClosure = require('../models/clubClosure.model');
 
 const createResponse = () => ({
@@ -857,3 +861,41 @@ test('date-moving update returns 503 when closures cannot be resolved', async ()
 });
 
 
+
+// ── Bot copy for closures and outages ───────────────────────────────────────
+
+test('buildBookingReplyText maps CLOSURE_UNAVAILABLE to a neutral technical message', () => {
+  const reply = buildBookingReplyText(OPEN_DATE, 'Ana', {
+    success: false,
+    error: 'CLOSURE_UNAVAILABLE',
+  });
+
+  assert.match(reply, /disponibilidad/i);
+  assert.doesNotMatch(reply, /Confirmada/);
+});
+
+test('buildAvailabilityResponse surfaces the closure reason instead of an empty grid', async () => {
+  const result = await buildAvailabilityResponse({
+    companyId: COMPANY,
+    requestedDate: OPEN_DATE,
+    availability: {
+      success: true,
+      date: OPEN_DATE,
+      slots: [],
+      closed: true,
+      closureReason: 'Mantenimiento',
+    },
+  });
+
+  assert.match(result.replyText, /cerrad/i);
+  assert.match(result.replyText, /Mantenimiento/);
+});
+
+// ── Date helper ─────────────────────────────────────────────────────────────
+
+test('toIsoDateString treats null and undefined as "no date"', () => {
+  assert.equal(toIsoDateString(null), '');
+  assert.equal(toIsoDateString(undefined), '');
+  assert.equal(toIsoDateString('2099-02-11'), '2099-02-11');
+  assert.equal(toIsoDateString(new Date('2099-02-11T00:00:00.000Z')), '2099-02-11');
+});

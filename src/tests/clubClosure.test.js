@@ -44,9 +44,19 @@ const toDateOnly = (value) => {
   return String(value);
 };
 
+// Only equality and the inclusive `$lte`/`$gte` operators the closure helper
+// sends are supported. Any other operator (or any field the stored document
+// does not have, such as the legacy `date` field) must match nothing so a
+// regression to a `date` filter cannot silently keep closures open.
 const matchesFilter = (doc, filter = {}) =>
   Object.entries(filter).every(([key, value]) => {
+    if (!(key in doc)) return false;
     if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+      const operators = Object.keys(value);
+      const supported = operators.every(
+        (operator) => operator === '$lte' || operator === '$gte',
+      );
+      if (!supported) return false;
       if (Object.prototype.hasOwnProperty.call(value, '$lte')) {
         return toDateOnly(doc[key]) <= toDateOnly(value.$lte);
       }
@@ -243,4 +253,31 @@ test('booking creation succeeds outside the closure (triangulation)', async () =
   assert.equal(res.statusCode, 201);
   assert.equal(res.payload.success, true);
   assert.equal(state.createdBookings.length, 1);
+});
+
+// ── The double enforces the real closure query contract ─────────────────────
+
+test('the closure double matches the inclusive range and rejects unsupported filters', async () => {
+  resetState();
+
+  const inRange = await ClubClosure.findOne({
+    companyId: COMPANY,
+    startDate: { $lte: '2099-01-11' },
+    endDate: { $gte: '2099-01-11' },
+  });
+  assert.notEqual(inRange, null);
+
+  // A regression to a `date` filter must not match: the field does not exist.
+  const legacyDateFilter = await ClubClosure.findOne({
+    companyId: COMPANY,
+    date: { $gte: '2099-01-10', $lte: '2099-01-12' },
+  });
+  assert.equal(legacyDateFilter, null);
+
+  // Operators outside $lte/$gte are not part of the closure contract.
+  const unknownOperator = await ClubClosure.findOne({
+    companyId: COMPANY,
+    startDate: { $ne: '2099-01-10' },
+  });
+  assert.equal(unknownOperator, null);
 });

@@ -1398,6 +1398,16 @@ router.put("/club-closures/:id", async (req, res) => {
       update.reason = String(reason).trim();
     }
 
+    // Validate the RESULTING range before writing: never persist an inverted
+    // closure just to reject it afterwards.
+    const nextStartDate =
+      update.startDate !== undefined ? update.startDate : targetClosure.startDate;
+    const nextEndDate =
+      update.endDate !== undefined ? update.endDate : targetClosure.endDate;
+    if (nextStartDate > nextEndDate) {
+      return res.status(400).json({ success: false, error: "La fecha de inicio no puede ser posterior a la fecha de fin." });
+    }
+
     const closure = await ClubClosure.findOneAndUpdate(
       { _id: closureId, ...scope },
       update,
@@ -1406,10 +1416,6 @@ router.put("/club-closures/:id", async (req, res) => {
 
     if (!closure) {
       return res.status(404).json({ success: false, error: "Cierre no encontrado." });
-    }
-
-    if (closure.startDate > closure.endDate) {
-      return res.status(400).json({ success: false, error: "La fecha de inicio no puede ser posterior a la fecha de fin." });
     }
 
     return res.status(200).json({ success: true, data: closure });

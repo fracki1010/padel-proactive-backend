@@ -284,6 +284,9 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
   if (bookingResult.error === "CLUB_CLOSED") {
     return "🚪 El club está cerrado ese día. Decime otra fecha y te ayudo a reservar.";
   }
+  if (bookingResult.error === "CLOSURE_UNAVAILABLE") {
+    return "⚠️ No pudimos verificar la disponibilidad en este momento. Intentá de nuevo en unos minutos.";
+  }
   if (bookingResult.error === "FIXED_TURN") {
     return "⚠️ Ese horario es un turno fijo y no está disponible. ¿Te busco otro?";
   }
@@ -568,6 +571,19 @@ const buildAvailabilityResponse = async ({
   if (requestedDate && requestedDate < todayIso) {
     return {
       replyText: `${prefix}⚠️ Esa fecha ya pasó. Decime una fecha futura.`,
+      pendingBookingOffer: null,
+      rejectedBookingAttempt: null,
+    };
+  }
+
+  // A closed day has no slots for a real reason: surface it instead of an
+  // empty-grid message that looks like everything is booked.
+  if (availability?.closed) {
+    const reason = availability.closureReason ? ` (${availability.closureReason})` : "";
+    return {
+      replyText:
+        `${prefix}🚪 El club está cerrado el ${getFormattedDate(requestedDate)}${reason}.` +
+        ` Decime otra fecha y te ayudo a reservar.`,
       pendingBookingOffer: null,
       rejectedBookingAttempt: null,
     };
@@ -3263,4 +3279,8 @@ const handleIncomingMessage = async (chatId, userMessage, options = {}) => {
   }
 };
 
-module.exports = { buildBookingReplyText, handleIncomingMessage };
+module.exports = {
+  buildAvailabilityResponse,
+  buildBookingReplyText,
+  handleIncomingMessage,
+};

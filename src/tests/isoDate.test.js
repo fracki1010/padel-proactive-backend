@@ -23,10 +23,9 @@ test('toIsoDateString keeps the UTC day for the same instant in a non-UTC timezo
   assert.equal(toIsoDateString('2099-01-10T23:30:00-05:00'), '2099-01-11');
 });
 
-test('toIsoDateString documents its current null/invalid behavior', () => {
-  // The Date constructor coerces null to the Unix epoch.
-  assert.equal(toIsoDateString(null), '1970-01-01');
-  // undefined builds an Invalid Date, so the helper falls back to "".
+test('toIsoDateString treats null/undefined as "no date" instead of the epoch', () => {
+  // A missing date must never be confused with 1970-01-01.
+  assert.equal(toIsoDateString(null), '');
   assert.equal(toIsoDateString(undefined), '');
   // An unparseable string is returned unchanged as the fallback value.
   assert.equal(toIsoDateString('not-a-date'), 'not-a-date');
