@@ -896,15 +896,8 @@ test('a stale bracket also blocks clearing an existing result', async () => {
   );
   assert.equal(recorded.statusCode, 200);
 
-  const added = await call(
-    controller.createTeam,
-    adminReq(COMPANY_A, {
-      params,
-      body: { player1Name: 'Nueva', player2Name: 'Pareja', player1Phone: '900', player2Phone: '901' },
-    }),
-  );
-  assert.equal(added.statusCode, 201);
-  assert.equal(state.categories[0].bracketStale, true);
+  // A stale flag left over from a membership change blocks result edits.
+  state.categories[0].bracketStale = true;
 
   const cleared = await call(
     controller.clearResult,
@@ -1144,6 +1137,138 @@ test('results are rejected once the tournament is finished', async () => {
   assert.equal(res.statusCode, 409);
   assert.equal(firstMatch.status, 'ready');
 });
+
+// ── Freeze rule, atomic stale marking and atomic regeneration ───────────────
+
+const CAT = { id: TOURNAMENT_A, categoryId: CATEGORY_A };
+const recordWin = (matchId) =>
+  call(controller.recordResult, adminReq(COMPANY_A, { params: { ...CAT, matchId }, body: { scoreA: 2, scoreB: 0 } }));
+
+test('played results freeze team membership changes and never stale the bracket', async () => {
+  const firstMatch = await setupFourTeamBracket();
+  assert.equal((await recordWin(firstMatch._id)).statusCode, 200);
+
+  const created = await call(controller.createTeam, adminReq(COMPANY_A, {
+    params: CAT,
+    body: { player1Name: 'Nueva', player2Name: 'Pareja', player1Phone: '900', player2Phone: '901' },
+  }));
+  assert.equal(created.statusCode, 409);
+
+  const teamParams = { ...CAT, teamId: state.teams[0]._id };
+  const withdrawn = call(controller.updateTeam, adminReq(COMPANY_A, { params: teamParams, body: { status: 'withdrawn' } }));
+  const removed = call(controller.deleteTeam, adminReq(COMPANY_A, { params: teamParams }));
+  assert.equal((await withdrawn).statusCode, 409);
+  assert.equal((await removed).statusCode, 409);
+
+  assert.notEqual(state.categories[0].bracketStale, true);
+  assert.equal(state.teams.length, 4);
+  assert.ok(state.teams.every((team) => team.status === 'registered'));
+});
+
+test('metadata-only team updates are allowed after play and keep the bracket usable', async () => {
+  const firstMatch = await setupFourTeamBracket();
+  await recordWin(firstMatch._id);
+
+  const renamed = await call(controller.updateTeam, adminReq(COMPANY_A, {
+    params: { ...CAT, teamId: state.teams[0]._id },
+    body: { player1Name: 'Renombrado', player1Phone: '555' },
+  }));
+  assert.equal(renamed.statusCode, 200);
+  assert.equal(state.teams[0].player1Name, 'Renombrado');
+  assert.notEqual(state.categories[0].bracketStale, true);
+
+  const ready = state.matches.find((match) => match.status === 'ready' && match._id !== firstMatch._id);
+  const scheduled = await call(controller.scheduleMatch, adminReq(COMPANY_A, {
+    params: { ...CAT, matchId: ready._id },
+    body: { court: COURT_A, date: '2026-11-11', timeSlot: SLOT_A },
+  }));
+  assert.equal(scheduled.statusCode, 200);
+});
+
+test('a pre-play membership change marks the bracket stale and regeneration recovers', async () => {
+  const firstMatch = await setupFourTeamBracket();
+  const added = await call(controller.createTeam, adminReq(COMPANY_A, {
+    params: CAT,
+    body: { player1Name: 'Extra', player2Name: 'Pareja', player1Phone: '900', player2Phone: '901' },
+  }));
+  assert.equal(added.statusCode, 201);
+  assert.equal(state.categories[0].bracketStale, true);
+  assert.equal((await recordWin(firstMatch._id)).statusCode, 409);
+
+  const regenerated = await call(controller.generateBracket, adminReq(COMPANY_A, { params: CAT, body: { seed: 21 } }));
+  assert.equal(regenerated.statusCode, 200);
+  assert.equal(state.categories[0].bracketStale, false);
+  assert.equal(state.matches.length, 7);
+});
+
+test('a failed team write still leaves the bracket flagged stale', async () => {
+  await setupFourTeamBracket();
+  const teamModel = require.cache[require.resolve('../models/tournamentTeam.model')].exports;
+  const originalCreate = teamModel.create;
+  const originalConsoleError = console.error;
+  teamModel.create = async () => { throw new Error('team write failed'); };
+  console.error = () => {};
+  let res;
+  try {
+    res = await call(controller.createTeam, adminReq(COMPANY_A, { params: CAT, body: { player1Name: 'A', player2Name: 'B' } }));
+  } finally {
+    teamModel.create = originalCreate;
+    console.error = originalConsoleError;
+  }
+  assert.equal(res.statusCode, 500);
+  assert.equal(state.categories[0].bracketStale, true);
+  assert.equal(state.teams.length, 4);
+});
+
+test('a failed regeneration restores the previous bracket', async () => {
+  await setupFourTeamBracket();
+  const originalIds = state.matches.map((match) => match._id).sort();
+  const matchModel = require.cache[require.resolve('../models/tournamentMatch.model')].exports;
+  const originalInsert = matchModel.insertMany;
+  const originalConsoleError = console.error;
+  let calls = 0;
+  matchModel.insertMany = async (docs) => {
+    if (++calls === 1) {
+      state.matches.push({ _id: hexId(state.nextId++), ...docs[0] });
+      throw new Error('insert failed');
+    }
+    return originalInsert(docs);
+  };
+  console.error = () => {};
+  let res;
+  try {
+    res = await call(controller.generateBracket, adminReq(COMPANY_A, { params: CAT, body: { seed: 21 } }));
+  } finally {
+    matchModel.insertMany = originalInsert;
+    console.error = originalConsoleError;
+  }
+  assert.equal(res.statusCode, 500);
+  assert.deepEqual(state.matches.map((match) => match._id).sort(), originalIds);
+});
+
+test('a second match on the same court, date and slot is rejected', async () => {
+  const firstMatch = await setupFourTeamBracket();
+  const second = state.matches.find((match) => match.status === 'ready' && match._id !== firstMatch._id);
+  const body = { court: COURT_A, date: '2026-11-11', timeSlot: SLOT_A };
+  const schedule = (matchId) => call(controller.scheduleMatch, adminReq(COMPANY_A, { params: { ...CAT, matchId }, body }));
+  assert.equal((await schedule(firstMatch._id)).statusCode, 200);
+  assert.equal((await schedule(second._id)).statusCode, 409);
+  assert.equal(second.court, undefined);
+});
+
+test('cancelled tournaments reject recording and clearing results', async () => {
+  const firstMatch = await setupFourTeamBracket();
+  state.tournaments[0].status = 'cancelled';
+  assert.equal((await recordWin(firstMatch._id)).statusCode, 409);
+  assert.equal(firstMatch.status, 'ready');
+
+  firstMatch.status = 'played';
+  firstMatch.winner = firstMatch.teamA;
+  const cleared = await call(controller.clearResult, adminReq(COMPANY_A, { params: { ...CAT, matchId: firstMatch._id } }));
+  assert.equal(cleared.statusCode, 409);
+  assert.equal(firstMatch.status, 'played');
+});
+
 
 test('manual seeding fills missing seeds in registration order', async () => {
   resetState();

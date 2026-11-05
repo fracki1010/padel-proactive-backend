@@ -237,6 +237,13 @@ const validateCourts = async (companyId, courtIds) => {
 };
 
 const STALE_BRACKET = 'La llave está desactualizada; regenerala antes de continuar.';
+const FROZEN_BRACKET = 'No se puede modificar la lista de parejas: ya hay partidos jugados.';
+
+// A category with an existing result is frozen: adding, withdrawing or deleting
+// a team would invalidate results that are already part of the bracket, so those
+// writes are rejected instead of silently corrupting the tournament history.
+const categoryFrozen = async (companyId, categoryId) =>
+  (await TournamentMatch.countDocuments({ companyId, category: categoryId, status: 'played' })) > 0;
 
 // Team edits after generation invalidate the persisted bracket so stale teams
 // cannot keep playing until the admin regenerates.
@@ -502,6 +509,7 @@ async function createTeam({ companyId, tournamentId, categoryId, input }) {
   if (parent.error) return parent.error;
   const { data, errors } = validateTeamInput(input);
   if (errors.length) return fail(400, errors[0]);
+  if (await categoryFrozen(companyId, categoryId)) return fail(409, FROZEN_BRACKET);
 
   const teams = await TournamentTeam.find({ companyId, tournament: tournamentId, category: categoryId });
   const active = teams.filter((team) => !team.status || team.status === 'registered');
@@ -522,6 +530,10 @@ async function createTeam({ companyId, tournamentId, categoryId, input }) {
     return fail(400, 'La semilla ya está asignada en esta categoría.');
   }
 
+  // Mark the bracket stale BEFORE persisting the roster change: a failed write
+  // may leave a stale flag that regeneration clears, but a changed roster must
+  // never be paired with a bracket that still looks valid.
+  await markBracketStale(companyId, categoryId, parent.category);
   const team = await TournamentTeam.create({
     ...data,
     name,
@@ -529,7 +541,6 @@ async function createTeam({ companyId, tournamentId, categoryId, input }) {
     tournament: tournamentId,
     category: categoryId,
   });
-  await markBracketStale(companyId, categoryId, parent.category);
   return ok(201, team);
 }
 
@@ -539,15 +550,10 @@ async function updateTeam({ companyId, tournamentId, categoryId, teamId, input }
   const { data, errors } = validateTeamInput(input, { partial: true });
   if (errors.length) return fail(400, errors[0]);
 
-  if (data.status === 'withdrawn') {
-    const played = await TournamentMatch.countDocuments({
-      companyId,
-      category: categoryId,
-      status: 'played',
-      $or: [{ teamA: teamId }, { teamB: teamId }],
-    });
-    if (played > 0) return fail(409, 'No se puede retirar una pareja que ya jugó un partido.');
-  }
+  // Only an actual membership change (withdraw / restore) touches the bracket.
+  // Player metadata edits stay valid after play and must not stale the bracket.
+  const statusChanged = data.status !== undefined && data.status !== parent.team.status;
+  if (statusChanged && (await categoryFrozen(companyId, categoryId))) return fail(409, FROZEN_BRACKET);
 
   const teams = await TournamentTeam.find({ companyId, tournament: tournamentId, category: categoryId });
   const others = teams.filter((team) => String(team._id) !== String(teamId) && (!team.status || team.status === 'registered'));
@@ -570,18 +576,21 @@ async function updateTeam({ companyId, tournamentId, categoryId, teamId, input }
     return fail(400, 'Uno de los jugadores ya está registrado en esta categoría.');
   }
 
+  // Stale is marked before the write so a failed update cannot leave an altered
+  // roster on top of a bracket that still reports itself as fresh.
+  if (statusChanged) await markBracketStale(companyId, categoryId, parent.category);
   const updated = await TournamentTeam.findOneAndUpdate(
     { _id: teamId, companyId, tournament: tournamentId, category: categoryId },
     data,
     { new: true, runValidators: true },
   );
-  await markBracketStale(companyId, categoryId, parent.category);
   return ok(200, updated);
 }
 
 async function deleteTeam({ companyId, tournamentId, categoryId, teamId }) {
   const parent = await ensureTeam(companyId, tournamentId, categoryId, teamId);
   if (parent.error) return parent.error;
+  if (await categoryFrozen(companyId, categoryId)) return fail(409, FROZEN_BRACKET);
 
   // A generated bracket stores hard team references; deleting the team would
   // leave dangling slots, so withdrawal is the only supported path.
@@ -593,14 +602,6 @@ async function deleteTeam({ companyId, tournamentId, categoryId, teamId }) {
   if (parent.category.bracketSize != null || bracketMatches > 0) {
     return fail(409, 'No se puede eliminar una pareja con una llave generada; retírala en su lugar.');
   }
-
-  const played = await TournamentMatch.countDocuments({
-    companyId,
-    category: categoryId,
-    status: 'played',
-    $or: [{ teamA: teamId }, { teamB: teamId }],
-  });
-  if (played > 0) return fail(409, 'No se puede eliminar una pareja que ya jugó un partido.');
 
   await TournamentTeam.findOneAndDelete({ _id: teamId, companyId, tournament: tournamentId, category: categoryId });
   return ok(200, { _id: teamId });
@@ -666,11 +667,11 @@ async function generateCategoryBracket({ companyId, tournamentId, categoryId, se
   if (result.errors.length) return fail(400, result.errors[0]);
 
   const drawSeed = draw.seed;
-  if (existing.length > 0) {
-    await TournamentMatch.deleteMany({ companyId, tournament: tournamentId, category: categoryId });
-  }
+  const clearBracket = () =>
+    TournamentMatch.deleteMany({ companyId, tournament: tournamentId, category: categoryId });
 
   if (result.bracketSize === 1) {
+    if (existing.length > 0) await clearBracket();
     await TournamentCategory.findOneAndUpdate(
       { _id: categoryId, companyId },
       { bracketSize: 1, status: 'completed', bracketStale: false },
@@ -690,7 +691,19 @@ async function generateCategoryBracket({ companyId, tournamentId, categoryId, se
     winner: teamId(match.winner),
     status: match.status,
   }));
-  const inserted = await TournamentMatch.insertMany(documents);
+  // `(category, round, position)` is unique, so the new bracket cannot coexist
+  // with the old one. Snapshot the previous rows, replace, and restore them if
+  // the insert fails — a failed regeneration must never destroy the bracket.
+  const previous = existing.map(plain);
+  if (previous.length > 0) await clearBracket();
+  let inserted;
+  try {
+    inserted = await TournamentMatch.insertMany(documents);
+  } catch (error) {
+    await clearBracket();
+    if (previous.length > 0) await TournamentMatch.insertMany(previous);
+    throw error;
+  }
   await TournamentCategory.findOneAndUpdate(
     { _id: categoryId, companyId },
     { bracketSize: result.bracketSize, status: 'active', bracketStale: false },
@@ -707,10 +720,14 @@ async function getCategoryBracket({ companyId, tournamentId, categoryId }) {
   return ok(200, toBracketResponse(matches, parent.category.bracketSize || null));
 }
 
+const RESULT_LOCKED = 'El torneo está finalizado o cancelado; no admite cambios de resultados.';
+
 async function recordResult({ companyId, tournamentId, categoryId, matchId, scoreA, scoreB }) {
   const parent = await ensureCategory(companyId, tournamentId, categoryId);
   if (parent.error) return parent.error;
-  if (parent.tournament.status === 'finished') return fail(409, 'El torneo ya está finalizado.');
+  if (parent.tournament.status === 'finished' || parent.tournament.status === 'cancelled') {
+    return fail(409, RESULT_LOCKED);
+  }
   if (parent.category.bracketStale === true) return fail(409, STALE_BRACKET);
 
   const found = await ensureMatch(companyId, tournamentId, categoryId, matchId);
@@ -781,7 +798,9 @@ async function recordResult({ companyId, tournamentId, categoryId, matchId, scor
 async function clearResult({ companyId, tournamentId, categoryId, matchId }) {
   const parent = await ensureCategory(companyId, tournamentId, categoryId);
   if (parent.error) return parent.error;
-  if (parent.tournament.status === 'finished') return fail(409, 'El torneo ya está finalizado.');
+  if (parent.tournament.status === 'finished' || parent.tournament.status === 'cancelled') {
+    return fail(409, RESULT_LOCKED);
+  }
   if (parent.category.bracketStale === true) return fail(409, STALE_BRACKET);
 
   const found = await ensureMatch(companyId, tournamentId, categoryId, matchId);
