@@ -86,6 +86,13 @@ const bookingSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    // Asistencia REAL del turno, marcada por el club (el bot solo sabe si el
+    // cliente dijo que iba, no si vino).
+    attendanceStatus: {
+      type: String,
+      enum: ["unmarked", "attended", "absent"],
+      default: "unmarked",
+    },
     attendanceConfirmationStatus: {
       type: String,
       enum: ["pending", "confirmed", "declined", "not_required"],
