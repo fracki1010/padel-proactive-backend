@@ -31,6 +31,7 @@ const {
   canResolveTournamentBlocks,
   isCourtBlockedByTournament,
 } = require("../services/tournamentBlocking.service");
+const { isClubClosedForDate } = require("../services/clubClosure.service");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
@@ -192,6 +193,16 @@ const createBooking = async (req, res) => {
       return res.status(503).json({
         success: false,
         error: "No podemos verificar la disponibilidad por un problema técnico. Intentá nuevamente en unos minutos.",
+      });
+    }
+
+    // A club closure blocks the whole day: refuse before any Booking write or
+    // fixed-turn materialization.
+    const closure = await isClubClosedForDate(companyId, bookingDate);
+    if (closure.closed) {
+      return res.status(409).json({
+        success: false,
+        error: "El club está cerrado ese día",
       });
     }
 
@@ -422,6 +433,20 @@ const updateBooking = async (req, res) => {
           success: false,
           error: "No podemos verificar la disponibilidad por un problema técnico. Intentá nuevamente en unos minutos.",
         });
+      }
+
+      // Moving onto a closed day is refused; metadata-only edits keep the
+      // current date and never reach this gate.
+      const isMovingDate =
+        toIsoDateOnly(nextDate) !== toIsoDateOnly(previousBooking.date);
+      if (isMovingDate) {
+        const closure = await isClubClosedForDate(companyId, nextDate);
+        if (closure.closed) {
+          return res.status(409).json({
+            success: false,
+            error: "El club está cerrado ese día",
+          });
+        }
       }
 
       if (await isCourtBlockedByTournament(companyId, nextCourt, nextDate)) {

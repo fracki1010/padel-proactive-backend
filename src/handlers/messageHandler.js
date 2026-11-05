@@ -281,6 +281,9 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
   if (bookingResult.error === "PAUSED") {
     return "⏸️ Las reservas están pausadas por el momento. Podés ver la disponibilidad, pero no tomar turnos.";
   }
+  if (bookingResult.error === "CLUB_CLOSED") {
+    return "🚪 El club está cerrado ese día. Decime otra fecha y te ayudo a reservar.";
+  }
   if (bookingResult.error === "FIXED_TURN") {
     return "⚠️ Ese horario es un turno fijo y no está disponible. ¿Te busco otro?";
   }

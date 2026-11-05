@@ -37,6 +37,7 @@ const {
   getBlockedCourtIdsForDate,
   isCourtBlockedByTournament,
 } = require("./tournamentBlocking.service");
+const { isClubClosedForDate } = require("./clubClosure.service");
 const {
   buildForeignLockedKeys,
   createMongooseSlotLockStore,
@@ -245,6 +246,13 @@ const createNewBooking = async ({
       return { success: false, error: "BLOCKING_UNAVAILABLE" };
     }
     const bookingDate = dateStringToUtcMidnight(dateStr);
+
+    // A club closure blocks the whole day: refuse with zero writes (the reply
+    // builder maps CLUB_CLOSED to neutral Spanish copy).
+    const closure = await isClubClosedForDate(companyId, dateStr);
+    if (closure.closed) {
+      return { success: false, error: "CLUB_CLOSED" };
+    }
 
     if (hasSlotStarted(dateStr, timeStr)) {
       return { success: false, error: "PAST_TIME" };
@@ -769,6 +777,20 @@ const getAvailableSlots = async (dateStr, options = {}) => {
       return { success: true, date: dateStr, slots: [] };
     }
 
+    // A closed day offers no slots: report the closure instead of hiding it
+    // behind an empty grid. The shape stays the usual one plus `closed`.
+    const closure = await isClubClosedForDate(companyId, dateStr);
+    if (closure.closed) {
+      return {
+        success: true,
+        date: dateStr,
+        slots: [],
+        blockedSlots: {},
+        closed: true,
+        closureReason: closure.reason,
+      };
+    }
+
     await materializeFixedBookingsForDate({
       companyId,
       searchDate: queryDate,
@@ -928,6 +950,7 @@ const getAvailableSlots = async (dateStr, options = {}) => {
         };
       }),
       blockedSlots,
+      closed: false,
     };
   } catch (error) {
     console.error("Error obteniendo disponibilidad:", error);

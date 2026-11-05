@@ -305,7 +305,10 @@ stubModule('../services/whatsappRuntimeState.service', {
 // ── Modules under test ───────────────────────────────────────────────────────
 
 const { isClubClosedForDate } = require('../services/clubClosure.service');
+const bookingService = require('../services/bookingService');
+const { createBooking, updateBooking } = require('../controllers/booking.controller');
 const publicController = require('../controllers/public.controller');
+const { buildBookingReplyText } = require('../handlers/messageHandler');
 
 const createResponse = () => ({
   statusCode: undefined,
@@ -396,5 +399,149 @@ test('public booking creation still books an open date', async () => {
 
   assert.equal(res.statusCode, 201);
   assert.equal(state.bookings.length, 1);
+});
+
+// ── Admin booking creation ──────────────────────────────────────────────────
+
+const adminCreateReq = (overrides = {}) => ({
+  user: { role: 'admin', companyId: COMPANY, _id: 'admin-1' },
+  body: {
+    courtId: COURT_ID,
+    slotId: SLOT_ID,
+    date: '2099-02-11',
+    clientName: 'Admin client',
+    clientPhone: '5491111111111',
+    ...overrides,
+  },
+});
+
+test('admin booking creation refuses a closed date before any write or materialization', async () => {
+  const res = await call(createBooking, adminCreateReq());
+
+  assert.equal(res.statusCode, 409);
+  assert.match(res.payload.error, /cerrado/i);
+  assert.equal(state.bookings.length, 0);
+  assert.equal(state.userFindCalls, 0, 'no fixed-turn materialization on a closed day');
+});
+
+test('admin booking creation refuses both inclusive closure boundaries', async () => {
+  for (const date of [CLOSED_START, CLOSED_END]) {
+    resetState();
+    const res = await call(createBooking, adminCreateReq({ date }));
+    assert.equal(res.statusCode, 409, `${date} must be closed`);
+    assert.equal(state.bookings.length, 0);
+  }
+});
+
+test('admin booking creation still writes an open date', async () => {
+  const res = await call(createBooking, adminCreateReq({ date: OPEN_DATE }));
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(state.bookings.length, 1);
+});
+
+// ── Admin booking update ────────────────────────────────────────────────────
+
+const seedUpdateTarget = (date) => {
+  state.updateTarget = {
+    _id: hexId(0xb1),
+    companyId: COMPANY,
+    court: COURT_ID,
+    timeSlot: SLOT_ID,
+    date: new Date(`${date}T00:00:00.000Z`),
+    status: 'confirmado',
+    clientName: 'Ana',
+    clientPhone: '5491100000000',
+  };
+};
+
+test('admin update refuses moving a booking onto a closed date', async () => {
+  seedUpdateTarget(OPEN_DATE);
+
+  const res = await call(updateBooking, {
+    params: { id: hexId(0xb1) },
+    user: { role: 'admin', companyId: COMPANY, _id: 'admin-1' },
+    body: { date: '2099-02-11' },
+  });
+
+  assert.equal(res.statusCode, 409);
+  assert.match(res.payload.error, /cerrado/i);
+  assert.equal(state.updateCalls, 0, 'no Booking update may be persisted');
+});
+
+test('admin update keeps metadata-only edits working on an unchanged date', async () => {
+  seedUpdateTarget('2099-02-11');
+
+  const res = await call(updateBooking, {
+    params: { id: hexId(0xb1) },
+    user: { role: 'admin', companyId: COMPANY, _id: 'admin-1' },
+    body: { clientName: 'Ana Gómez' },
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(state.updateCalls, 1);
+});
+
+// ── Bot booking creation ────────────────────────────────────────────────────
+
+const botBooking = (overrides = {}) =>
+  bookingService.createNewBooking({
+    companyId: COMPANY,
+    courtName: 'Cancha 1',
+    dateStr: '2099-02-11',
+    timeStr: '20:00',
+    clientName: 'Ana',
+    clientPhone: '5491100000000',
+    clientWhatsappId: '5491100000000@c.us',
+    ...overrides,
+  });
+
+test('bot booking creation refuses a closed date with zero writes', async () => {
+  const result = await botBooking();
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'CLUB_CLOSED');
+  assert.equal(state.bookings.length, 0);
+  assert.equal(state.userFindCalls, 0, 'no fixed-turn materialization on a closed day');
+});
+
+test('bot booking creation still books an open date', async () => {
+  const result = await botBooking({ dateStr: OPEN_DATE });
+
+  assert.equal(result.success, true);
+  assert.equal(state.bookings.length, 1);
+});
+
+test('buildBookingReplyText maps CLUB_CLOSED to a neutral Spanish message', () => {
+  const reply = buildBookingReplyText('2099-02-11', 'Ana', {
+    success: false,
+    error: 'CLUB_CLOSED',
+  });
+
+  assert.match(reply, /cerrado/i);
+  assert.doesNotMatch(reply, /Confirmada/);
+});
+
+// ── Bot availability ────────────────────────────────────────────────────────
+
+test('bot availability returns an empty slot list with a closed indicator', async () => {
+  const result = await bookingService.getAvailableSlots('2099-02-11', {
+    companyId: COMPANY,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.closed, true);
+  assert.equal(result.closureReason, 'Mantenimiento');
+  assert.deepEqual(result.slots, []);
+});
+
+test('bot availability stays unchanged on an open date', async () => {
+  const result = await bookingService.getAvailableSlots(OPEN_DATE, {
+    companyId: COMPANY,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.closed, false);
+  assert.equal(result.slots.length, 1);
 });
 
