@@ -168,3 +168,14 @@ test('TournamentTeam stores optional per-player identity for duplicate detection
   assert.equal(identified.player1Phone, '123456');
   assert.equal(identified.player2Phone, '999');
 });
+
+test('TournamentCategory tracks bracket staleness as an explicit flag', async () => {
+  const base = { companyId: oid(), tournament: oid(), name: 'Primera' };
+  const fresh = new TournamentCategory(base);
+  await fresh.validate();
+  assert.equal(fresh.bracketStale, false);
+
+  const stale = new TournamentCategory({ ...base, bracketStale: true });
+  await stale.validate();
+  assert.equal(stale.bracketStale, true);
+});

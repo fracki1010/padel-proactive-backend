@@ -161,3 +161,61 @@ test('hasDuplicatePlayer scans both players of every registered team', () => {
   const withdrawn = playerIdentityKeys({ player1Name: 'Carla', player1Phone: '789' });
   assert.equal(hasDuplicatePlayer(existing, withdrawn), false);
 });
+
+// ── Review-fix regressions: span cap, id format, court dedupe ─────────────────
+
+const OID = 'a'.repeat(24);
+
+test('validateTournamentInput caps the tournament span at 120 days', () => {
+  const wide = validateTournamentInput({
+    name: 'Wide',
+    startDate: '0001-01-01',
+    endDate: '9999-12-31',
+    courts: [OID],
+  });
+  assert.ok(wide.errors.some((error) => /120/.test(error)));
+
+  const exact = validateTournamentInput({
+    name: 'Exact',
+    startDate: '2026-01-01',
+    endDate: '2026-04-30',
+    courts: [OID],
+  });
+  assert.deepEqual(exact.errors, []);
+});
+
+test('validateTournamentInput deduplicates court ids', () => {
+  const { data, errors } = validateTournamentInput({
+    name: 'Dedupe',
+    startDate: '2026-11-10',
+    endDate: '2026-11-12',
+    courts: [OID, OID],
+  });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(data.courts, [OID]);
+});
+
+test('validateTeamInput rejects a malformed player userId', () => {
+  const invalid = validateTeamInput({
+    player1Name: 'Ana',
+    player2Name: 'Beto',
+    player1UserId: 'not-an-object-id',
+  });
+  assert.ok(invalid.errors.some((error) => /usuario/i.test(error)));
+
+  const valid = validateTeamInput({
+    player1Name: 'Ana',
+    player2Name: 'Beto',
+    player1UserId: OID,
+  });
+  assert.deepEqual(valid.errors, []);
+});
+
+test('playerIdentityKeys uses only the userId when present', () => {
+  const identified = playerIdentityKeys({
+    player1Name: 'Ana',
+    player1Phone: '123',
+    player1UserId: 'user-1',
+  });
+  assert.deepEqual(identified, ['uid:user-1']);
+});

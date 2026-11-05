@@ -24,7 +24,14 @@ const run = async (res, work) => {
   try {
     return send(res, await work());
   } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
+    if (error?.name === 'CastError' || error?.name === 'ValidationError') {
+      return res.status(400).json({ success: false, error: 'Datos inválidos.' });
+    }
+    if (error?.name === 'DocumentNotFoundError') {
+      return res.status(404).json({ success: false, error: 'Recurso no encontrado.' });
+    }
+    console.error('[tournaments] unexpected error', error);
+    return res.status(500).json({ success: false, error: 'Error interno del servidor.' });
   }
 };
 
@@ -49,7 +56,12 @@ const createTournament = withCompany((req, companyId) =>
 );
 
 const updateTournament = withCompany((req, companyId) =>
-  service.updateTournament({ companyId, id: req.params.id, input: req.body || {} }),
+  service.updateTournament({
+    companyId,
+    id: req.params.id,
+    input: req.body || {},
+    confirmConflicts: req.body?.confirmConflicts === true,
+  }),
 );
 
 const deleteTournament = withCompany((req, companyId) =>

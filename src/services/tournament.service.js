@@ -26,6 +26,9 @@ const {
 } = require('./bracket.service');
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const OBJECT_ID = /^[0-9a-fA-F]{24}$/;
+const MAX_TOURNAMENT_DAYS = 120;
+const MAX_DRAW_SEED = 2147483647;
 const STATUSES = ['draft', 'in_progress', 'finished', 'cancelled'];
 const ALLOWED_TRANSITIONS = {
   draft: ['in_progress', 'cancelled'],
@@ -39,11 +42,15 @@ const TEAM_STATUSES = ['registered', 'withdrawn'];
 const ok = (status, data, extra = {}) => ({ ok: true, status, data, ...extra });
 const fail = (status, error, extra = {}) => ({ ok: false, status, error, ...extra });
 const plain = (doc) => (doc && typeof doc.toObject === 'function' ? doc.toObject() : doc);
+const isObjectId = (value) => typeof value === 'string' && OBJECT_ID.test(value);
+const invalidId = () => fail(400, 'Identificador inválido.');
 const isValidDate = (value) =>
   typeof value === 'string' && ISO_DATE.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00.000Z`));
 const normalizeName = (value = '') =>
   String(value || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 const canTransition = (from, to) => Boolean(ALLOWED_TRANSITIONS[from]?.includes(to));
+const daySpan = (startDate, endDate) =>
+  Math.round((toUtcDate(endDate).getTime() - toUtcDate(startDate).getTime()) / 86400000) + 1;
 
 // ── Pure payload validation ─────────────────────────────────────────────────
 
@@ -73,14 +80,18 @@ const validateTournamentInput = (body = {}, { partial = false } = {}) => {
     if (!Array.isArray(source.courts) || source.courts.length === 0 || source.courts.some((id) => !id)) {
       errors.push('El torneo debe tener al menos una cancha.');
     } else {
-      data.courts = source.courts;
+      data.courts = [...new Set(source.courts.map(String))];
     }
   } else if (!partial) {
     errors.push('El torneo debe tener al menos una cancha.');
   }
 
-  if (data.startDate && data.endDate && data.endDate < data.startDate) {
-    errors.push('La fecha de fin debe ser igual o posterior a la fecha de inicio.');
+  if (data.startDate && data.endDate) {
+    if (data.endDate < data.startDate) {
+      errors.push('La fecha de fin debe ser igual o posterior a la fecha de inicio.');
+    } else if (daySpan(data.startDate, data.endDate) > MAX_TOURNAMENT_DAYS) {
+      errors.push(`El torneo no puede abarcar más de ${MAX_TOURNAMENT_DAYS} días.`);
+    }
   }
   return { data, errors };
 };
@@ -136,8 +147,15 @@ const validateTeamInput = (body = {}, { partial = false } = {}) => {
     else data.name = name;
   }
 
-  for (const field of ['player1UserId', 'player2UserId']) {
-    if (source[field] !== undefined) data[field] = source[field] || null;
+  for (const [field, label] of [['player1UserId', 'jugador 1'], ['player2UserId', 'jugador 2']]) {
+    if (source[field] !== undefined) {
+      const value = source[field] || null;
+      if (value !== null && !isObjectId(String(value))) {
+        errors.push(`El usuario del ${label} es inválido.`);
+      } else {
+        data[field] = value;
+      }
+    }
   }
   for (const field of ['player1Phone', 'player2Phone']) {
     if (source[field] !== undefined) data[field] = String(source[field] || '').trim();
@@ -157,13 +175,17 @@ const validateTeamInput = (body = {}, { partial = false } = {}) => {
 };
 
 // A player is identified by `userId` when present, otherwise by normalized
-// name plus phone. Keys are compared as an intersection between teams.
+// name plus phone. The userId is authoritative: two accounts sharing a name
+// and phone are still different players.
 const playerIdentityKeys = (source = {}) => {
   const keys = [];
   for (const slot of [1, 2]) {
     const userId = source[`player${slot}UserId`];
+    if (userId) {
+      keys.push(`uid:${String(userId)}`);
+      continue;
+    }
     const name = normalizeName(source[`player${slot}Name`]);
-    if (userId) keys.push(`uid:${String(userId)}`);
     if (name) keys.push(`name:${name}|phone:${normalizePhone(source[`player${slot}Phone`])}`);
   }
   return keys;
@@ -180,6 +202,7 @@ const hasDuplicatePlayer = (teams, candidateKeys) =>
 const findTournament = (companyId, id) => Tournament.findOne({ _id: id, companyId });
 
 const ensureTournament = async (companyId, id) => {
+  if (!isObjectId(String(id))) return { error: invalidId() };
   const tournament = await findTournament(companyId, id);
   return tournament ? { tournament } : { error: fail(404, 'Torneo no encontrado.') };
 };
@@ -187,6 +210,7 @@ const ensureTournament = async (companyId, id) => {
 const ensureCategory = async (companyId, tournamentId, categoryId) => {
   const parent = await ensureTournament(companyId, tournamentId);
   if (parent.error) return parent;
+  if (!isObjectId(String(categoryId))) return { error: invalidId() };
   const category = await TournamentCategory.findOne({
     _id: categoryId,
     companyId,
@@ -199,6 +223,7 @@ const ensureCategory = async (companyId, tournamentId, categoryId) => {
 const ensureTeam = async (companyId, tournamentId, categoryId, teamId) => {
   const parent = await ensureCategory(companyId, tournamentId, categoryId);
   if (parent.error) return parent;
+  if (!isObjectId(String(teamId))) return { error: invalidId() };
   const team = await TournamentTeam.findOne({ _id: teamId, companyId, tournament: tournamentId, category: categoryId });
   if (!team) return { error: fail(404, 'Pareja no encontrada.') };
   return { ...parent, team };
@@ -206,8 +231,64 @@ const ensureTeam = async (companyId, tournamentId, categoryId, teamId) => {
 
 const validateCourts = async (companyId, courtIds) => {
   const unique = [...new Set(courtIds.map(String))];
+  if (!unique.every(isObjectId)) return fail(400, 'Identificador de cancha inválido.');
   const courts = await Court.find({ _id: { $in: unique }, companyId, isActive: true });
   return courts.length === unique.length ? null : fail(400, 'Alguna cancha no existe o no está activa en tu empresa.');
+};
+
+const STALE_BRACKET = 'La llave está desactualizada; regenerala antes de continuar.';
+
+// Team edits after generation invalidate the persisted bracket so stale teams
+// cannot keep playing until the admin regenerates.
+const markBracketStale = async (companyId, categoryId, category) => {
+  if (!category || category.bracketSize == null) return;
+  await TournamentCategory.findOneAndUpdate(
+    { _id: categoryId, companyId },
+    { bracketStale: true },
+    { new: true },
+  );
+};
+
+const ensureMatch = async (companyId, tournamentId, categoryId, matchId) => {
+  if (!isObjectId(String(matchId))) return { error: invalidId() };
+  const match = await TournamentMatch.findOne({
+    _id: matchId,
+    companyId,
+    tournament: tournamentId,
+    category: categoryId,
+  });
+  if (!match) return { error: fail(404, 'Partido no encontrado.') };
+  return { match };
+};
+
+// Explicit draws must be integers; a random draw returns the seed it used so
+// the admin can reproduce the bracket later.
+const resolveDrawSeed = (seed) => {
+  if (seed === undefined || seed === null) {
+    return { seed: Math.floor(Math.random() * (MAX_DRAW_SEED + 1)) };
+  }
+  if (!Number.isInteger(seed) || seed < 0 || seed > MAX_DRAW_SEED) {
+    return { error: `La semilla de sorteo debe ser un entero entre 0 y ${MAX_DRAW_SEED}.` };
+  }
+  return { seed };
+};
+
+// Withdrawn teams can leave a seed above the remaining team count; the engine
+// only accepts seeds within the current set, so treat those as unseeded.
+const normalizeTeamSeeds = (teams) =>
+  teams.map((team) => (Number.isInteger(team.seed) && team.seed > teams.length ? { ...team, seed: null } : team));
+
+// Manual seeding keeps registration order: missing seeds are filled in order
+// so the pure engine does not shuffle them.
+const withSequentialSeeds = (teams) => {
+  const used = new Set(teams.map((team) => team.seed).filter((value) => Number.isInteger(value)));
+  let cursor = 1;
+  return teams.map((team) => {
+    if (Number.isInteger(team.seed)) return team;
+    while (used.has(cursor)) cursor += 1;
+    used.add(cursor);
+    return { ...team, seed: cursor };
+  });
 };
 
 // ── Tournament CRUD + lifecycle ─────────────────────────────────────────────
@@ -236,7 +317,7 @@ async function createTournament({ companyId, adminId, input }) {
   return ok(201, tournament);
 }
 
-async function updateTournament({ companyId, id, input }) {
+async function updateTournament({ companyId, id, input, confirmConflicts = false }) {
   const parent = await ensureTournament(companyId, id);
   if (parent.error) return parent.error;
   const { data, errors } = validateTournamentInput(input, { partial: true });
@@ -245,16 +326,36 @@ async function updateTournament({ companyId, id, input }) {
   const startDate = data.startDate ?? parent.tournament.startDate;
   const endDate = data.endDate ?? parent.tournament.endDate;
   if (endDate < startDate) return fail(400, 'La fecha de fin debe ser igual o posterior a la fecha de inicio.');
+  if (daySpan(startDate, endDate) > MAX_TOURNAMENT_DAYS) {
+    return fail(400, `El torneo no puede abarcar más de ${MAX_TOURNAMENT_DAYS} días.`);
+  }
   if (data.courts) {
     const courtError = await validateCourts(companyId, data.courts);
     if (courtError) return courtError;
+  }
+
+  // Date/court edits while in progress must go through the same conflict
+  // acknowledgement as activation.
+  let conflicts = [];
+  const scheduleChanged =
+    data.startDate !== undefined || data.endDate !== undefined || data.courts !== undefined;
+  if (parent.tournament.status === 'in_progress' && scheduleChanged) {
+    conflicts = await findActivationConflicts({
+      companyId,
+      courtIds: data.courts ?? parent.tournament.courts ?? [],
+      startDate,
+      endDate,
+    });
+    if (conflicts.length > 0 && confirmConflicts !== true) {
+      return fail(409, 'Hay reservas existentes en las canchas y fechas del torneo.', { conflicts });
+    }
   }
 
   const updated = await Tournament.findOneAndUpdate({ _id: id, companyId }, data, {
     new: true,
     runValidators: true,
   });
-  return ok(200, updated);
+  return ok(200, updated, conflicts.length > 0 ? { conflicts } : {});
 }
 
 async function deleteTournament({ companyId, id }) {
@@ -290,6 +391,10 @@ async function activateTournament({ companyId, id, confirmConflicts = false }) {
   if (!canTransition(parent.tournament.status, 'in_progress')) {
     return fail(400, `No se puede activar un torneo en estado ${parent.tournament.status}.`);
   }
+
+  // Courts can be deactivated or removed between draft and activation.
+  const courtError = await validateCourts(companyId, parent.tournament.courts || []);
+  if (courtError) return courtError;
 
   const conflicts = await findActivationConflicts({
     companyId,
@@ -370,6 +475,9 @@ async function deleteCategory({ companyId, tournamentId, categoryId }) {
   const played = await TournamentMatch.countDocuments({ companyId, category: categoryId, status: 'played' });
   if (played > 0) return fail(409, 'No se puede eliminar una categoría con partidos jugados.');
 
+  // Cascade the remaining children so no orphan team/match rows survive.
+  await TournamentTeam.deleteMany({ companyId, tournament: tournamentId, category: categoryId });
+  await TournamentMatch.deleteMany({ companyId, tournament: tournamentId, category: categoryId });
   await TournamentCategory.findOneAndDelete({ _id: categoryId, companyId, tournament: tournamentId });
   return ok(200, { _id: categoryId });
 }
@@ -421,6 +529,7 @@ async function createTeam({ companyId, tournamentId, categoryId, input }) {
     tournament: tournamentId,
     category: categoryId,
   });
+  await markBracketStale(companyId, categoryId, parent.category);
   return ok(201, team);
 }
 
@@ -443,6 +552,13 @@ async function updateTeam({ companyId, tournamentId, categoryId, teamId, input }
   const teams = await TournamentTeam.find({ companyId, tournament: tournamentId, category: categoryId });
   const others = teams.filter((team) => String(team._id) !== String(teamId) && (!team.status || team.status === 'registered'));
 
+  if (data.status === 'registered' && parent.team.status === 'withdrawn') {
+    const { maxTeams } = parent.category;
+    if (Number.isInteger(maxTeams) && others.length >= maxTeams) {
+      return fail(409, 'La categoría alcanzó el máximo de parejas.');
+    }
+  }
+
   if (data.name && others.some((team) => normalizeName(team.name) === normalizeName(data.name))) {
     return fail(400, 'Ya existe una pareja con ese nombre en la categoría.');
   }
@@ -459,12 +575,25 @@ async function updateTeam({ companyId, tournamentId, categoryId, teamId, input }
     data,
     { new: true, runValidators: true },
   );
+  await markBracketStale(companyId, categoryId, parent.category);
   return ok(200, updated);
 }
 
 async function deleteTeam({ companyId, tournamentId, categoryId, teamId }) {
   const parent = await ensureTeam(companyId, tournamentId, categoryId, teamId);
   if (parent.error) return parent.error;
+
+  // A generated bracket stores hard team references; deleting the team would
+  // leave dangling slots, so withdrawal is the only supported path.
+  const bracketMatches = await TournamentMatch.countDocuments({
+    companyId,
+    tournament: tournamentId,
+    category: categoryId,
+  });
+  if (parent.category.bracketSize != null || bracketMatches > 0) {
+    return fail(409, 'No se puede eliminar una pareja con una llave generada; retírala en su lugar.');
+  }
+
   const played = await TournamentMatch.countDocuments({
     companyId,
     category: categoryId,
@@ -519,25 +648,35 @@ async function generateCategoryBracket({ companyId, tournamentId, categoryId, se
     return fail(400, 'El torneo debe estar en curso para generar la llave.');
   }
 
+  const draw = resolveDrawSeed(seed);
+  if (draw.error) return fail(400, draw.error);
+
   const existing = await TournamentMatch.find({ companyId, tournament: tournamentId, category: categoryId });
   if (existing.length > 0) {
     const guard = canRegenerate({ matches: existing });
     if (!guard.allowed) return fail(409, guard.reason);
-    await TournamentMatch.deleteMany({ companyId, tournament: tournamentId, category: categoryId });
   }
 
+  // Build the new bracket BEFORE touching the persisted one: any sizing or
+  // team-set error must leave the current bracket intact.
   const teams = await registeredTeams(companyId, tournamentId, categoryId);
-  const rng = seed == null ? Math.random : createSeededRng(seed);
-  const result = buildBracket({ teams: teams.map(plain), rng });
+  const inputTeams = normalizeTeamSeeds(teams.map(plain));
+  const bracketTeams = parent.category.seeding === 'manual' ? withSequentialSeeds(inputTeams) : inputTeams;
+  const result = buildBracket({ teams: bracketTeams, rng: createSeededRng(draw.seed) });
   if (result.errors.length) return fail(400, result.errors[0]);
+
+  const drawSeed = draw.seed;
+  if (existing.length > 0) {
+    await TournamentMatch.deleteMany({ companyId, tournament: tournamentId, category: categoryId });
+  }
 
   if (result.bracketSize === 1) {
     await TournamentCategory.findOneAndUpdate(
       { _id: categoryId, companyId },
-      { bracketSize: 1, status: 'completed' },
+      { bracketSize: 1, status: 'completed', bracketStale: false },
       { new: true },
     );
-    return ok(200, { bracketSize: 1, rounds: [], champion: result.champion });
+    return ok(200, { bracketSize: 1, rounds: [], champion: result.champion, drawSeed });
   }
 
   const documents = result.matches.map((match) => ({
@@ -554,10 +693,10 @@ async function generateCategoryBracket({ companyId, tournamentId, categoryId, se
   const inserted = await TournamentMatch.insertMany(documents);
   await TournamentCategory.findOneAndUpdate(
     { _id: categoryId, companyId },
-    { bracketSize: result.bracketSize, status: 'active' },
+    { bracketSize: result.bracketSize, status: 'active', bracketStale: false },
     { new: true },
   );
-  return ok(200, { ...toBracketResponse(inserted, result.bracketSize), champion: null });
+  return ok(200, { ...toBracketResponse(inserted, result.bracketSize), champion: null, drawSeed });
 }
 
 async function getCategoryBracket({ companyId, tournamentId, categoryId }) {
@@ -571,9 +710,12 @@ async function getCategoryBracket({ companyId, tournamentId, categoryId }) {
 async function recordResult({ companyId, tournamentId, categoryId, matchId, scoreA, scoreB }) {
   const parent = await ensureCategory(companyId, tournamentId, categoryId);
   if (parent.error) return parent.error;
+  if (parent.tournament.status === 'finished') return fail(409, 'El torneo ya está finalizado.');
+  if (parent.category.bracketStale === true) return fail(409, STALE_BRACKET);
 
-  const match = await TournamentMatch.findOne({ _id: matchId, companyId, tournament: tournamentId, category: categoryId });
-  if (!match) return fail(404, 'Partido no encontrado.');
+  const found = await ensureMatch(companyId, tournamentId, categoryId, matchId);
+  if (found.error) return found.error;
+  const { match } = found;
   const resolved = resolveResult({ scoreA, scoreB });
   if (resolved.errors.length) return fail(400, resolved.errors[0]);
   if (match.status !== 'ready') return fail(409, 'El partido no está listo para registrar un resultado.');
@@ -583,23 +725,53 @@ async function recordResult({ companyId, tournamentId, categoryId, matchId, scor
   const applied = applyWinner({ matches, round: match.round, position: match.position, winner: winnerId });
   if (applied.errors.length) return fail(400, applied.errors[0]);
 
-  const updated = await TournamentMatch.findOneAndUpdate(
-    { _id: matchId, companyId },
-    { winner: winnerId, scoreA, scoreB, status: 'played' },
-    { new: true, runValidators: true },
-  );
-
   const target = nextRoundTarget({ round: match.round, position: match.position });
   const targetMatch = matches.find((item) => item.round === target.round && item.position === target.position);
-  let champion = null;
+  // Advance first: if the source write then fails there is never a played
+  // match whose winner failed to reach the next round.
+  let targetSnapshot = null;
   if (targetMatch) {
+    targetSnapshot = {
+      slot: target.slot,
+      value: targetMatch[target.slot] ?? null,
+      status: targetMatch.status,
+    };
     const next = applied.matches.find((item) => item.round === target.round && item.position === target.position);
-    await TournamentMatch.findOneAndUpdate(
+    const advanced = await TournamentMatch.findOneAndUpdate(
       { _id: targetMatch._id, companyId },
       { [target.slot]: winnerId, status: next.status },
       { new: true, runValidators: true },
     );
-  } else {
+    if (!advanced) return fail(500, 'No se pudo registrar el resultado.');
+  }
+
+  const rollbackTarget = async () => {
+    if (!targetMatch) return;
+    await TournamentMatch.findOneAndUpdate(
+      { _id: targetMatch._id, companyId },
+      { [targetSnapshot.slot]: targetSnapshot.value, status: targetSnapshot.status },
+      { new: true },
+    );
+  };
+
+  let updated;
+  try {
+    updated = await TournamentMatch.findOneAndUpdate(
+      { _id: matchId, companyId },
+      { winner: winnerId, scoreA, scoreB, status: 'played' },
+      { new: true, runValidators: true },
+    );
+  } catch (error) {
+    await rollbackTarget();
+    throw error;
+  }
+  if (!updated) {
+    await rollbackTarget();
+    return fail(500, 'No se pudo registrar el resultado.');
+  }
+
+  let champion = null;
+  if (!targetMatch) {
     champion = winnerId;
     await TournamentCategory.findOneAndUpdate({ _id: categoryId, companyId }, { status: 'completed' }, { new: true });
   }
@@ -609,9 +781,12 @@ async function recordResult({ companyId, tournamentId, categoryId, matchId, scor
 async function clearResult({ companyId, tournamentId, categoryId, matchId }) {
   const parent = await ensureCategory(companyId, tournamentId, categoryId);
   if (parent.error) return parent.error;
+  if (parent.tournament.status === 'finished') return fail(409, 'El torneo ya está finalizado.');
+  if (parent.category.bracketStale === true) return fail(409, STALE_BRACKET);
 
-  const match = await TournamentMatch.findOne({ _id: matchId, companyId, tournament: tournamentId, category: categoryId });
-  if (!match) return fail(404, 'Partido no encontrado.');
+  const found = await ensureMatch(companyId, tournamentId, categoryId, matchId);
+  if (found.error) return found.error;
+  const { match } = found;
   if (match.status !== 'played') return fail(400, 'El partido no tiene un resultado registrado.');
 
   const matches = await TournamentMatch.find({ companyId, tournament: tournamentId, category: categoryId });
@@ -645,12 +820,27 @@ async function clearResult({ companyId, tournamentId, categoryId, matchId }) {
 async function scheduleMatch({ companyId, tournamentId, categoryId, matchId, input = {} }) {
   const parent = await ensureCategory(companyId, tournamentId, categoryId);
   if (parent.error) return parent.error;
-  const match = await TournamentMatch.findOne({ _id: matchId, companyId, tournament: tournamentId, category: categoryId });
-  if (!match) return fail(404, 'Partido no encontrado.');
+  if (parent.tournament.status !== 'in_progress') {
+    return fail(409, 'El torneo debe estar en curso para programar partidos.');
+  }
+  if (parent.category.bracketStale === true) return fail(409, STALE_BRACKET);
+
+  const found = await ensureMatch(companyId, tournamentId, categoryId, matchId);
+  if (found.error) return found.error;
+  const { match } = found;
+  if (match.status !== 'ready') return fail(409, 'El partido no está listo para programarse.');
 
   const { court, date, timeSlot } = input;
-  if (!court || !timeSlot) return fail(400, 'La cancha y el horario son obligatorios.');
+  if (!isObjectId(String(court)) || !isObjectId(String(timeSlot))) {
+    return fail(400, 'La cancha y el horario deben ser identificadores válidos.');
+  }
   if (!isValidDate(date)) return fail(400, 'La fecha debe usar el formato YYYY-MM-DD.');
+  if (date < parent.tournament.startDate || date > parent.tournament.endDate) {
+    return fail(400, 'La fecha debe estar dentro del rango del torneo.');
+  }
+  if (!(parent.tournament.courts || []).map(String).includes(String(court))) {
+    return fail(400, 'La cancha no pertenece al torneo.');
+  }
 
   const ownedCourt = await Court.findOne({ _id: court, companyId, isActive: true });
   if (!ownedCourt) return fail(400, 'La cancha no existe o no está activa en tu empresa.');
