@@ -4,7 +4,7 @@ const helmet = require("helmet");
 const chatRoutes = require("./routes/chatRoutes");
 const bookingRoutes = require("./routes/booking.routes");
 const authRoutes = require("./routes/auth.routes");
-const { protect, requireRole } = require("./middleware/auth.middleware");
+const { protect, requireRole, requireTenant } = require("./middleware/auth.middleware");
 const superAdminRoutes = require("./routes/super-admin.routes");
 const { createRateLimiter } = require("./middleware/rateLimit.middleware");
 
@@ -96,6 +96,14 @@ app.use(
   "/api/announcements",
   protect,
   require("./routes/announcement.routes"),
+);
+app.use(
+  "/api/tournaments",
+  protect,
+  // Spec TM-R1: tournament management is admin-only.
+  requireRole("admin"),
+  requireTenant,
+  require("./routes/tournament.routes"),
 );
 app.use("/internal", require("./routes/internal.routes"));
 app.use(
