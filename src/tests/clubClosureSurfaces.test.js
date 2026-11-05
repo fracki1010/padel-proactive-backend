@@ -9,9 +9,11 @@
 
 const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
+const mongoose = require('mongoose');
 
 const hexId = (value) => value.toString(16).padStart(24, '0');
 const COMPANY = hexId(0xaa);
+const COMPANY_B = hexId(0xab);
 const COURT_ID = hexId(0xc1);
 const COURT_ID2 = hexId(0xc2);
 const SLOT_ID = hexId(0xd1);
@@ -306,13 +308,19 @@ stubModule('../services/whatsappRuntimeState.service', {
 
 const { isClubClosedForDate } = require('../services/clubClosure.service');
 const bookingService = require('../services/bookingService');
-const { createBooking, updateBooking } = require('../controllers/booking.controller');
+const {
+  createBooking,
+  updateBooking,
+  getBookings,
+  rematerializeFixedTurns,
+} = require('../controllers/booking.controller');
 const publicController = require('../controllers/public.controller');
 const {
   materializeFixedBookingsForDate,
   materializeFixedBookingsInRange,
 } = require('../services/fixedTurnsMaterialization.service');
 const { buildBookingReplyText } = require('../handlers/messageHandler');
+const ClubClosure = require('../models/clubClosure.model');
 
 const createResponse = () => ({
   statusCode: undefined,
@@ -654,3 +662,198 @@ test('slot lock acquisition still succeeds on an open date', async () => {
   assert.equal(res.payload.success, true);
   assert.equal(state.lockAcquires, 1);
 });
+
+// ── Cross-tenant isolation ──────────────────────────────────────────────────
+
+test('a closure in company A does not close company B', async () => {
+  assert.equal((await isClubClosedForDate(COMPANY, CLOSED_START)).closed, true);
+  assert.equal((await isClubClosedForDate(COMPANY_B, CLOSED_START)).closed, false);
+});
+
+// ── Super admin without companyId must still resolve the court tenant ───────
+
+test('super_admin without companyId cannot create a booking on a closed date', async () => {
+  const res = await call(createBooking, {
+    user: { role: 'super_admin', _id: hexId(0xf2) },
+    query: {},
+    body: {
+      courtId: COURT_ID,
+      slotId: SLOT_ID,
+      date: '2099-02-11',
+      clientName: 'Super client',
+      clientPhone: '5491111111111',
+    },
+  });
+
+  assert.equal(res.statusCode, 409);
+  assert.match(res.payload.error, /cerrado/i);
+  assert.equal(state.bookings.length, 0);
+  assert.equal(state.userFindCalls, 0);
+});
+
+test('super_admin without companyId cannot move a booking onto a closed date', async () => {
+  seedUpdateTarget(OPEN_DATE);
+
+  const res = await call(updateBooking, {
+    params: { id: hexId(0xb1) },
+    user: { role: 'super_admin', _id: hexId(0xf2) },
+    query: {},
+    body: { date: '2099-02-11' },
+  });
+
+  assert.equal(res.statusCode, 409);
+  assert.match(res.payload.error, /cerrado/i);
+  assert.equal(state.updateCalls, 0);
+});
+
+test('rematerialize requires an explicit companyId for a caller without one', async () => {
+  const res = await call(rematerializeFixedTurns, {
+    user: { role: 'super_admin', _id: hexId(0xf2) },
+    query: {},
+    body: { fromDate: CLOSED_START, daysAhead: 1 },
+  });
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(state.userFindCalls, 0);
+  assert.equal(state.bookings.length, 0);
+});
+
+// ── Fail-closed writes while closure resolvability is unknown ───────────────
+
+// The suites above replace ClubClosure.findOne with a double, which the
+// capability check treats as safe without a live DB. Restoring the native
+// findOne (and reporting the DB as disconnected) simulates production.
+const withClosuresUnavailable = async (work) => {
+  const savedFindOne = ClubClosure.findOne;
+  const savedConnected = state.mongoConnected;
+  const savedContext = process.env.NODE_TEST_CONTEXT;
+  const savedEnv = process.env.NODE_ENV;
+  ClubClosure.findOne = mongoose.Model.findOne;
+  state.mongoConnected = false;
+  delete process.env.NODE_TEST_CONTEXT;
+  delete process.env.NODE_ENV;
+  try {
+    return await work();
+  } finally {
+    ClubClosure.findOne = savedFindOne;
+    state.mongoConnected = savedConnected;
+    if (savedContext !== undefined) process.env.NODE_TEST_CONTEXT = savedContext;
+    if (savedEnv !== undefined) process.env.NODE_ENV = savedEnv;
+  }
+};
+
+test('admin booking creation returns 503 and writes nothing when closures cannot be resolved', async () => {
+  const res = await withClosuresUnavailable(() => call(createBooking, adminCreateReq()));
+
+  assert.equal(res.statusCode, 503);
+  assert.match(res.payload.error, /disponibilidad/i);
+  assert.equal(state.bookings.length, 0);
+  assert.equal(state.userFindCalls, 0);
+});
+
+test('public booking creation returns 503 and writes nothing when closures cannot be resolved', async () => {
+  const res = await withClosuresUnavailable(() =>
+    call(publicController.createClientBooking, {
+      params: { slug: 'club' },
+      clientUser: { id: CLIENT_ID, companyId: COMPANY },
+      body: { courtId: COURT_ID, slotId: SLOT_ID, date: OPEN_DATE },
+    }),
+  );
+
+  assert.equal(res.statusCode, 503);
+  assert.match(res.payload.error, /disponibilidad/i);
+  assert.equal(state.bookings.length, 0);
+});
+
+test('public slot lock returns 503 and acquires no lock when closures cannot be resolved', async () => {
+  const res = await withClosuresUnavailable(() =>
+    call(publicController.acquireSlotLockHandler, slotLockReq(OPEN_DATE)),
+  );
+
+  assert.equal(res.statusCode, 503);
+  assert.equal(state.lockAcquires, 0);
+});
+
+test('public availability returns 503 instead of claiming the club is open', async () => {
+  const res = await withClosuresUnavailable(() =>
+    call(publicController.getAvailability, {
+      params: { slug: 'club' },
+      query: { date: OPEN_DATE },
+    }),
+  );
+
+  assert.equal(res.statusCode, 503);
+});
+
+test('admin getBookings returns 503 and materializes nothing when closures cannot be resolved', async () => {
+  const res = await withClosuresUnavailable(() =>
+    call(getBookings, {
+      query: { date: OPEN_DATE },
+      user: { role: 'admin', companyId: COMPANY, _id: 'admin-1' },
+    }),
+  );
+
+  assert.equal(res.statusCode, 503);
+  assert.equal(state.userFindCalls, 0);
+});
+
+test('bot booking returns CLOSURE_UNAVAILABLE when closures cannot be resolved', async () => {
+  const result = await withClosuresUnavailable(() => botBooking({ dateStr: OPEN_DATE }));
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'CLOSURE_UNAVAILABLE');
+  assert.equal(state.bookings.length, 0);
+});
+
+test('bot availability refuses when closures cannot be resolved', async () => {
+  const result = await withClosuresUnavailable(() =>
+    bookingService.getAvailableSlots(OPEN_DATE, { companyId: COMPANY }),
+  );
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'CLOSURE_UNAVAILABLE');
+});
+
+test('fixed-turn materialization refuses when closures cannot be resolved', async () => {
+  seedFixedTurnUser(openWeekday());
+
+  const result = await withClosuresUnavailable(() =>
+    materializeFixedBookingsForDate({
+      companyId: COMPANY,
+      searchDate: new Date(`${OPEN_DATE}T00:00:00.000Z`),
+    }),
+  );
+
+  assert.equal(result.createdCount, 0);
+  assert.equal(state.bookings.length, 0);
+});
+
+test('rematerialize returns 503 and writes nothing when closures cannot be resolved', async () => {
+  const res = await withClosuresUnavailable(() =>
+    call(rematerializeFixedTurns, {
+      user: { role: 'admin', companyId: COMPANY, _id: 'admin-1' },
+      query: {},
+      body: { fromDate: OPEN_DATE, daysAhead: 1 },
+    }),
+  );
+
+  assert.equal(res.statusCode, 503);
+  assert.equal(state.bookings.length, 0);
+});
+
+test('date-moving update returns 503 when closures cannot be resolved', async () => {
+  seedUpdateTarget(OPEN_DATE);
+
+  const res = await withClosuresUnavailable(() =>
+    call(updateBooking, {
+      params: { id: hexId(0xb1) },
+      user: { role: 'admin', companyId: COMPANY, _id: 'admin-1' },
+      body: { date: '2099-02-20' },
+    }),
+  );
+
+  assert.equal(res.statusCode, 503);
+  assert.equal(state.updateCalls, 0);
+});
+
+

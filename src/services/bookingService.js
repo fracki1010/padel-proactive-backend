@@ -37,7 +37,10 @@ const {
   getBlockedCourtIdsForDate,
   isCourtBlockedByTournament,
 } = require("./tournamentBlocking.service");
-const { isClubClosedForDate } = require("./clubClosure.service");
+const {
+  canResolveClosures,
+  isClubClosedForDate,
+} = require("./clubClosure.service");
 const {
   buildForeignLockedKeys,
   createMongooseSlotLockStore,
@@ -242,6 +245,10 @@ const createNewBooking = async ({
     }
     // A bot write must never proceed while tournament blocking cannot be
     // resolved: Mongoose would buffer it and commit after the reconnect.
+    // A bot write must never proceed while the closure state is unknown.
+    if (!canResolveClosures()) {
+      return { success: false, error: "CLOSURE_UNAVAILABLE" };
+    }
     if (!canResolveTournamentBlocks()) {
       return { success: false, error: "BLOCKING_UNAVAILABLE" };
     }
@@ -775,6 +782,12 @@ const getAvailableSlots = async (dateStr, options = {}) => {
 
     if (isPastDate) {
       return { success: true, date: dateStr, slots: [] };
+    }
+
+    // Availability materializes fixed turns, so it must not run while the
+    // closure state is unknown. Refuse instead of pretending the day is open.
+    if (!canResolveClosures()) {
+      return { success: false, error: "CLOSURE_UNAVAILABLE", data: [] };
     }
 
     // A closed day offers no slots: report the closure instead of hiding it

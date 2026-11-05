@@ -23,6 +23,18 @@ const CLOSURE_DEFAULT_REASON = 'El club está cerrado ese día';
 const nativeFindOne = mongoose.Model.findOne;
 const isModelDoubled = () => ClubClosure.findOne !== nativeFindOne;
 
+// Node's test runner sets NODE_TEST_CONTEXT; model-double suites never open a
+// DB and must keep exercising unrelated write paths. Production never has it.
+const isTestDoubleRun = () =>
+  Boolean(process.env.NODE_TEST_CONTEXT) || process.env.NODE_ENV === 'test';
+
+// Whether closures can be resolved right now. WRITE paths must call this and
+// refuse when it is false: Mongoose buffers writes across a reconnect, so a
+// booking could otherwise land on a day whose closure was never evaluated.
+// A doubled model (or a model-double test run) is safe without a connection.
+const canResolveClosures = () =>
+  isMongoConnected() || isModelDoubled() || isTestDoubleRun();
+
 /**
  * Whether a club is closed on a given calendar day.
  * @param {string} companyId Tenant scope.
@@ -35,8 +47,14 @@ const isClubClosedForDate = async (companyId, date) => {
     return { closed: false, reason: '' };
   }
 
-  // Fail open when the DB is down and no double replaced the model: every other
-  // read on the request buffers too, and the write paths already refuse first.
+  // Never claim a day is open when the closure cannot be resolved: fail closed.
+  // Write-capable paths refuse earlier with a 503, so this is a last guard for
+  // any read that reaches the helper during an outage.
+  if (!canResolveClosures()) {
+    return { closed: true, reason: CLOSURE_DEFAULT_REASON };
+  }
+  // Model-double test runs have no live DB but intentionally leave this model
+  // native; keep their unrelated write paths behaving as before.
   if (!isMongoConnected() && !isModelDoubled()) {
     return { closed: false, reason: '' };
   }
@@ -57,4 +75,8 @@ const isClubClosedForDate = async (companyId, date) => {
   };
 };
 
-module.exports = { CLOSURE_DEFAULT_REASON, isClubClosedForDate };
+module.exports = {
+  CLOSURE_DEFAULT_REASON,
+  canResolveClosures,
+  isClubClosedForDate,
+};

@@ -81,7 +81,13 @@ const {
   getBlockedCourtsForDate,
   isCourtBlockedByTournament,
 } = require("../services/tournamentBlocking.service");
-const { isClubClosedForDate } = require("../services/clubClosure.service");
+const {
+  canResolveClosures,
+  isClubClosedForDate,
+} = require("../services/clubClosure.service");
+
+const CLOSURE_UNAVAILABLE_ERROR =
+  "No podemos verificar la disponibilidad por un problema técnico. Intentá nuevamente en unos minutos.";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 // Duración de la sesión del cliente del portal (default: 1 año).
@@ -251,6 +257,15 @@ const getAvailability = async (req, res) => {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
     }
 
+    // Availability materializes fixed turns, so it must not run while the
+    // closure state is unknown. Never claim the club is open in that case.
+    if (!canResolveClosures()) {
+      return res.status(503).json({
+        success: false,
+        error: CLOSURE_UNAVAILABLE_ERROR,
+      });
+    }
+
     const closure = await isClubClosedForDate(company._id, searchDate);
     if (closure.closed) {
       return res.json({
@@ -371,6 +386,11 @@ const acquireSlotLockHandler = async (req, res) => {
     const searchDate = parseDateToUtcMidnight(date);
     if (!searchDate) {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
+    }
+
+    // A slot lock is a write: refuse while the closure state is unknown.
+    if (!canResolveClosures()) {
+      return res.status(503).json({ success: false, error: CLOSURE_UNAVAILABLE_ERROR });
     }
 
     // A closed day must not reserve a slot lock: refuse before creating one.
@@ -941,6 +961,11 @@ const createClientBooking = async (req, res) => {
     const searchDate = parseDateToUtcMidnight(date);
     if (!searchDate) {
       return res.status(400).json({ success: false, error: "Fecha inválida" });
+    }
+
+    // No Booking write may proceed while the closure state is unknown.
+    if (!canResolveClosures()) {
+      return res.status(503).json({ success: false, error: CLOSURE_UNAVAILABLE_ERROR });
     }
 
     const closure = await isClubClosedForDate(company._id, searchDate);

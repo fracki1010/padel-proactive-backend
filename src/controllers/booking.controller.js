@@ -30,8 +30,15 @@ const { findEffectiveSlotForCourt } = require("../utils/slotSchedule");
 const {
   canResolveTournamentBlocks,
   isCourtBlockedByTournament,
+  resolveCompanyForCourt,
 } = require("../services/tournamentBlocking.service");
-const { isClubClosedForDate } = require("../services/clubClosure.service");
+const {
+  canResolveClosures,
+  isClubClosedForDate,
+} = require("../services/clubClosure.service");
+
+const CLOSURE_UNAVAILABLE_ERROR =
+  "No podemos verificar la disponibilidad por un problema técnico. Intentá nuevamente en unos minutos.";
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
   process.env.DAILY_BOOKING_LIMIT_PER_CLIENT || 6,
 );
@@ -85,6 +92,14 @@ const getBookings = async (req, res) => {
     }
 
     if (date) {
+      // Reading a date triggers materialization, which writes. Refuse while the
+      // closure state cannot be resolved instead of buffering those writes.
+      if (!canResolveClosures()) {
+        return res.status(503).json({
+          success: false,
+          error: CLOSURE_UNAVAILABLE_ERROR,
+        });
+      }
       const fixedTurnsCompanyId =
         req.user?.role === "super_admin" && !companyId ? undefined : companyId;
       await materializeFixedBookingsForDate({
@@ -136,13 +151,22 @@ const createBooking = async (req, res) => {
       status,
       finalPrice,
     } = req.body;
-    const companyId = resolveCompanyId(req);
+    let companyId = resolveCompanyId(req);
 
     // A. Validaciones básicas
     if (!courtId || !date || (!time && !slotId)) {
       return res.status(400).json({
         success: false,
         error: "Faltan datos: courtId, date, y (time o slotId)",
+      });
+    }
+
+    // No write may proceed while closure resolvability is unknown: Mongoose
+    // would buffer the Booking write and commit it after the reconnect.
+    if (!canResolveClosures()) {
+      return res.status(503).json({
+        success: false,
+        error: CLOSURE_UNAVAILABLE_ERROR,
       });
     }
 
@@ -154,6 +178,12 @@ const createBooking = async (req, res) => {
       return res
         .status(404)
         .json({ success: false, error: "Cancha no encontrada" });
+    }
+
+    // A super_admin may arrive without a company scope. The target court is
+    // authoritative, so derive its tenant before evaluating closures.
+    if (!companyId) {
+      companyId = await resolveCompanyForCourt(courtId);
     }
 
     // B. Buscar el TimeSlot.
@@ -192,7 +222,7 @@ const createBooking = async (req, res) => {
     if (!canResolveTournamentBlocks()) {
       return res.status(503).json({
         success: false,
-        error: "No podemos verificar la disponibilidad por un problema técnico. Intentá nuevamente en unos minutos.",
+        error: CLOSURE_UNAVAILABLE_ERROR,
       });
     }
 
@@ -215,10 +245,8 @@ const createBooking = async (req, res) => {
       });
     }
 
-    const fixedTurnsCompanyId =
-      req.user?.role === "super_admin" && !companyId ? undefined : companyId;
     await materializeFixedBookingsForDate({
-      companyId: fixedTurnsCompanyId,
+      companyId,
       searchDate: bookingDate,
     });
 
@@ -427,11 +455,18 @@ const updateBooking = async (req, res) => {
       toIsoDateOnly(nextDate) !== toIsoDateOnly(previousBooking.date);
 
     if (isMovingSlot) {
-      // A move must never proceed while tournament blocking cannot be resolved.
+      // A move must never proceed while closure/tournament resolvability is
+      // unknown: Mongoose would buffer the write and commit it after reconnect.
+      if (!canResolveClosures()) {
+        return res.status(503).json({
+          success: false,
+          error: CLOSURE_UNAVAILABLE_ERROR,
+        });
+      }
       if (!canResolveTournamentBlocks()) {
         return res.status(503).json({
           success: false,
-          error: "No podemos verificar la disponibilidad por un problema técnico. Intentá nuevamente en unos minutos.",
+          error: CLOSURE_UNAVAILABLE_ERROR,
         });
       }
 
@@ -440,7 +475,11 @@ const updateBooking = async (req, res) => {
       const isMovingDate =
         toIsoDateOnly(nextDate) !== toIsoDateOnly(previousBooking.date);
       if (isMovingDate) {
-        const closure = await isClubClosedForDate(companyId, nextDate);
+        // A super_admin may arrive without a company scope: the target court is
+        // authoritative, exactly like tournament blocking.
+        const closureCompanyId =
+          companyId || (await resolveCompanyForCourt(nextCourt));
+        const closure = await isClubClosedForDate(closureCompanyId, nextDate);
         if (closure.closed) {
           return res.status(409).json({
             success: false,
@@ -660,6 +699,25 @@ const confirmDepositReceived = async (req, res) => {
 const rematerializeFixedTurns = async (req, res) => {
   try {
     const companyId = resolveCompanyId(req);
+
+    // Materializing without a tenant would rewrite every club: require an
+    // explicit company scope instead of running globally.
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: "companyId es obligatorio para rematerializar turnos fijos.",
+      });
+    }
+
+    // Materialization writes bookings, so it must not run while the closure
+    // state is unknown.
+    if (!canResolveClosures()) {
+      return res.status(503).json({
+        success: false,
+        error: CLOSURE_UNAVAILABLE_ERROR,
+      });
+    }
+
     const payload = req.body || {};
     const fromDateRaw = payload.fromDate || req.query.fromDate;
     const daysAheadRaw = payload.daysAhead ?? req.query.daysAhead;
@@ -695,11 +753,8 @@ const rematerializeFixedTurns = async (req, res) => {
       });
     }
 
-    const fixedTurnsCompanyId =
-      req.user?.role === "super_admin" && !companyId ? undefined : companyId;
-
     const result = await materializeFixedBookingsInRange({
-      companyId: fixedTurnsCompanyId,
+      companyId,
       fromDate: fromDate || new Date(),
       ...(parsedDaysAhead !== undefined ? { daysAhead: parsedDaysAhead } : {}),
       ...(userId ? { userId } : {}),
@@ -708,7 +763,7 @@ const rematerializeFixedTurns = async (req, res) => {
     return res.status(200).json({
       success: true,
       data: {
-        companyId: fixedTurnsCompanyId ?? "all",
+        companyId,
         fromDate: toIsoDateOnly(fromDate || new Date()),
         daysAhead: parsedDaysAhead !== undefined ? parsedDaysAhead : 90,
         userId: userId || null,
