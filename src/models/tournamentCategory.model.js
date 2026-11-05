@@ -18,6 +18,9 @@ const tournamentCategorySchema = new mongoose.Schema(
     seeding: { type: String, enum: ["manual", "shuffle"], default: "shuffle" },
     // Filled by the bracket engine when the category is generated.
     bracketSize: { type: Number, default: null },
+    // Set when the registered team set changes after generation; results and
+    // scheduling stay blocked until the bracket is regenerated.
+    bracketStale: { type: Boolean, default: false },
     status: { type: String, enum: ["draft", "active", "completed"], default: "draft" },
   },
   { timestamps: true },

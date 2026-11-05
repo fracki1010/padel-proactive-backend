@@ -139,3 +139,43 @@ test('TournamentMatch declares the unique bracket slot and tenant indexes', () =
   assert.ok(hasIndex(TournamentMatch, { companyId: 1, tournament: 1 }));
   assert.ok(hasIndex(TournamentMatch, { companyId: 1, court: 1, date: 1 }));
 });
+
+test('TournamentTeam stores optional per-player identity for duplicate detection', async () => {
+  const base = {
+    companyId: oid(),
+    tournament: oid(),
+    category: oid(),
+    name: 'Ana / Beto',
+    player1Name: 'Ana',
+    player2Name: 'Beto',
+  };
+  const team = new TournamentTeam(base);
+  await team.validate();
+  assert.equal(team.player1UserId, null);
+  assert.equal(team.player1Phone, '');
+  assert.equal(team.player2UserId, null);
+  assert.equal(team.player2Phone, '');
+
+  const user1 = oid();
+  const identified = new TournamentTeam({
+    ...base,
+    player1UserId: user1,
+    player1Phone: ' 123456 ',
+    player2Phone: ' 999 ',
+  });
+  await identified.validate();
+  assert.equal(String(identified.player1UserId), String(user1));
+  assert.equal(identified.player1Phone, '123456');
+  assert.equal(identified.player2Phone, '999');
+});
+
+test('TournamentCategory tracks bracket staleness as an explicit flag', async () => {
+  const base = { companyId: oid(), tournament: oid(), name: 'Primera' };
+  const fresh = new TournamentCategory(base);
+  await fresh.validate();
+  assert.equal(fresh.bracketStale, false);
+
+  const stale = new TournamentCategory({ ...base, bracketStale: true });
+  await stale.validate();
+  assert.equal(stale.bracketStale, true);
+});
