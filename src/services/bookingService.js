@@ -33,7 +33,9 @@ const {
   getWeekdayFromDate,
 } = require("./fixedBooking.service");
 const {
+  canResolveTournamentBlocks,
   getBlockedCourtIdsForDate,
+  isCourtBlockedByTournament,
 } = require("./tournamentBlocking.service");
 const {
   buildForeignLockedKeys,
@@ -236,6 +238,11 @@ const createNewBooking = async ({
     // a turn. The admin booking flow is a separate controller and stays open.
     if (await getBookingsPaused(companyId)) {
       return { success: false, error: "PAUSED" };
+    }
+    // A bot write must never proceed while tournament blocking cannot be
+    // resolved: Mongoose would buffer it and commit after the reconnect.
+    if (!canResolveTournamentBlocks()) {
+      return { success: false, error: "BLOCKING_UNAVAILABLE" };
     }
     const bookingDate = dateStringToUtcMidnight(dateStr);
 
@@ -460,6 +467,13 @@ const createNewBooking = async ({
       if (existingBooking || busyCourtIds.has(String(selectedCourt._id))) {
         return { success: false, error: "BUSY" };
       }
+    }
+
+    // A global/super-admin bot call may arrive without a company scope, which
+    // makes the busy-pool block lookup empty. Derive the court tenant before
+    // the write; never evaluate blocks with an empty company scope.
+    if (!companyId && (await isCourtBlockedByTournament(null, selectedCourt._id, bookingDate))) {
+      return { success: false, error: "BUSY" };
     }
 
     // =================================================================

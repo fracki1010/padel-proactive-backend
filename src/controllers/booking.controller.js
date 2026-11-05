@@ -28,6 +28,7 @@ const {
 } = require("../utils/identityNormalization");
 const { findEffectiveSlotForCourt } = require("../utils/slotSchedule");
 const {
+  canResolveTournamentBlocks,
   isCourtBlockedByTournament,
 } = require("../services/tournamentBlocking.service");
 const DAILY_BOOKING_LIMIT_PER_CLIENT = Number(
@@ -184,6 +185,15 @@ const createBooking = async (req, res) => {
     // C. Preparar fecha exacta
     const bookingDate = new Date(date);
     bookingDate.setUTCHours(0, 0, 0, 0);
+
+    // A write must never proceed while tournament blocking cannot be resolved:
+    // Mongoose would buffer it and commit after the reconnect.
+    if (!canResolveTournamentBlocks()) {
+      return res.status(503).json({
+        success: false,
+        error: "No podemos verificar la disponibilidad por un problema técnico. Intentá nuevamente en unos minutos.",
+      });
+    }
 
     // An in-progress tournament owns this court for the whole day: refuse before
     // any Booking write (fixed-turn materialization included).
@@ -383,28 +393,36 @@ const updateBooking = async (req, res) => {
     delete updateData.__v;
     delete updateData.applyPenalty;
 
-    // A booking cannot be moved onto a slot held by an active fixed turn. Only
-    // the fields actually being changed participate; unchanged fields keep the
-    // booking's current values, so an edit that only touches status/name is not
-    // blocked.
+    // Only a REAL move can introduce a tournament/fixed conflict. A form that
+    // resends the stored court/date/slot (to edit status or name) must not be
+    // blocked, so compare against the persisted booking instead of presence.
+    const storedCourt = previousBooking.court?._id || previousBooking.court;
+    const storedTimeSlot =
+      previousBooking.timeSlot?._id || previousBooking.timeSlot;
+    const nextCourt =
+      req.body.court !== undefined ? req.body.court : storedCourt;
+    const nextTimeSlot =
+      req.body.timeSlot !== undefined ? req.body.timeSlot : storedTimeSlot;
+    const nextDate =
+      req.body.date !== undefined
+        ? parseDateToUtcMidnight(req.body.date)
+        : previousBooking.date;
+
+    const sameId = (left, right) =>
+      left != null && right != null && String(left) === String(right);
     const isMovingSlot =
-      req.body.court !== undefined ||
-      req.body.timeSlot !== undefined ||
-      req.body.date !== undefined;
+      !sameId(nextCourt, storedCourt) ||
+      !sameId(nextTimeSlot, storedTimeSlot) ||
+      toIsoDateOnly(nextDate) !== toIsoDateOnly(previousBooking.date);
 
     if (isMovingSlot) {
-      const nextCourt =
-        req.body.court !== undefined
-          ? req.body.court
-          : previousBooking.court?._id || previousBooking.court;
-      const nextTimeSlot =
-        req.body.timeSlot !== undefined
-          ? req.body.timeSlot
-          : previousBooking.timeSlot?._id || previousBooking.timeSlot;
-      const nextDate =
-        req.body.date !== undefined
-          ? parseDateToUtcMidnight(req.body.date)
-          : previousBooking.date;
+      // A move must never proceed while tournament blocking cannot be resolved.
+      if (!canResolveTournamentBlocks()) {
+        return res.status(503).json({
+          success: false,
+          error: "No podemos verificar la disponibilidad por un problema técnico. Intentá nuevamente en unos minutos.",
+        });
+      }
 
       if (await isCourtBlockedByTournament(companyId, nextCourt, nextDate)) {
         return res.status(409).json({

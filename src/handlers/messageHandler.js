@@ -275,6 +275,9 @@ const buildBookingReplyText = (requestedDate, requestedClientName, bookingResult
   }
 
   if (bookingResult.error === "BUSY") return "🚫 Ese turno ya está ocupado. ¿Te busco otro?";
+  if (bookingResult.error === "BLOCKING_UNAVAILABLE") {
+    return "⚠️ No pudimos verificar la disponibilidad en este momento. Intentá de nuevo en unos minutos.";
+  }
   if (bookingResult.error === "PAUSED") {
     return "⏸️ Las reservas están pausadas por el momento. Podés ver la disponibilidad, pero no tomar turnos.";
   }

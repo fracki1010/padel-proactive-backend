@@ -77,6 +77,7 @@ const {
   buildAvailabilityPairs,
 } = require("../utils/slotSchedule");
 const {
+  canResolveTournamentBlocks,
   getBlockedCourtsForDate,
   isCourtBlockedByTournament,
 } = require("../services/tournamentBlocking.service");
@@ -303,7 +304,9 @@ const getAvailability = async (req, res) => {
 
     // An in-progress tournament blocks only its own courts. The club stays open
     // and untouched courts keep their normal availability.
-    const tournamentBlocks = await getBlockedCourtsForDate(company._id, date);
+    // Normalize exactly like booking creation (parseDateToUtcMidnight), so both
+    // surfaces agree on the calendar day for timezone-qualified inputs.
+    const tournamentBlocks = await getBlockedCourtsForDate(company._id, searchDate);
     const blockedCourtIds = new Set(tournamentBlocks.courtIds);
 
     const baseAvailability = buildAvailabilityPairs({
@@ -969,6 +972,15 @@ const createClientBooking = async (req, res) => {
       return res.status(403).json({
         success: false,
         error: "Tu cuenta está suspendida. Comunicate con el club para más información.",
+      });
+    }
+
+    // A write must never proceed while tournament blocking cannot be resolved:
+    // Mongoose would buffer it and commit after the reconnect.
+    if (!canResolveTournamentBlocks()) {
+      return res.status(503).json({
+        success: false,
+        error: "No podemos verificar la disponibilidad por un problema técnico. Intentá nuevamente en unos minutos.",
       });
     }
 

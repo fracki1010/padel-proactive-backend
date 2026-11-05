@@ -33,6 +33,8 @@ const state = {
   users: [],
   companies: [],
   materializeCalls: 0,
+  mongoConnected: true,
+  updateTarget: null,
 };
 
 const resetState = () => {
@@ -78,6 +80,24 @@ const resetState = () => {
   state.users = [];
   state.companies = [{ _id: COMPANY_A, slug: 'club-a', isActive: true }];
   state.materializeCalls = 0;
+  state.mongoConnected = true;
+  state.updateTarget = null;
+};
+
+// Bot dates must stay in the future or bookingService short-circuits with
+// PAST_TIME and the assertions become vacuous. Derive them from the clock.
+const futureDate = (daysFromToday) => {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + daysFromToday);
+  return date.toISOString().slice(0, 10);
+};
+const BOT_TOURNAMENT_START = futureDate(20);
+const BOT_TOURNAMENT_END = futureDate(40);
+const BOT_DATE = futureDate(30);
+
+const setBotTournamentWindow = () => {
+  state.tournaments[0].startDate = BOT_TOURNAMENT_START;
+  state.tournaments[0].endDate = BOT_TOURNAMENT_END;
 };
 
 const norm = (value) => {
@@ -148,7 +168,9 @@ const stubModule = (requestPath, exportsObj) => {
 
 beforeEach(resetState);
 resetState();
-stubModule('../config/database', { isMongoConnected: () => true });
+stubModule('../config/database', {
+  isMongoConnected: () => state.mongoConnected,
+});
 stubModule('../models/tournament.model', createModel('tournaments'));
 stubModule('../models/court.model', {
   ...createModel('courts'),
@@ -398,6 +420,33 @@ bookingStub.findById = () => {
   return chain;
 };
 
+// updateBooking needs a chainable findOne + findOneAndUpdate. Only an explicitly
+// seeded `updateTarget` opts into the update shape; every create path keeps
+// seeing `null` for its duplicate check.
+const populateChain = (doc) => {
+  const chain = {
+    populate: () => chain,
+    then: (resolve, reject) => Promise.resolve(doc).then(resolve, reject),
+    catch: (reject) => Promise.resolve(doc).catch(reject),
+  };
+  return chain;
+};
+bookingStub.findOne = () => (state.updateTarget ? populateChain(state.updateTarget) : null);
+bookingStub.findOneAndUpdate = () => {
+  const base = state.updateTarget || {};
+  const updated = {
+    ...base,
+    _id: base._id,
+    status: base.status,
+    clientName: base.clientName,
+    clientPhone: base.clientPhone,
+    date: base.date,
+    court: base.court,
+    timeSlot: base.timeSlot,
+  };
+  return populateChain(updated);
+};
+
 const publicController = require('../controllers/public.controller');
 
 const call = async (handler, req) => {
@@ -519,24 +568,28 @@ test('admin booking creation still writes a free court on the same blocked date'
 });
 
 test('bot availability drops blocked courts from the slot capacity', async () => {
-  const result = await bookingService.getAvailableSlots('2026-11-11', { companyId: COMPANY_A });
+  setBotTournamentWindow();
+  const result = await bookingService.getAvailableSlots(BOT_DATE, { companyId: COMPANY_A });
   assert.equal(result.success, true);
   assert.equal(result.slots.length, 1);
   assert.equal(result.slots[0].totalCourts, 2);
   assert.equal(result.slots[0].availableCourts, 1);
 });
 test('bot availability omits a slot when every applicable court is tournament-blocked', async () => {
+  setBotTournamentWindow();
   state.tournaments[0].courts = [COURT_A, COURT_A2];
-  const result = await bookingService.getAvailableSlots('2026-11-11', { companyId: COMPANY_A });
+  const result = await bookingService.getAvailableSlots(BOT_DATE, { companyId: COMPANY_A });
   assert.equal(result.success, true);
   assert.equal(result.slots.length, 0);
 });
 
-const botBooking = (overrides = {}) =>
-  bookingService.createNewBooking({
-    companyId: COMPANY_A, courtName: 'Cancha A', dateStr: '2026-11-11',
+const botBooking = (overrides = {}) => {
+  setBotTournamentWindow();
+  return bookingService.createNewBooking({
+    companyId: COMPANY_A, courtName: 'Cancha A', dateStr: BOT_DATE,
     timeStr: '20:00', clientName: 'Ana', clientPhone: '5491100000000', ...overrides,
   });
+};
 
 test('bot booking creation refuses a tournament-blocked specific court without writing', async () => {
   const result = await botBooking();
@@ -557,4 +610,179 @@ test('GET blocked-courts exposes the same blocked ids as every other surface', a
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.body.data.courtIds, [COURT_A]);
   assert.equal(response.body.data.date, '2026-11-11');
+});
+
+// ── Fail-closed writes when blocking cannot be resolved ─────────────────────
+
+// The Node test runner sets NODE_TEST_CONTEXT, which the capability check uses
+// to keep model-double suites (no live Mongo) working. Removing it for one call
+// simulates production with the DB disconnected.
+const withBlockingUnavailable = async (work) => {
+  const savedContext = process.env.NODE_TEST_CONTEXT;
+  const savedEnv = process.env.NODE_ENV;
+  delete process.env.NODE_TEST_CONTEXT;
+  delete process.env.NODE_ENV;
+  state.mongoConnected = false;
+  try {
+    return await work();
+  } finally {
+    state.mongoConnected = true;
+    if (savedContext !== undefined) process.env.NODE_TEST_CONTEXT = savedContext;
+    if (savedEnv !== undefined) process.env.NODE_ENV = savedEnv;
+  }
+};
+
+test('admin booking creation returns 503 and writes nothing when blocking cannot be resolved', async () => {
+  const response = await withBlockingUnavailable(() => adminBooking(blockingBody));
+  assert.equal(response.statusCode, 503);
+  assert.match(response.body.error, /disponibilidad/i);
+  assert.equal(state.bookings.length, 0);
+  assert.equal(state.materializeCalls, 0);
+});
+
+test('public booking creation returns 503 and writes nothing when blocking cannot be resolved', async () => {
+  const response = await withBlockingUnavailable(() => publicBooking({
+    courtId: COURT_A,
+    slotId: SLOT_ID,
+    date: '2026-11-11',
+  }));
+  assert.equal(response.statusCode, 503);
+  assert.equal(state.bookings.length, 0);
+  assert.equal(state.materializeCalls, 0);
+});
+
+test('bot booking creation refuses when blocking cannot be resolved', async () => {
+  setBotTournamentWindow();
+  const result = await withBlockingUnavailable(() => bookingService.createNewBooking({
+    companyId: COMPANY_A, courtName: 'Cancha A', dateStr: BOT_DATE,
+    timeStr: '20:00', clientName: 'Ana', clientPhone: '5491100000000',
+  }));
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'BLOCKING_UNAVAILABLE');
+  assert.equal(state.bookings.length, 0);
+});
+
+// ── Super admin without companyId must still resolve the court tenant ────────
+
+test('super_admin without companyId cannot book a tournament-blocked court', async () => {
+  const response = await call(bookingController.createBooking, {
+    user: { role: 'super_admin', _id: hexId(0xf2) },
+    query: {},
+    body: blockingBody,
+  });
+  assert.equal(response.statusCode, 409);
+  assert.match(response.body.error, /torneo/i);
+  assert.equal(state.bookings.length, 0);
+  assert.equal(state.materializeCalls, 0);
+});
+
+// ── updateBooking only blocks when the court/date/slot actually changes ─────
+
+const seedUpdateTarget = (overrides = {}) => {
+  state.updateTarget = {
+    _id: hexId(0xb1),
+    companyId: COMPANY_A,
+    status: 'confirmado',
+    clientName: 'Ana',
+    clientPhone: '5491100000000',
+    date: new Date('2026-11-13T00:00:00.000Z'),
+    court: { _id: COURT_A2, name: 'Cancha A2' },
+    timeSlot: { _id: SLOT_ID, startTime: '20:00' },
+    ...overrides,
+  };
+  return state.updateTarget;
+};
+
+const updateAdminBooking = (body) =>
+  call(bookingController.updateBooking, {
+    user: { role: 'admin', companyId: COMPANY_A, _id: hexId(0xf1) },
+    params: { id: state.updateTarget?._id },
+    body,
+  });
+
+test('resending identical court, date and slot with a status edit is allowed', async () => {
+  seedUpdateTarget({
+    date: new Date('2026-11-11T00:00:00.000Z'),
+    court: { _id: COURT_A, name: 'Cancha A' },
+  });
+  const response = await updateAdminBooking({
+    status: 'confirmado',
+    clientName: 'Ana Editada',
+    court: COURT_A,
+    date: '2026-11-11',
+    timeSlot: SLOT_ID,
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.success, true);
+});
+
+test('moving a booking onto a tournament-blocked court is refused with 409', async () => {
+  // Same blocked date, but currently on the free court; the court change is the
+  // only thing that introduces the conflict.
+  seedUpdateTarget({
+    date: new Date('2026-11-11T00:00:00.000Z'),
+    court: { _id: COURT_A2, name: 'Cancha A2' },
+  });
+  const response = await updateAdminBooking({ court: COURT_A });
+  assert.equal(response.statusCode, 409);
+  assert.match(response.body.error, /torneo/i);
+});
+
+test('moving a booking onto a tournament-blocked date is refused with 409', async () => {
+  seedUpdateTarget({
+    date: new Date('2026-11-13T00:00:00.000Z'),
+    court: { _id: COURT_A, name: 'Cancha A' },
+  });
+  const response = await updateAdminBooking({ date: '2026-11-11' });
+  assert.equal(response.statusCode, 409);
+  assert.match(response.body.error, /torneo/i);
+});
+
+// ── Availability normalizes the date exactly like booking creation ──────────
+
+test('availability normalizes a timezone-qualified date before resolving blocks', async () => {
+  // Tournament ends on 2026-11-11; 23:00-03:00 is 2026-11-12 in UTC, so the
+  // normalized day is NOT blocked (raw-string parsing used to say otherwise).
+  state.tournaments[0].endDate = '2026-11-11';
+  const response = await publicAvailability('2026-11-11T23:00:00-03:00');
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body.data.blockedCourts, []);
+  assert.ok(
+    response.body.data.availability
+      .filter((pair) => pair.courtId === COURT_A)
+      .every((pair) => pair.available === true),
+  );
+});
+
+test('availability normalizes a slash date before resolving blocks', async () => {
+  const response = await publicAvailability('11/11/2026');
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body.data.blockedCourts, [COURT_A]);
+  assert.ok(
+    response.body.data.availability
+      .filter((pair) => pair.courtId === COURT_A)
+      .every((pair) => pair.available === false && pair.reason === 'tournament'),
+  );
+});
+
+// ── Router contract for /blocked-courts ────────────────────────────────────
+
+test('blocked-courts route is declared before /:id so it is not captured as an id', () => {
+  const router = require('../routes/tournament.routes');
+  const paths = router.stack
+    .filter((layer) => layer.route)
+    .map((layer) => layer.route.path);
+  const blockedIndex = paths.indexOf('/blocked-courts');
+  const idIndex = paths.indexOf('/:id');
+  assert.ok(blockedIndex >= 0, 'blocked-courts route must exist');
+  assert.ok(idIndex >= 0, '/:id route must exist');
+  assert.ok(blockedIndex < idIndex, 'blocked-courts must be matched before /:id');
+});
+
+test('blocked-courts rejects an invalid date with 400', async () => {
+  const response = await call(tournamentController.getBlockedCourts, {
+    user: { role: 'admin', companyId: COMPANY_A }, query: { date: '11/11/2026' },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.match(response.body.error, /YYYY-MM-DD/);
 });

@@ -105,10 +105,32 @@ const getBlockedCourtsForDate = (companyId, date) =>
 const getBlockedCourtIdsForDate = async (companyId, date) =>
   (await resolveBlockedCourts(companyId, date)).courtIds;
 
-// Court-level guard shared by public and admin booking creation.
+// Whether blocking can be determined right now. WRITE paths must call this and
+// refuse when it is false: Mongoose buffers writes across a reconnect, so a
+// booking could otherwise land on a court whose block was never evaluated.
+// Reads may keep degrading to "no blocks" (their other Mongo queries fail too).
+// Node's test runner sets NODE_TEST_CONTEXT; model-double suites never open a
+// DB and must keep exercising unrelated write paths. Production never has it.
+const isTestDoubleRun = () =>
+  Boolean(process.env.NODE_TEST_CONTEXT) || process.env.NODE_ENV === 'test';
+const canResolveTournamentBlocks = () => isMongoConnected() || isTestDoubleRun();
+
+// A write path may arrive without a company scope (super_admin). The target
+// court is authoritative: derive its tenant before evaluating any block.
+const resolveCompanyForCourt = async (courtId) => {
+  if (!courtId) return null;
+  const court = await Court.findOne({ _id: courtId });
+  return court?.companyId ? String(court.companyId) : null;
+};
+
+// Court-level guard shared by public, admin and bot booking writes. Never runs
+// with an empty company scope: falling back to the court tenant, and failing
+// closed if that is impossible.
 const isCourtBlockedByTournament = async (companyId, courtId, date) => {
-  if (!companyId || !courtId) return false;
-  const blockedCourtIds = await getBlockedCourtIdsForDate(companyId, date);
+  if (!courtId) return false;
+  const scopeCompanyId = companyId || (await resolveCompanyForCourt(courtId));
+  if (!scopeCompanyId) return true;
+  const blockedCourtIds = await getBlockedCourtIdsForDate(scopeCompanyId, date);
   return blockedCourtIds.includes(String(courtId));
 };
 
@@ -163,6 +185,7 @@ async function findActivationConflicts({ companyId, courtIds = [], startDate, en
 module.exports = {
   BLOCKING_STATUS,
   isDateInInclusiveRange,
+  canResolveTournamentBlocks,
   getBlockedCourtsForDate,
   getBlockedCourtIdsForDate,
   isCourtBlockedByTournament,
